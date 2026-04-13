@@ -1,3 +1,0 @@
-[submodule "external/repo"]
-	path = external/repo
-	url = https://github.com/microsoft/AIOpsLab.git
