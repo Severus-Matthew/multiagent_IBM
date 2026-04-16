@@ -1,0 +1,57 @@
+[
+  {
+    "action": "restart_service",
+    "parameters": [
+      "service"
+    ],
+    "expected_effect": [
+      "reset application state",
+      "possible recovery from transient app failure",
+      "may not fix persistent config faults"
+    ],
+    "risk": "medium"
+  },
+  {
+    "action": "scale_service",
+    "parameters": [
+      "service",
+      "replicas"
+    ],
+    "expected_effect": [
+      "improve overload scenarios",
+      "unlikely to resolve logic or config fault alone"
+    ],
+    "risk": "low_to_medium"
+  },
+  {
+    "action": "rollback_config",
+    "parameters": [
+      "service"
+    ],
+    "expected_effect": [
+      "good candidate for config_error or ghost_failure caused by bad config"
+    ],
+    "risk": "medium"
+  },
+  {
+    "action": "disable_edge",
+    "parameters": [
+      "src",
+      "dst"
+    ],
+    "expected_effect": [
+      "reduces cascading failures",
+      "may degrade functionality while preserving global SLA"
+    ],
+    "risk": "high"
+  },
+  {
+    "action": "wait",
+    "parameters": [],
+    "expected_effect": [
+      "observe natural evolution",
+      "useful for transient faults"
+    ],
+    "risk": "low"
+  }
+]

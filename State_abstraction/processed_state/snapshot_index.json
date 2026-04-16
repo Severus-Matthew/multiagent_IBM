@@ -1,0 +1,89 @@
+{
+  "20260415_204259": {
+    "logs": {
+      "profile": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/profile_20260415_204259.log",
+      "frontend": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/frontend_20260415_204259.log",
+      "recommendation": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/recommendation_20260415_204259.log",
+      "user": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/user_20260415_204259.log",
+      "reservation": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/reservation_20260415_204259.log",
+      "search": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/search_20260415_204259.log"
+    },
+    "metrics": {
+      "network_tx": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/network_tx_20260415_204259.json",
+      "cpu": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/cpu_20260415_204259.json",
+      "network_rx": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/network_rx_20260415_204259.json",
+      "memory": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/memory_20260415_204259.json",
+      "restarts": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/restarts_20260415_204259.json"
+    },
+    "system": {
+      "pods": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/system/pods_20260415_204259.txt",
+      "describe": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/system/describe_20260415_204259.txt"
+    },
+    "traces": [
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/user_traces_20260415_204259.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/profile_traces_20260415_204259.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/recommendation_traces_20260415_204259.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/reservation_traces_20260415_204259.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/search_traces_20260415_204259.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/frontend_traces_20260415_204259.json"
+    ]
+  },
+  "20260415_204330": {
+    "logs": {
+      "reservation": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/reservation_20260415_204330.log",
+      "search": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/search_20260415_204330.log",
+      "recommendation": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/recommendation_20260415_204330.log",
+      "user": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/user_20260415_204330.log",
+      "profile": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/profile_20260415_204330.log",
+      "frontend": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/frontend_20260415_204330.log"
+    },
+    "metrics": {
+      "cpu": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/cpu_20260415_204330.json",
+      "network_tx": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/network_tx_20260415_204330.json",
+      "network_rx": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/network_rx_20260415_204330.json",
+      "memory": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/memory_20260415_204330.json",
+      "restarts": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/restarts_20260415_204330.json"
+    },
+    "system": {
+      "describe": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/system/describe_20260415_204330.txt",
+      "pods": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/system/pods_20260415_204330.txt"
+    },
+    "traces": [
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/user_traces_20260415_204330.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/recommendation_traces_20260415_204330.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/profile_traces_20260415_204330.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/reservation_traces_20260415_204330.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/search_traces_20260415_204330.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/frontend_traces_20260415_204330.json"
+    ]
+  },
+  "20260415_204342": {
+    "logs": {
+      "search": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/search_20260415_204342.log",
+      "reservation": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/reservation_20260415_204342.log",
+      "frontend": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/frontend_20260415_204342.log",
+      "profile": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/profile_20260415_204342.log",
+      "user": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/user_20260415_204342.log",
+      "recommendation": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/logs/recommendation_20260415_204342.log"
+    },
+    "metrics": {
+      "restarts": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/restarts_20260415_204342.json",
+      "memory": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/memory_20260415_204342.json",
+      "network_tx": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/network_tx_20260415_204342.json",
+      "cpu": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/cpu_20260415_204342.json",
+      "network_rx": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/metrics/network_rx_20260415_204342.json"
+    },
+    "system": {
+      "describe": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/system/describe_20260415_204342.txt",
+      "pods": "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/system/pods_20260415_204342.txt"
+    },
+    "traces": [
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/profile_traces_20260415_204342.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/recommendation_traces_20260415_204342.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/frontend_traces_20260415_204342.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/search_traces_20260415_204342.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/reservation_traces_20260415_204342.json",
+      "/Users/manvi/Downloads/multiagent_IBM/AIOpsLab/aiops_runs/misconfig_app_hotel_res-detection-1/run_20260415_203030/phase_before/traces/user_traces_20260415_204342.json"
+    ]
+  }
+}

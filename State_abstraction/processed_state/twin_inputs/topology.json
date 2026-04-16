@@ -1,0 +1,164 @@
+{
+  "services": [
+    "frontend",
+    "profile",
+    "recommendation",
+    "reservation",
+    "search",
+    "user"
+  ],
+  "nodes": [
+    {
+      "service": "frontend",
+      "incoming_neighbors": [
+        "frontend"
+      ],
+      "outgoing_neighbors": [
+        "frontend",
+        "profile",
+        "recommendation",
+        "reservation",
+        "search",
+        "user"
+      ]
+    },
+    {
+      "service": "profile",
+      "incoming_neighbors": [
+        "frontend",
+        "profile"
+      ],
+      "outgoing_neighbors": [
+        "profile"
+      ]
+    },
+    {
+      "service": "recommendation",
+      "incoming_neighbors": [
+        "frontend"
+      ],
+      "outgoing_neighbors": []
+    },
+    {
+      "service": "reservation",
+      "incoming_neighbors": [
+        "frontend"
+      ],
+      "outgoing_neighbors": []
+    },
+    {
+      "service": "search",
+      "incoming_neighbors": [
+        "frontend",
+        "search"
+      ],
+      "outgoing_neighbors": [
+        "search"
+      ]
+    },
+    {
+      "service": "user",
+      "incoming_neighbors": [
+        "frontend"
+      ],
+      "outgoing_neighbors": []
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "frontend->frontend",
+      "src": "frontend",
+      "dst": "frontend",
+      "criticality": "critical",
+      "observed_request_count": 133,
+      "observed_error_ratio": 1.0,
+      "observed_latency_p95_us": 13520.4,
+      "failure_type": "healthy_path",
+      "self_loop": true
+    },
+    {
+      "edge_id": "frontend->profile",
+      "src": "frontend",
+      "dst": "profile",
+      "criticality": "important",
+      "observed_request_count": 49,
+      "observed_error_ratio": 0.0,
+      "observed_latency_p95_us": 1356.1000000000001,
+      "failure_type": "healthy_path",
+      "self_loop": false
+    },
+    {
+      "edge_id": "frontend->recommendation",
+      "src": "frontend",
+      "dst": "recommendation",
+      "criticality": "important",
+      "observed_request_count": 49,
+      "observed_error_ratio": 0.0,
+      "observed_latency_p95_us": 177.25000000000006,
+      "failure_type": "healthy_path",
+      "self_loop": false
+    },
+    {
+      "edge_id": "frontend->reservation",
+      "src": "frontend",
+      "dst": "reservation",
+      "criticality": "normal",
+      "observed_request_count": 2,
+      "observed_error_ratio": 0.0,
+      "observed_latency_p95_us": 11429.0,
+      "failure_type": "healthy_path",
+      "self_loop": false
+    },
+    {
+      "edge_id": "frontend->search",
+      "src": "frontend",
+      "dst": "search",
+      "criticality": "critical",
+      "observed_request_count": 31,
+      "observed_error_ratio": 1.0,
+      "observed_latency_p95_us": 115.25000000000003,
+      "failure_type": "hard_error_path",
+      "self_loop": false
+    },
+    {
+      "edge_id": "frontend->user",
+      "src": "frontend",
+      "dst": "user",
+      "criticality": "normal",
+      "observed_request_count": 2,
+      "observed_error_ratio": 0.0,
+      "observed_latency_p95_us": 176.0,
+      "failure_type": "healthy_path",
+      "self_loop": false
+    },
+    {
+      "edge_id": "profile->profile",
+      "src": "profile",
+      "dst": "profile",
+      "criticality": "important",
+      "observed_request_count": 62,
+      "observed_error_ratio": 0.0,
+      "observed_latency_p95_us": 888.2000000000003,
+      "failure_type": "healthy_path",
+      "self_loop": true
+    },
+    {
+      "edge_id": "search->search",
+      "src": "search",
+      "dst": "search",
+      "criticality": "critical",
+      "observed_request_count": 31,
+      "observed_error_ratio": 1.0,
+      "observed_latency_p95_us": 58.85000000000003,
+      "failure_type": "hard_error_path",
+      "self_loop": true
+    }
+  ],
+  "self_loops": [
+    "frontend->frontend",
+    "profile->profile",
+    "search->search"
+  ],
+  "num_services": 6,
+  "num_edges": 8
+}

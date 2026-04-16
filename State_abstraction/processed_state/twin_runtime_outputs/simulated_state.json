@@ -1,0 +1,519 @@
+{
+  "timestamp": "20260415_204259",
+  "state_type": "system_health_representation",
+  "metrics": {
+    "frontend": {
+      "cpu": 0.0,
+      "memory": 0.0,
+      "latency": 13.5204,
+      "network_rx": 0.0,
+      "network_tx": 0.0,
+      "restarts": 0.0
+    },
+    "profile": {
+      "cpu": 0.0,
+      "memory": 0.0,
+      "latency": 1.3561,
+      "network_rx": 0.0,
+      "network_tx": 0.0,
+      "restarts": 0.0
+    },
+    "recommendation": {
+      "cpu": 0.0,
+      "memory": 0.0,
+      "latency": 0.17725000000000005,
+      "network_rx": 0.0,
+      "network_tx": 0.0,
+      "restarts": 0.0
+    },
+    "reservation": {
+      "cpu": 0.0,
+      "memory": 0.0,
+      "latency": 11.429,
+      "network_rx": 0.0,
+      "network_tx": 0.0,
+      "restarts": 0.0
+    },
+    "search": {
+      "cpu": 0.0,
+      "memory": 0.0,
+      "latency": 0.11525000000000003,
+      "network_rx": 0.0,
+      "network_tx": 0.0,
+      "restarts": 0.0
+    },
+    "user": {
+      "cpu": 0.0,
+      "memory": 0.0,
+      "latency": 0.176,
+      "network_rx": 0.0,
+      "network_tx": 0.0,
+      "restarts": 0.0
+    }
+  },
+  "logs": {
+    "frontend": {
+      "line_count": 0,
+      "error_count": 0,
+      "warn_count": 0,
+      "timeout_count": 0,
+      "connection_count": 0,
+      "config_count": 0,
+      "dns_count": 0,
+      "retry_count": 0,
+      "dominant_error_type": "none",
+      "top_error_templates": [],
+      "evidence_lines": [],
+      "log_anomaly_score": 0.0,
+      "log_health_score": 1.0,
+      "log_signal_present": false
+    },
+    "profile": {
+      "line_count": 0,
+      "error_count": 0,
+      "warn_count": 0,
+      "timeout_count": 0,
+      "connection_count": 0,
+      "config_count": 0,
+      "dns_count": 0,
+      "retry_count": 0,
+      "dominant_error_type": "none",
+      "top_error_templates": [],
+      "evidence_lines": [],
+      "log_anomaly_score": 0.0,
+      "log_health_score": 1.0,
+      "log_signal_present": false
+    },
+    "recommendation": {
+      "line_count": 0,
+      "error_count": 0,
+      "warn_count": 0,
+      "timeout_count": 0,
+      "connection_count": 0,
+      "config_count": 0,
+      "dns_count": 0,
+      "retry_count": 0,
+      "dominant_error_type": "none",
+      "top_error_templates": [],
+      "evidence_lines": [],
+      "log_anomaly_score": 0.0,
+      "log_health_score": 1.0,
+      "log_signal_present": false
+    },
+    "reservation": {
+      "line_count": 0,
+      "error_count": 0,
+      "warn_count": 0,
+      "timeout_count": 0,
+      "connection_count": 0,
+      "config_count": 0,
+      "dns_count": 0,
+      "retry_count": 0,
+      "dominant_error_type": "none",
+      "top_error_templates": [],
+      "evidence_lines": [],
+      "log_anomaly_score": 0.0,
+      "log_health_score": 1.0,
+      "log_signal_present": false
+    },
+    "search": {
+      "line_count": 0,
+      "error_count": 0,
+      "warn_count": 0,
+      "timeout_count": 0,
+      "connection_count": 0,
+      "config_count": 0,
+      "dns_count": 0,
+      "retry_count": 0,
+      "dominant_error_type": "error",
+      "top_error_templates": [
+        "synthetic downstream dependency failure"
+      ],
+      "evidence_lines": [
+        "synthetic downstream dependency failure"
+      ],
+      "log_anomaly_score": 0.7,
+      "log_health_score": 0.30000000000000004,
+      "log_signal_present": true
+    },
+    "user": {
+      "line_count": 0,
+      "error_count": 0,
+      "warn_count": 0,
+      "timeout_count": 0,
+      "connection_count": 0,
+      "config_count": 0,
+      "dns_count": 0,
+      "retry_count": 0,
+      "dominant_error_type": "none",
+      "top_error_templates": [],
+      "evidence_lines": [],
+      "log_anomaly_score": 0.0,
+      "log_health_score": 1.0,
+      "log_signal_present": false
+    }
+  },
+  "traces": {
+    "frontend->user": {
+      "request_count": 2,
+      "error_ratio": 0.0,
+      "latency_mean_us": 176.0,
+      "latency_p95_us": 176.0,
+      "latency_max_us": 176.0,
+      "dependency_failure_score": 0.000176,
+      "failure_type": "healthy_path",
+      "is_suspicious": false,
+      "edge_rank_score": 3.52e-05
+    },
+    "frontend->reservation": {
+      "request_count": 2,
+      "error_ratio": 0.0,
+      "latency_mean_us": 11429.0,
+      "latency_p95_us": 11429.0,
+      "latency_max_us": 11429.0,
+      "dependency_failure_score": 0.011429,
+      "failure_type": "healthy_path",
+      "is_suspicious": false,
+      "edge_rank_score": 0.0022858
+    },
+    "frontend->frontend": {
+      "request_count": 133,
+      "error_ratio": 1.0,
+      "latency_mean_us": 9375.0,
+      "latency_p95_us": 13520.4,
+      "latency_max_us": 13981.0,
+      "dependency_failure_score": 1.001894,
+      "failure_type": "hard_error_path",
+      "is_suspicious": true,
+      "edge_rank_score": 0.80270408
+    },
+    "frontend->profile": {
+      "request_count": 49,
+      "error_ratio": 0.0,
+      "latency_mean_us": 507.6,
+      "latency_p95_us": 1356.1000000000001,
+      "latency_max_us": 1529.0,
+      "dependency_failure_score": 0.0013561,
+      "failure_type": "healthy_path",
+      "is_suspicious": false,
+      "edge_rank_score": 0.00027122
+    },
+    "profile->profile": {
+      "request_count": 62,
+      "error_ratio": 0.0,
+      "latency_mean_us": 343.12,
+      "latency_p95_us": 888.2000000000003,
+      "latency_max_us": 1163.0,
+      "dependency_failure_score": 0.0008882000000000002,
+      "failure_type": "healthy_path",
+      "is_suspicious": false,
+      "edge_rank_score": 0.00017764000000000007
+    },
+    "frontend->recommendation": {
+      "request_count": 49,
+      "error_ratio": 0.0,
+      "latency_mean_us": 43.95,
+      "latency_p95_us": 177.25000000000006,
+      "latency_max_us": 220.0,
+      "dependency_failure_score": 0.00017725000000000005,
+      "failure_type": "healthy_path",
+      "is_suspicious": false,
+      "edge_rank_score": 3.5450000000000015e-05
+    },
+    "search->search": {
+      "request_count": 31,
+      "error_ratio": 1.0,
+      "latency_mean_us": 39.4,
+      "latency_p95_us": 100000.0,
+      "latency_max_us": 94.0,
+      "dependency_failure_score": 1.00005885,
+      "failure_type": "hard_error_path",
+      "is_suspicious": true,
+      "edge_rank_score": 0.8200000000000001
+    },
+    "frontend->search": {
+      "request_count": 31,
+      "error_ratio": 1.0,
+      "latency_mean_us": 73.25,
+      "latency_p95_us": 115.25000000000003,
+      "latency_max_us": 139.0,
+      "dependency_failure_score": 1.00011525,
+      "failure_type": "hard_error_path",
+      "is_suspicious": true,
+      "edge_rank_score": 0.8000230500000001
+    }
+  },
+  "system": {
+    "frontend": {
+      "pods_total": 1,
+      "pods_ready": 1,
+      "pods_unready": 0,
+      "restart_count": 0,
+      "crashloop_count": 0,
+      "pending_count": 0,
+      "running_count": 1,
+      "service_health_status": "healthy",
+      "infra_issue_flag": false
+    },
+    "profile": {
+      "pods_total": 3,
+      "pods_ready": 3,
+      "pods_unready": 0,
+      "restart_count": 0,
+      "crashloop_count": 0,
+      "pending_count": 0,
+      "running_count": 3,
+      "service_health_status": "healthy",
+      "infra_issue_flag": false
+    },
+    "recommendation": {
+      "pods_total": 2,
+      "pods_ready": 2,
+      "pods_unready": 0,
+      "restart_count": 0,
+      "crashloop_count": 0,
+      "pending_count": 0,
+      "running_count": 2,
+      "service_health_status": "healthy",
+      "infra_issue_flag": false
+    },
+    "reservation": {
+      "pods_total": 2,
+      "pods_ready": 2,
+      "pods_unready": 0,
+      "restart_count": 0,
+      "crashloop_count": 0,
+      "pending_count": 0,
+      "running_count": 2,
+      "service_health_status": "healthy",
+      "infra_issue_flag": false
+    },
+    "search": {
+      "pods_total": 1,
+      "pods_ready": 1,
+      "pods_unready": 0,
+      "restart_count": 0,
+      "crashloop_count": 0,
+      "pending_count": 0,
+      "running_count": 1,
+      "service_health_status": "healthy",
+      "infra_issue_flag": false
+    },
+    "user": {
+      "pods_total": 2,
+      "pods_ready": 2,
+      "pods_unready": 0,
+      "restart_count": 0,
+      "crashloop_count": 0,
+      "pending_count": 0,
+      "running_count": 2,
+      "service_health_status": "healthy",
+      "infra_issue_flag": false
+    }
+  },
+  "workload": {
+    "estimated_request_rate": 359,
+    "per_service_incoming_requests": {
+      "user": 2,
+      "reservation": 2,
+      "frontend": 133,
+      "profile": 111,
+      "recommendation": 49,
+      "search": 62
+    }
+  },
+  "graph": {
+    "services": [
+      "frontend",
+      "profile",
+      "recommendation",
+      "reservation",
+      "search",
+      "user"
+    ],
+    "edges": [
+      {
+        "src": "frontend",
+        "dst": "frontend",
+        "features": {
+          "request_count": 133,
+          "error_ratio": 1.0,
+          "latency_mean_us": 9375.0,
+          "latency_p95_us": 13520.4,
+          "latency_max_us": 13981.0,
+          "dependency_failure_score": 1.001894,
+          "failure_type": "healthy_path",
+          "is_suspicious": true,
+          "edge_rank_score": 0.8003788000000001
+        }
+      },
+      {
+        "src": "frontend",
+        "dst": "profile",
+        "features": {
+          "request_count": 49,
+          "error_ratio": 0.0,
+          "latency_mean_us": 507.6,
+          "latency_p95_us": 1356.1000000000001,
+          "latency_max_us": 1529.0,
+          "dependency_failure_score": 0.0013561,
+          "failure_type": "healthy_path",
+          "is_suspicious": false,
+          "edge_rank_score": 0.00027122
+        }
+      },
+      {
+        "src": "frontend",
+        "dst": "recommendation",
+        "features": {
+          "request_count": 49,
+          "error_ratio": 0.0,
+          "latency_mean_us": 43.95,
+          "latency_p95_us": 177.25000000000006,
+          "latency_max_us": 220.0,
+          "dependency_failure_score": 0.00017725000000000005,
+          "failure_type": "healthy_path",
+          "is_suspicious": false,
+          "edge_rank_score": 3.5450000000000015e-05
+        }
+      },
+      {
+        "src": "frontend",
+        "dst": "reservation",
+        "features": {
+          "request_count": 2,
+          "error_ratio": 0.0,
+          "latency_mean_us": 11429.0,
+          "latency_p95_us": 11429.0,
+          "latency_max_us": 11429.0,
+          "dependency_failure_score": 0.011429,
+          "failure_type": "healthy_path",
+          "is_suspicious": false,
+          "edge_rank_score": 0.0022858
+        }
+      },
+      {
+        "src": "frontend",
+        "dst": "search",
+        "features": {
+          "request_count": 31,
+          "error_ratio": 1.0,
+          "latency_mean_us": 73.25,
+          "latency_p95_us": 115.25000000000003,
+          "latency_max_us": 139.0,
+          "dependency_failure_score": 1.00011525,
+          "failure_type": "hard_error_path",
+          "is_suspicious": true,
+          "edge_rank_score": 0.8000230500000001
+        }
+      },
+      {
+        "src": "frontend",
+        "dst": "user",
+        "features": {
+          "request_count": 2,
+          "error_ratio": 0.0,
+          "latency_mean_us": 176.0,
+          "latency_p95_us": 176.0,
+          "latency_max_us": 176.0,
+          "dependency_failure_score": 0.000176,
+          "failure_type": "healthy_path",
+          "is_suspicious": false,
+          "edge_rank_score": 3.52e-05
+        }
+      },
+      {
+        "src": "profile",
+        "dst": "profile",
+        "features": {
+          "request_count": 62,
+          "error_ratio": 0.0,
+          "latency_mean_us": 343.12,
+          "latency_p95_us": 888.2000000000003,
+          "latency_max_us": 1163.0,
+          "dependency_failure_score": 0.0008882000000000002,
+          "failure_type": "healthy_path",
+          "is_suspicious": false,
+          "edge_rank_score": 0.00017764000000000007
+        }
+      },
+      {
+        "src": "search",
+        "dst": "search",
+        "features": {
+          "request_count": 31,
+          "error_ratio": 1.0,
+          "latency_mean_us": 39.4,
+          "latency_p95_us": 58.85000000000003,
+          "latency_max_us": 94.0,
+          "dependency_failure_score": 1.00005885,
+          "failure_type": "hard_error_path",
+          "is_suspicious": true,
+          "edge_rank_score": 0.80001177
+        }
+      }
+    ]
+  },
+  "history": {
+    "previous_actions": [],
+    "last_action": null,
+    "action_count": 0
+  },
+  "rca_features": {
+    "candidate_root_causes": [
+      {
+        "service": "search",
+        "score": 2.0,
+        "reasons": [
+          "edge_issue=search->search",
+          "edge_failure_type=hard_error_path",
+          "self_loop_failure",
+          "edge_issue=frontend->search",
+          "edge_failure_type=hard_error_path"
+        ]
+      },
+      {
+        "service": "frontend",
+        "score": 1.2004,
+        "reasons": [
+          "edge_issue=frontend->frontend",
+          "edge_failure_type=healthy_path",
+          "self_loop_failure"
+        ]
+      },
+      {
+        "service": "reservation",
+        "score": 0.0023,
+        "reasons": []
+      },
+      {
+        "service": "profile",
+        "score": 0.0004,
+        "reasons": []
+      },
+      {
+        "service": "recommendation",
+        "score": 0.0,
+        "reasons": []
+      }
+    ],
+    "most_suspicious_service": "search",
+    "most_suspicious_edge": "frontend->frontend",
+    "dominant_error_family": "dependency_failure",
+    "observability_gaps": [
+      "log_pipeline_empty",
+      "resource_metric_pipeline_empty"
+    ],
+    "confidence": 0.55,
+    "observability": {
+      "logs_available": false,
+      "resource_metrics_available": false,
+      "trace_available": true,
+      "system_available": true,
+      "blind_spots": [
+        "log_pipeline_empty",
+        "resource_metric_pipeline_empty"
+      ]
+    }
+  }
+}
