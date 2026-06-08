@@ -1,0 +1,31 @@
+ad_service_failure                  apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+ad_service_high_cpu                 apps=['astronomy_shop', 'base'] tasks=['detection', 'localization'] files=3
+ad_service_manual_gc                apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+assign_non_existent_node            apps=['base', 'socialnet'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+auth_miss_mongodb                   apps=['base', 'socialnet'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+cart_service_failure                apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+container_kill                      apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+disk_woreout                        apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+flower_model_misconfig              apps=['flower'] tasks=['detection'] files=2
+flower_node_stop                    apps=['flower'] tasks=['detection'] files=2
+image_slow_load                     apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+k8s_target_port_misconfig           apps=['base', 'socialnet'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+kafka_queue_problems                apps=['astronomy_shop'] tasks=['detection', 'localization', 'mitigation'] files=2
+kernel_fault                        apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+loadgenerator_flood_homepage        apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+misconfig_app                       apps=['base', 'hotelres'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+network_delay                       apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+network_loss                        apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+no_op                               apps=['astronomy_shop', 'base', 'hotelres', 'socialnet'] tasks=['detection'] files=3
+operator_misoperation               apps=['tidb_cluster_operator'] tasks=['detection', 'localization'] files=6
+payment_service_failure             apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+payment_service_unreachable         apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+pod_failure                         apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+pod_kill                            apps=['base', 'hotelres'] tasks=['detection', 'localization'] files=3
+product_catalog_failure             apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+recommendation_service_cache_failure apps=['astronomy_shop'] tasks=['detection', 'localization'] files=2
+redeploy_without_pv                 apps=['base', 'hotelres'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+revoke_auth                         apps=['base', 'hotelres'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+scale_pod                           apps=['base', 'socialnet'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+storage_user_unregistered           apps=['base', 'hotelres'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3
+wrong_bin_usage                     apps=['base', 'hotelres'] tasks=['detection', 'localization', 'analysis', 'mitigation'] files=3

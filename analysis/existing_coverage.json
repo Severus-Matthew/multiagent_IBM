@@ -1,0 +1,482 @@
+[
+  {
+    "base_folder": "ad_service_failure",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "ad_service_failure",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "ad_service_high_cpu",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "high_cpu"
+  },
+  {
+    "base_folder": "ad_service_high_cpu",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "high_cpu"
+  },
+  {
+    "base_folder": "ad_service_manual_gc",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "manual_gc"
+  },
+  {
+    "base_folder": "ad_service_manual_gc",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "manual_gc"
+  },
+  {
+    "base_folder": "assign_non_existent_node",
+    "app": "socialnet",
+    "task": "analysis",
+    "fault_family": "assign_non_existent_node"
+  },
+  {
+    "base_folder": "assign_non_existent_node",
+    "app": "socialnet",
+    "task": "detection",
+    "fault_family": "assign_non_existent_node"
+  },
+  {
+    "base_folder": "assign_non_existent_node",
+    "app": "socialnet",
+    "task": "localization",
+    "fault_family": "assign_non_existent_node"
+  },
+  {
+    "base_folder": "assign_non_existent_node",
+    "app": "socialnet",
+    "task": "mitigation",
+    "fault_family": "assign_non_existent_node"
+  },
+  {
+    "base_folder": "auth_miss_mongodb",
+    "app": "socialnet",
+    "task": "analysis",
+    "fault_family": "db_auth_missing"
+  },
+  {
+    "base_folder": "auth_miss_mongodb",
+    "app": "socialnet",
+    "task": "detection",
+    "fault_family": "db_auth_missing"
+  },
+  {
+    "base_folder": "auth_miss_mongodb",
+    "app": "socialnet",
+    "task": "localization",
+    "fault_family": "db_auth_missing"
+  },
+  {
+    "base_folder": "auth_miss_mongodb",
+    "app": "socialnet",
+    "task": "mitigation",
+    "fault_family": "db_auth_missing"
+  },
+  {
+    "base_folder": "cart_service_failure",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "cart_service_failure",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "container_kill",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "container_kill"
+  },
+  {
+    "base_folder": "container_kill",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "container_kill"
+  },
+  {
+    "base_folder": "disk_woreout",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "disk_woreout"
+  },
+  {
+    "base_folder": "disk_woreout",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "disk_woreout"
+  },
+  {
+    "base_folder": "flower_model_misconfig",
+    "app": "flower",
+    "task": "detection",
+    "fault_family": "model_misconfig"
+  },
+  {
+    "base_folder": "flower_node_stop",
+    "app": "flower",
+    "task": "detection",
+    "fault_family": "node_stop"
+  },
+  {
+    "base_folder": "image_slow_load",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "slow_load"
+  },
+  {
+    "base_folder": "image_slow_load",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "slow_load"
+  },
+  {
+    "base_folder": "k8s_target_port_misconfig",
+    "app": "socialnet",
+    "task": "analysis",
+    "fault_family": "target_port_misconfig"
+  },
+  {
+    "base_folder": "k8s_target_port_misconfig",
+    "app": "socialnet",
+    "task": "detection",
+    "fault_family": "target_port_misconfig"
+  },
+  {
+    "base_folder": "k8s_target_port_misconfig",
+    "app": "socialnet",
+    "task": "localization",
+    "fault_family": "target_port_misconfig"
+  },
+  {
+    "base_folder": "k8s_target_port_misconfig",
+    "app": "socialnet",
+    "task": "mitigation",
+    "fault_family": "target_port_misconfig"
+  },
+  {
+    "base_folder": "kafka_queue_problems",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "queue_problem"
+  },
+  {
+    "base_folder": "kafka_queue_problems",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "queue_problem"
+  },
+  {
+    "base_folder": "kafka_queue_problems",
+    "app": "astronomy_shop",
+    "task": "mitigation",
+    "fault_family": "queue_problem"
+  },
+  {
+    "base_folder": "kernel_fault",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "kernel_fault"
+  },
+  {
+    "base_folder": "kernel_fault",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "kernel_fault"
+  },
+  {
+    "base_folder": "loadgenerator_flood_homepage",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "load_flood"
+  },
+  {
+    "base_folder": "loadgenerator_flood_homepage",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "load_flood"
+  },
+  {
+    "base_folder": "misconfig_app",
+    "app": "hotelres",
+    "task": "analysis",
+    "fault_family": "app_misconfig"
+  },
+  {
+    "base_folder": "misconfig_app",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "app_misconfig"
+  },
+  {
+    "base_folder": "misconfig_app",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "app_misconfig"
+  },
+  {
+    "base_folder": "misconfig_app",
+    "app": "hotelres",
+    "task": "mitigation",
+    "fault_family": "app_misconfig"
+  },
+  {
+    "base_folder": "network_delay",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "network_delay"
+  },
+  {
+    "base_folder": "network_delay",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "network_delay"
+  },
+  {
+    "base_folder": "network_loss",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "network_loss"
+  },
+  {
+    "base_folder": "network_loss",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "network_loss"
+  },
+  {
+    "base_folder": "no_op",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "no_op"
+  },
+  {
+    "base_folder": "no_op",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "no_op"
+  },
+  {
+    "base_folder": "no_op",
+    "app": "socialnet",
+    "task": "detection",
+    "fault_family": "no_op"
+  },
+  {
+    "base_folder": "operator_misoperation",
+    "app": "tidb_cluster_operator",
+    "task": "detection",
+    "fault_family": "operator_misoperation"
+  },
+  {
+    "base_folder": "operator_misoperation",
+    "app": "tidb_cluster_operator",
+    "task": "localization",
+    "fault_family": "operator_misoperation"
+  },
+  {
+    "base_folder": "payment_service_failure",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "payment_service_failure",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "payment_service_unreachable",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "service_unreachable"
+  },
+  {
+    "base_folder": "payment_service_unreachable",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "service_unreachable"
+  },
+  {
+    "base_folder": "pod_failure",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "pod_failure"
+  },
+  {
+    "base_folder": "pod_failure",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "pod_failure"
+  },
+  {
+    "base_folder": "pod_kill",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "pod_kill"
+  },
+  {
+    "base_folder": "pod_kill",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "pod_kill"
+  },
+  {
+    "base_folder": "product_catalog_failure",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "product_catalog_failure",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "service_failure"
+  },
+  {
+    "base_folder": "recommendation_service_cache_failure",
+    "app": "astronomy_shop",
+    "task": "detection",
+    "fault_family": "cache_failure"
+  },
+  {
+    "base_folder": "recommendation_service_cache_failure",
+    "app": "astronomy_shop",
+    "task": "localization",
+    "fault_family": "cache_failure"
+  },
+  {
+    "base_folder": "redeploy_without_pv",
+    "app": "hotelres",
+    "task": "analysis",
+    "fault_family": "redeploy_without_pv"
+  },
+  {
+    "base_folder": "redeploy_without_pv",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "redeploy_without_pv"
+  },
+  {
+    "base_folder": "redeploy_without_pv",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "redeploy_without_pv"
+  },
+  {
+    "base_folder": "redeploy_without_pv",
+    "app": "hotelres",
+    "task": "mitigation",
+    "fault_family": "redeploy_without_pv"
+  },
+  {
+    "base_folder": "revoke_auth",
+    "app": "hotelres",
+    "task": "analysis",
+    "fault_family": "db_auth_revoked"
+  },
+  {
+    "base_folder": "revoke_auth",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "db_auth_revoked"
+  },
+  {
+    "base_folder": "revoke_auth",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "db_auth_revoked"
+  },
+  {
+    "base_folder": "revoke_auth",
+    "app": "hotelres",
+    "task": "mitigation",
+    "fault_family": "db_auth_revoked"
+  },
+  {
+    "base_folder": "scale_pod",
+    "app": "socialnet",
+    "task": "analysis",
+    "fault_family": "scale_pod"
+  },
+  {
+    "base_folder": "scale_pod",
+    "app": "socialnet",
+    "task": "detection",
+    "fault_family": "scale_pod"
+  },
+  {
+    "base_folder": "scale_pod",
+    "app": "socialnet",
+    "task": "localization",
+    "fault_family": "scale_pod"
+  },
+  {
+    "base_folder": "scale_pod",
+    "app": "socialnet",
+    "task": "mitigation",
+    "fault_family": "scale_pod"
+  },
+  {
+    "base_folder": "storage_user_unregistered",
+    "app": "hotelres",
+    "task": "analysis",
+    "fault_family": "storage_user_unregistered"
+  },
+  {
+    "base_folder": "storage_user_unregistered",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "storage_user_unregistered"
+  },
+  {
+    "base_folder": "storage_user_unregistered",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "storage_user_unregistered"
+  },
+  {
+    "base_folder": "storage_user_unregistered",
+    "app": "hotelres",
+    "task": "mitigation",
+    "fault_family": "storage_user_unregistered"
+  },
+  {
+    "base_folder": "wrong_bin_usage",
+    "app": "hotelres",
+    "task": "analysis",
+    "fault_family": "wrong_bin_usage"
+  },
+  {
+    "base_folder": "wrong_bin_usage",
+    "app": "hotelres",
+    "task": "detection",
+    "fault_family": "wrong_bin_usage"
+  },
+  {
+    "base_folder": "wrong_bin_usage",
+    "app": "hotelres",
+    "task": "localization",
+    "fault_family": "wrong_bin_usage"
+  },
+  {
+    "base_folder": "wrong_bin_usage",
+    "app": "hotelres",
+    "task": "mitigation",
+    "fault_family": "wrong_bin_usage"
+  }
+]

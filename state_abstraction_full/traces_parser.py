@@ -1,0 +1,319 @@
+# traces_parser.py
+
+import csv
+from pathlib import Path
+from collections import defaultdict, Counter
+
+
+def safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def percentile(values, p):
+    values = sorted(values)
+    if not values:
+        return 0.0
+    idx = int((p / 100.0) * (len(values) - 1))
+    return values[idx]
+
+
+def normalize_service_name(x):
+    if x is None:
+        return "unknown"
+    x = str(x).strip()
+    return x if x else "unknown"
+
+
+def is_error(row):
+    has_error = str(row.get("has_error", "")).lower().strip()
+    response = str(row.get("response", "")).lower().strip()
+
+    if has_error in ["true", "1", "yes", "error", "failed", "failure"]:
+        return True
+
+    if response in ["error", "failed", "failure", "timeout", "exception"]:
+        return True
+
+    try:
+        code = int(float(response))
+        return code >= 400
+    except Exception:
+        return False
+
+
+def classify_failure(error_ratio, latency_p95_us):
+    if error_ratio >= 0.9:
+        return "hard_error_path"
+    if error_ratio >= 0.3:
+        return "partial_error_path"
+    if latency_p95_us >= 500000:
+        return "high_latency_path"
+    if latency_p95_us >= 100000:
+        return "degraded_latency_path"
+    return "healthy_path"
+
+
+def edge_rank_score(error_ratio, latency_p95_us):
+    return min(
+        1.0,
+        0.8 * min(error_ratio, 1.0)
+        + 0.2 * min(latency_p95_us / 1_000_000.0, 1.0),
+    )
+
+
+def parse_trace_csv(path):
+    path = Path(path)
+
+    rows = []
+    parse_errors = []
+
+    try:
+        with open(path, newline="", errors="ignore") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+    except Exception as e:
+        return {}, set(), {
+            "file": str(path),
+            "rows_seen": 0,
+            "parse_errors": [{"file": str(path), "error": str(e)}],
+        }
+
+    spans_by_trace = defaultdict(dict)
+
+    for row in rows:
+        trace_id = str(row.get("trace_id", "")).strip()
+        span_id = str(row.get("span_id", "")).strip()
+
+        if not trace_id or not span_id:
+            continue
+
+        spans_by_trace[trace_id][span_id] = row
+
+    edge_stats = defaultdict(lambda: {
+        "request_count": 0,
+        "error_count": 0,
+        "durations_us": [],
+        "operations": Counter(),
+        "responses": Counter(),
+        "trace_ids": set(),
+        "example_error_spans": [],
+    })
+
+    service_stats = defaultdict(lambda: {
+        "span_count": 0,
+        "error_span_count": 0,
+        "durations_us": [],
+        "operations": Counter(),
+        "responses": Counter(),
+    })
+
+    observed_edges = set()
+
+    for trace_id, spans in spans_by_trace.items():
+        for span_id, span in spans.items():
+            child_service = normalize_service_name(span.get("service_name"))
+            parent_span_id = str(span.get("parent_span", "")).strip()
+            operation = str(span.get("operation_name", "")).strip()
+            response = str(span.get("response", "")).strip()
+
+            duration_us = safe_float(span.get("duration"), 0.0)
+
+            span_error = is_error(span)
+
+            service_stats[child_service]["span_count"] += 1
+            service_stats[child_service]["durations_us"].append(duration_us)
+            service_stats[child_service]["operations"][operation] += 1
+            service_stats[child_service]["responses"][response] += 1
+
+            if span_error:
+                service_stats[child_service]["error_span_count"] += 1
+
+            if parent_span_id and parent_span_id in spans:
+                parent = spans[parent_span_id]
+                parent_service = normalize_service_name(parent.get("service_name"))
+            else:
+                parent_service = "ROOT"
+
+            edge = f"{parent_service}->{child_service}"
+            observed_edges.add((parent_service, child_service))
+
+            edge_stats[edge]["request_count"] += 1
+            edge_stats[edge]["durations_us"].append(duration_us)
+            edge_stats[edge]["operations"][operation] += 1
+            edge_stats[edge]["responses"][response] += 1
+            edge_stats[edge]["trace_ids"].add(trace_id)
+
+            if span_error:
+                edge_stats[edge]["error_count"] += 1
+                if len(edge_stats[edge]["example_error_spans"]) < 5:
+                    edge_stats[edge]["example_error_spans"].append({
+                        "trace_id": trace_id,
+                        "span_id": span_id,
+                        "service": child_service,
+                        "operation": operation,
+                        "response": response,
+                        "duration_us": duration_us,
+                    })
+
+    final_edges = {}
+
+    for edge, stats in edge_stats.items():
+        req = stats["request_count"]
+        err = stats["error_count"]
+        durations = stats["durations_us"]
+
+        error_ratio = err / req if req else 0.0
+        latency_mean_us = sum(durations) / len(durations) if durations else 0.0
+        latency_p50_us = percentile(durations, 50)
+        latency_p95_us = percentile(durations, 95)
+        latency_p99_us = percentile(durations, 99)
+        latency_max_us = max(durations) if durations else 0.0
+
+        final_edges[edge] = {
+            "request_count": req,
+            "error_count": err,
+            "error_ratio": error_ratio,
+
+            "latency_mean_us": latency_mean_us,
+            "latency_p50_us": latency_p50_us,
+            "latency_p95_us": latency_p95_us,
+            "latency_p99_us": latency_p99_us,
+            "latency_max_us": latency_max_us,
+
+            "failure_type": classify_failure(error_ratio, latency_p95_us),
+            "is_suspicious": error_ratio > 0.2 or latency_p95_us > 100000,
+            "edge_rank_score": edge_rank_score(error_ratio, latency_p95_us),
+
+            "top_operations": dict(stats["operations"].most_common(10)),
+            "responses": dict(stats["responses"].most_common(10)),
+            "num_traces": len(stats["trace_ids"]),
+            "example_error_spans": stats["example_error_spans"],
+        }
+
+    final_services = {}
+
+    for svc, stats in service_stats.items():
+        count = stats["span_count"]
+        err = stats["error_span_count"]
+        durations = stats["durations_us"]
+
+        final_services[svc] = {
+            "span_count": count,
+            "error_span_count": err,
+            "error_ratio": err / count if count else 0.0,
+            "latency_mean_us": sum(durations) / len(durations) if durations else 0.0,
+            "latency_p95_us": percentile(durations, 95),
+            "latency_max_us": max(durations) if durations else 0.0,
+            "top_operations": dict(stats["operations"].most_common(10)),
+            "responses": dict(stats["responses"].most_common(10)),
+        }
+
+    meta = {
+        "file": str(path),
+        "rows_seen": len(rows),
+        "num_traces": len(spans_by_trace),
+        "num_edges": len(final_edges),
+        "num_services": len(final_services),
+        "parse_errors": parse_errors,
+        "service_summary": final_services,
+    }
+
+    return final_edges, observed_edges, meta
+
+
+def merge_edges(all_edge_dicts):
+    merged_raw = defaultdict(lambda: {
+        "request_count": 0,
+        "error_count": 0,
+        "durations_us": [],
+        "operations": Counter(),
+        "responses": Counter(),
+        "example_error_spans": [],
+    })
+
+    for edge_dict in all_edge_dicts:
+        for edge, feats in edge_dict.items():
+            merged_raw[edge]["request_count"] += feats.get("request_count", 0)
+            merged_raw[edge]["error_count"] += feats.get("error_count", 0)
+
+            for key in [
+                "latency_mean_us",
+                "latency_p50_us",
+                "latency_p95_us",
+                "latency_p99_us",
+                "latency_max_us",
+            ]:
+                val = feats.get(key, 0.0)
+                if val:
+                    merged_raw[edge]["durations_us"].append(val)
+
+            merged_raw[edge]["operations"].update(feats.get("top_operations", {}))
+            merged_raw[edge]["responses"].update(feats.get("responses", {}))
+            merged_raw[edge]["example_error_spans"].extend(
+                feats.get("example_error_spans", [])[:5]
+            )
+
+    merged = {}
+
+    for edge, stats in merged_raw.items():
+        req = stats["request_count"]
+        err = stats["error_count"]
+        durations = stats["durations_us"]
+
+        error_ratio = err / req if req else 0.0
+        latency_p95_us = percentile(durations, 95)
+
+        merged[edge] = {
+            "request_count": req,
+            "error_count": err,
+            "error_ratio": error_ratio,
+
+            "latency_mean_us": sum(durations) / len(durations) if durations else 0.0,
+            "latency_p50_us": percentile(durations, 50),
+            "latency_p95_us": latency_p95_us,
+            "latency_p99_us": percentile(durations, 99),
+            "latency_max_us": max(durations) if durations else 0.0,
+
+            "failure_type": classify_failure(error_ratio, latency_p95_us),
+            "is_suspicious": error_ratio > 0.2 or latency_p95_us > 100000,
+            "edge_rank_score": edge_rank_score(error_ratio, latency_p95_us),
+
+            "top_operations": dict(stats["operations"].most_common(10)),
+            "responses": dict(stats["responses"].most_common(10)),
+            "example_error_spans": stats["example_error_spans"][:5],
+        }
+
+    return merged
+
+
+def parse_traces(run_dir):
+    run_dir = Path(run_dir)
+
+    trace_files = sorted((run_dir / "builtin_api_outputs" / "traces").glob("*.csv"))
+
+    all_edge_dicts = []
+    all_observed_edges = set()
+    file_metas = []
+
+    for path in trace_files:
+        edges, observed_edges, meta = parse_trace_csv(path)
+        all_edge_dicts.append(edges)
+        all_observed_edges |= observed_edges
+        file_metas.append(meta)
+
+    merged_edges = merge_edges(all_edge_dicts)
+
+    meta = {
+        "files_seen": [str(x) for x in trace_files],
+        "num_files": len(trace_files),
+        "num_edges": len(merged_edges),
+        "num_observed_edges": len(all_observed_edges),
+        "file_metas": file_metas,
+        "trace_signal_present": any(m.get("rows_seen", 0) > 0 for m in file_metas),
+    }
+
+    return merged_edges, sorted(all_observed_edges), meta

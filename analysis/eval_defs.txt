@@ -1,0 +1,87 @@
+aiopslab/orchestrator/problems/no_op/no_op.py:81:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/payment_service_failure/payment_service_failure.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/payment_service_failure/payment_service_failure.py:67:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/k8s_target_port_misconfig/target_port.py:66:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/k8s_target_port_misconfig/target_port.py:92:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/k8s_target_port_misconfig/target_port.py:136:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/k8s_target_port_misconfig/target_port.py:169:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/kafka_queue_problems/kafka_queue_problems.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/kafka_queue_problems/kafka_queue_problems.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/kafka_queue_problems/kafka_queue_problems.py:106:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/loadgenerator_flood_homepage/loadgenerator_flood_homepage.py:44:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/loadgenerator_flood_homepage/loadgenerator_flood_homepage.py:70:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/network_loss/network_loss.py:63:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/network_loss/network_loss.py:89:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/revoke_auth/revoke_auth.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/revoke_auth/revoke_auth.py:89:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/revoke_auth/revoke_auth.py:131:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/revoke_auth/revoke_auth.py:164:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/generated/generic_problem.py:104:    def eval(self, soln, trace, duration):
+aiopslab/orchestrator/problems/scale_pod/scale_pod_social_net.py:72:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/scale_pod/scale_pod_social_net.py:96:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/scale_pod/scale_pod_social_net.py:137:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/scale_pod/scale_pod_social_net.py:176:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/ad_service_high_cpu/ad_service_high_cpu.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/ad_service_high_cpu/ad_service_high_cpu.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/ad_service_manual_gc/ad_service_manual_gc.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/ad_service_manual_gc/ad_service_manual_gc.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/flower_model_misconfig/model_misconfig.py:81:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/recommendation_service_cache_failure/recommendation_service_cache_failure.py:45:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/recommendation_service_cache_failure/recommendation_service_cache_failure.py:71:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/product_catalog_failure/product_catalog_failure.py:43:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/product_catalog_failure/product_catalog_failure.py:69:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/storage_user_unregistered/storage_user_unregistered.py:68:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/storage_user_unregistered/storage_user_unregistered.py:94:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/storage_user_unregistered/storage_user_unregistered.py:137:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/storage_user_unregistered/storage_user_unregistered.py:172:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/pod_failure/pod_failure.py:64:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/pod_failure/pod_failure.py:88:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/flower_node_stop/node_stop.py:54:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/wrong_bin_usage/wrong_bin_usage.py:64:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/wrong_bin_usage/wrong_bin_usage.py:88:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/wrong_bin_usage/wrong_bin_usage.py:129:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/wrong_bin_usage/wrong_bin_usage.py:162:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/assign_non_existent_node/assign_non_existent_node_social_net.py:71:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/assign_non_existent_node/assign_non_existent_node_social_net.py:97:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/assign_non_existent_node/assign_non_existent_node_social_net.py:140:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/assign_non_existent_node/assign_non_existent_node_social_net.py:181:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/auth_miss_mongodb/auth_miss_mongodb.py:66:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/auth_miss_mongodb/auth_miss_mongodb.py:90:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/auth_miss_mongodb/auth_miss_mongodb.py:131:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/auth_miss_mongodb/auth_miss_mongodb.py:175:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/pod_kill/pod_kill.py:57:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/pod_kill/pod_kill.py:81:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/misconfig_app/misconfig_app_hotel_res.py:66:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/misconfig_app/misconfig_app_hotel_res.py:90:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/misconfig_app/misconfig_app_hotel_res.py:131:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/misconfig_app/misconfig_app_hotel_res.py:164:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/image_slow_load/image_slow_load.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/image_slow_load/image_slow_load.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/container_kill/container_kill.py:68:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/container_kill/container_kill.py:92:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/disk_woreout/disk_woreout.py:55:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/disk_woreout/disk_woreout.py:80:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/redeploy_without_pv/redeploy_without_pv.py:63:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/redeploy_without_pv/redeploy_without_pv.py:89:#     def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/redeploy_without_pv/redeploy_without_pv.py:130:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/redeploy_without_pv/redeploy_without_pv.py:163:    def eval(self, soln: Any, trace: list[SessionItem], duration: float) -> dict:
+aiopslab/orchestrator/problems/network_delay/network_delay.py:55:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/network_delay/network_delay.py:79:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/overload_replicas.py:48:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/overload_replicas.py:84:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/wrong_update_strategy.py:43:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/wrong_update_strategy.py:79:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/non_existent_storage.py:43:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/non_existent_storage.py:79:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/security_context_fault.py:42:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/security_context_fault.py:78:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/invalid_affinity_toleration.py:43:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/operator_misoperation/invalid_affinity_toleration.py:79:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/kernel_fault/kernel_fault.py:63:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/kernel_fault/kernel_fault.py:87:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/payment_service_unreachable/payment_service_unreachable.py:43:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/payment_service_unreachable/payment_service_unreachable.py:69:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/cart_service_failure/cart_service_failure.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/cart_service_failure/cart_service_failure.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/ad_service_failure/ad_service_failure.py:41:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
+aiopslab/orchestrator/problems/ad_service_failure/ad_service_failure.py:65:    def eval(self, soln: Any, trace: list[SessionItem], duration: float):
