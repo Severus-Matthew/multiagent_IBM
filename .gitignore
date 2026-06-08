@@ -27,3 +27,14 @@ env/
 
 # Large generated files
 tree.txt
+
+# Root-level analysis txt files (kept in analysis/ instead)
+eval_defs.txt
+existing_coverage.json
+existing_coverage_tuples.txt
+generated_pool_count.txt
+inject_fault_defs.txt
+problem_families.txt
+problem_family_summary.txt
+problem_files.txt
+start_workload_defs.txt
