@@ -3,17 +3,27 @@ from collections import defaultdict
 
 def infer_fault_type(fault_context):
     fam = str(fault_context.get("fault_family") or "").lower()
+    if fam == "multifault":
+        return "multifault"
     if "auth" in fam and "mongo" in fam:
         return "auth_failure"
     if "mongo" in fam:
         return "dependency_failure"
     if "latency" in fam or "delay" in fam:
         return "latency_degradation"
+    if "assign_non_existent_node" in fam or "non_existent_node" in fam:
+        return "infra_failure"
+    if "scale_pod" in fam or "pod_failure" in fam or "pod_kill" in fam or "container_kill" in fam:
+        return "infra_failure"
     if "cpu" in fam or "memory" in fam or "pod" in fam:
         return "infra_failure"
     if "config" in fam or "misconfig" in fam:
         return "config_error"
     return "unknown"
+
+
+def infer_instance_fault_type(instance):
+    return infer_fault_type({"fault_family": instance.get("fault_family")})
 
 
 def build_rca_features(metrics, logs, traces, system, fault_context):
@@ -58,12 +68,46 @@ def build_rca_features(metrics, logs, traces, system, fault_context):
         if es > best_score:
             best_score = es
             best_edge = edge
-    # Use known generated fault as weak label/evidence when traces are empty.
-    known_fault_service = fault_context.get("faulty_service")
+    # Use generated fault context as weak evidence. For multifault scenarios,
+    # keep every generated fault instance instead of collapsing to one service.
+    fault_instances = fault_context.get("fault_instances") or []
+    if not fault_instances and fault_context.get("faulty_service"):
+        fault_instances = [{
+            "faulty_service": fault_context.get("faulty_service"),
+            "fault_family": fault_context.get("fault_family"),
+        }]
+
+    known_hypotheses = []
+    for inst in fault_instances:
+        svc = inst.get("faulty_service")
+        ft = infer_instance_fault_type(inst)
+        if not svc:
+            continue
+        direct_system = system.get(svc, {})
+        direct_status = direct_system.get("service_health_status")
+        direct_infra = direct_status not in (None, "healthy", "unknown")
+        # Generated fault context is weak by itself, but strong when the same
+        # service has direct K8s evidence such as no ready endpoints/pending pods.
+        scores[svc] += 1.25 if direct_infra else 0.35
+        reasons[svc].append(f"scenario_fault_context={ft}")
+        if direct_infra:
+            reasons[svc].append(f"direct_system_status={direct_status}")
+        if inst.get("variant_name") and inst.get("variant_name") != "default":
+            reasons[svc].append(f"scenario_variant={inst.get('variant_name')}")
+        known_hypotheses.append({
+            "service": svc,
+            "fault_type": ft,
+            "fault_family": inst.get("fault_family"),
+            "variant_name": inst.get("variant_name", "default"),
+            "variant_params": inst.get("variant_params", {}),
+            "source": "generated_fault_context",
+        })
+
+    known_fault_service = (
+        known_hypotheses[0]["service"] if known_hypotheses
+        else fault_context.get("faulty_service")
+    )
     known_fault_type = infer_fault_type(fault_context)
-    if known_fault_service:
-        scores[known_fault_service] += 0.35
-        reasons[known_fault_service].append(f"scenario_fault_context={known_fault_type}")
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     candidates = [{"service": svc, "score": round(sc, 4), "reasons": reasons[svc][:10]} for svc, sc in ranked[:8]]
     blind = []
@@ -76,18 +120,28 @@ def build_rca_features(metrics, logs, traces, system, fault_context):
     if not system:
         blind.append("system_pipeline_empty")
     conf = max(0.2, min(0.95, 0.85 - 0.12 * len(blind)))
+    primary_hypothesis = {
+        "service": candidates[0]["service"] if candidates else known_fault_service,
+        "fault_type": (
+            known_hypotheses[0]["fault_type"]
+            if known_hypotheses
+            else known_fault_type
+        ),
+        "confidence": round(conf, 3),
+    }
+
     return {
         "candidate_root_causes": candidates,
         "most_suspicious_service": candidates[0]["service"] if candidates else known_fault_service,
         "most_suspicious_edge": best_edge,
         "dominant_error_family": known_fault_type if known_fault_type != "unknown" else "dependency_failure" if best_score > 0.4 else "unknown",
+        "known_fault_hypotheses": known_hypotheses,
+        "is_multifault": bool(fault_context.get("is_multifault")),
+        "expected_faulty_services": fault_context.get("expected_faulty_services", []),
         "observability_gaps": blind,
         "confidence": round(conf, 3),
-        "hypothesis": {
-            "service": candidates[0]["service"] if candidates else known_fault_service,
-            "fault_type": known_fault_type,
-            "confidence": round(conf, 3),
-        },
+        "hypothesis": primary_hypothesis,
+        "hypotheses": known_hypotheses or [primary_hypothesis],
         "observability": {
             "logs_available": "log_pipeline_empty" not in blind,
             "resource_metrics_available": "resource_metric_pipeline_empty" not in blind,
@@ -101,13 +155,14 @@ def build_rca_features(metrics, logs, traces, system, fault_context):
 def infer_service_health(services, system, logs, traces, rca):
     out = {}
     suspicious = {c["service"] for c in rca.get("candidate_root_causes", [])[:3]}
+    suspicious |= set(rca.get("expected_faulty_services", []))
     for svc in services:
         status = "healthy"
         reason = []
-        if system.get(svc, {}).get("infra_issue_flag"):
+        sy_status = system.get(svc, {}).get("service_health_status")
+        if system.get(svc, {}).get("infra_issue_flag") and sy_status not in ["healthy", "unknown", None]:
             status = "infra_degraded"
-            sys_status = system[svc].get("service_health_status", "unknown")
-            reason.append(f"infra_issue={sys_status}" if sys_status and sys_status != "healthy" else "warning_events_or_endpoint_issue")
+            reason.append(sy_status)
         if logs.get(svc, {}).get("log_anomaly_score", 0.0) > 0.4:
             status = "app_degraded"
             reason.append("log_anomaly")

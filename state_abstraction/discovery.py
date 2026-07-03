@@ -1,6 +1,8 @@
 from pathlib import Path
 from utils import read_json, normalize_service_name
 
+from pathlib import Path
+
 def discover_run_files(run_dir):
     run_dir = Path(run_dir)
 
@@ -60,9 +62,12 @@ def discover_services(run_dir):
             if name:
                 services.add(name)
 
-    pod_logs_dir = run_dir / "direct_k8s_outputs" / "pod_logs"
-    if pod_logs_dir.exists():
-        for f in list(pod_logs_dir.glob("*.log")) + list(pod_logs_dir.glob("*.stderr")):
-            services.add(normalize_service_name(f.name))
+    # Service discovery should use Kubernetes objects and pod log filenames.
+    # Built-in get_logs files are named step_XXX_get_logs.txt; treating those
+    # filenames as service names pollutes the state with fake services.
+    for folder in [run_dir / "direct_k8s_outputs" / "pod_logs"]:
+        if folder.exists():
+            for f in list(folder.glob("*.log")) + list(folder.glob("*.stderr")) + list(folder.glob("*.txt")):
+                services.add(normalize_service_name(f.name))
 
     return sorted(x for x in services if x and x != "unknown")

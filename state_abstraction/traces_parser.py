@@ -1,9 +1,31 @@
 # traces_parser.py
 
 import csv
+import re
 from pathlib import Path
 from collections import defaultdict, Counter
-from utils import safe_float, percentile, normalize_service_name
+
+
+def safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def percentile(values, p):
+    values = sorted(values)
+    if not values:
+        return 0.0
+    idx = int((p / 100.0) * (len(values) - 1))
+    return values[idx]
+
+
+def normalize_service_name(x):
+    if x is None:
+        return "unknown"
+    x = str(x).strip()
+    return x if x else "unknown"
 
 
 def is_error(row):
@@ -43,6 +65,70 @@ def edge_rank_score(error_ratio, latency_p95_us):
     )
 
 
+def _first_present(row, *keys):
+    for key in keys:
+        if key in row and row.get(key) not in [None, ""]:
+            return row.get(key)
+    lowered = {str(k).lower(): v for k, v in row.items()}
+    for key in keys:
+        val = lowered.get(str(key).lower())
+        if val not in [None, ""]:
+            return val
+    return ""
+
+
+def normalize_trace_row(row):
+    normalized = dict(row)
+    normalized["trace_id"] = _first_present(row, "trace_id", "traceID", "traceId", "traceid")
+    normalized["span_id"] = _first_present(row, "span_id", "spanID", "spanId", "spanid")
+    normalized["parent_span"] = _first_present(
+        row,
+        "parent_span",
+        "parent_span_id",
+        "parentSpanID",
+        "parentSpanId",
+        "parentspanid",
+    )
+    normalized["service_name"] = _first_present(
+        row,
+        "service_name",
+        "service",
+        "process.serviceName",
+        "process_servicename",
+        "process_service_name",
+    )
+    normalized["operation_name"] = _first_present(
+        row,
+        "operation_name",
+        "operation",
+        "operationName",
+        "name",
+    )
+    normalized["duration"] = _first_present(
+        row,
+        "duration",
+        "duration_us",
+        "durationMicros",
+        "duration_micros",
+        "duration_microseconds",
+    )
+    normalized["response"] = _first_present(
+        row,
+        "response",
+        "status_code",
+        "http.status_code",
+        "statusCode",
+    )
+    normalized["has_error"] = _first_present(
+        row,
+        "has_error",
+        "error",
+        "error_flag",
+        "otel.status_code",
+    )
+    return normalized
+
+
 def parse_trace_csv(path):
     path = Path(path)
 
@@ -53,7 +139,7 @@ def parse_trace_csv(path):
         with open(path, newline="", errors="ignore") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                rows.append(row)
+                rows.append(normalize_trace_row(row))
     except Exception as e:
         return {}, set(), {
             "file": str(path),
@@ -204,6 +290,83 @@ def parse_trace_csv(path):
     return final_edges, observed_edges, meta
 
 
+def _looks_like_trace_csv(path: Path) -> bool:
+    name = path.name.lower()
+    if "trace" in name or "span" in name or "jaeger" in name:
+        return True
+
+    try:
+        with open(path, newline="", errors="ignore") as f:
+            reader = csv.reader(f)
+            header = next(reader, [])
+    except Exception:
+        return False
+
+    cols = {str(col).strip().lower() for col in header}
+    strong = {"trace_id", "span_id"}
+    service_cols = {"service_name", "service", "process.serviceName".lower()}
+    return strong.issubset(cols) and bool(cols & service_cols)
+
+
+def _export_paths_from_text_outputs(run_dir: Path):
+    """
+    AIOpsLab can export traces outside the scenario folder and leave a text
+    pointer in builtin_api_outputs/traces. Follow that pointer when the file is
+    still available locally.
+    """
+    trace_text_dir = run_dir / "builtin_api_outputs" / "traces"
+    if not trace_text_dir.exists():
+        return []
+
+    paths = []
+    for text_path in trace_text_dir.rglob("*.txt"):
+        try:
+            text = text_path.read_text(errors="ignore")
+        except Exception:
+            continue
+
+        for line in text.splitlines():
+            match = re.search(r"exported\s+(?:traces\s+)?(?:to\s+file|to):\s*(.+)$", line, re.I)
+            if not match:
+                continue
+            candidate = Path(match.group(1).strip().strip("\"'"))
+            if candidate.exists():
+                paths.append(candidate)
+
+    return paths
+
+
+def discover_trace_csv_files(run_dir):
+    run_dir = Path(run_dir)
+
+    candidate_roots = [
+        run_dir / "builtin_api_outputs" / "traces",
+        run_dir / "traces",
+        run_dir / "trace_output",
+        run_dir / "traces_output",
+    ]
+    candidate_roots.extend(_export_paths_from_text_outputs(run_dir))
+
+    trace_files = set()
+
+    for root in candidate_roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            if root.suffix.lower() == ".csv" and _looks_like_trace_csv(root):
+                trace_files.add(root)
+            continue
+        for path in root.rglob("*.csv"):
+            if _looks_like_trace_csv(path):
+                trace_files.add(path)
+
+    for path in run_dir.rglob("*.csv"):
+        if _looks_like_trace_csv(path):
+            trace_files.add(path)
+
+    return sorted(trace_files)
+
+
 def merge_edges(all_edge_dicts):
     merged_raw = defaultdict(lambda: {
         "request_count": 0,
@@ -272,7 +435,7 @@ def merge_edges(all_edge_dicts):
 def parse_traces(run_dir):
     run_dir = Path(run_dir)
 
-    trace_files = sorted((run_dir / "builtin_api_outputs" / "traces").glob("*.csv"))
+    trace_files = discover_trace_csv_files(run_dir)
 
     all_edge_dicts = []
     all_observed_edges = set()

@@ -4,7 +4,6 @@ import json
 import re
 from pathlib import Path
 from collections import defaultdict, Counter
-from utils import normalize_service_name
 
 
 def safe_read_text(path: Path) -> str:
@@ -19,6 +18,15 @@ def safe_read_json(path: Path):
         return json.loads(path.read_text(errors="ignore"))
     except Exception:
         return None
+
+
+def normalize_service_name(name: str) -> str:
+    name = str(name or "").strip()
+    name = Path(name).name
+    name = re.sub(r"\.(json|txt|log)$", "", name)
+    name = re.sub(r"-[a-f0-9]{8,10}-[a-z0-9]{4,6}$", "", name)
+    name = re.sub(r"-[a-f0-9]{8,10}$", "", name)
+    return name or "unknown"
 
 
 def get_items(obj):

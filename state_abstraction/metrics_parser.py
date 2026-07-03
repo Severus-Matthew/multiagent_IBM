@@ -4,7 +4,13 @@ import csv
 import re
 from pathlib import Path
 from collections import defaultdict
-from utils import safe_float
+
+
+def safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
 
 
 def service_from_cmdb_id(cmdb_id: str) -> str:
@@ -73,6 +79,18 @@ def metric_group(kpi_name: str) -> str:
     return "other"
 
 
+def _first_present(row, *keys):
+    for key in keys:
+        if key in row and row.get(key) not in [None, ""]:
+            return row.get(key)
+    lowered = {str(k).lower(): v for k, v in row.items()}
+    for key in keys:
+        val = lowered.get(str(key).lower())
+        if val not in [None, ""]:
+            return val
+    return None
+
+
 def parse_one_metric_csv(path: Path):
     """
     Expected CSV schema:
@@ -85,10 +103,10 @@ def parse_one_metric_csv(path: Path):
         reader = csv.DictReader(f)
 
         for row in reader:
-            timestamp = row.get("timestamp")
-            cmdb_id = row.get("cmdb_id")
-            kpi_name = row.get("kpi_name")
-            value = row.get("value")
+            timestamp = _first_present(row, "timestamp", "time", "ts")
+            cmdb_id = _first_present(row, "cmdb_id", "pod", "pod_name", "instance", "container")
+            kpi_name = _first_present(row, "kpi_name", "metric", "metric_name", "__name__")
+            value = _first_present(row, "value", "val")
 
             if cmdb_id is None or kpi_name is None or value is None:
                 continue
@@ -102,6 +120,89 @@ def parse_one_metric_csv(path: Path):
             })
 
     return rows
+
+
+def _looks_like_metric_csv(path: Path) -> bool:
+    name = path.name.lower()
+    if name.startswith("kpi_") and name.endswith(".csv"):
+        return True
+
+    try:
+        with open(path, newline="", errors="ignore") as f:
+            reader = csv.reader(f)
+            header = next(reader, [])
+    except Exception:
+        return False
+
+    cols = {str(col).strip().lower() for col in header}
+    has_entity = bool(cols & {"cmdb_id", "pod", "pod_name", "instance", "container"})
+    has_metric = bool(cols & {"kpi_name", "metric", "metric_name", "__name__"})
+    has_value = bool(cols & {"value", "val"})
+    return has_entity and has_metric and has_value
+
+
+def _export_paths_from_text_outputs(run_dir: Path):
+    """
+    AIOpsLab sometimes writes a text pointer such as:
+      Metrics data exported to directory: /path/to/metrics_output/metric_...
+
+    If that exported path is still present on the machine, include it in the
+    parser search space. Missing paths are ignored because the scenario may
+    have been moved without its external export directory.
+    """
+    metric_text_dir = run_dir / "builtin_api_outputs" / "metrics"
+    if not metric_text_dir.exists():
+        return []
+
+    paths = []
+    for text_path in metric_text_dir.rglob("*.txt"):
+        try:
+            text = text_path.read_text(errors="ignore")
+        except Exception:
+            continue
+
+        for line in text.splitlines():
+            match = re.search(r"exported\s+(?:metrics\s+)?(?:to\s+directory|to):\s*(.+)$", line, re.I)
+            if not match:
+                continue
+            candidate = Path(match.group(1).strip().strip("\"'"))
+            if candidate.exists():
+                paths.append(candidate)
+
+    return paths
+
+
+def discover_metric_csv_files(run_dir):
+    run_dir = Path(run_dir)
+
+    candidate_roots = [
+        run_dir / "builtin_api_outputs" / "metrics",
+        run_dir / "metrics",
+        run_dir / "metric_output",
+        run_dir / "metrics_output",
+    ]
+    candidate_roots.extend(_export_paths_from_text_outputs(run_dir))
+
+    metric_files = set()
+
+    for root in candidate_roots:
+        if not root.exists():
+            continue
+        if root.is_file():
+            if root.suffix.lower() == ".csv" and _looks_like_metric_csv(root):
+                metric_files.add(root)
+            continue
+        for path in root.rglob("*.csv"):
+            if _looks_like_metric_csv(path):
+                metric_files.add(path)
+
+    # Final fallback for copied scenarios where the export folder was placed
+    # somewhere unexpected under the run directory.
+    for path in run_dir.rglob("*.csv"):
+        if _looks_like_metric_csv(path):
+            metric_files.add(path)
+
+    return sorted(metric_files)
 
 
 def parse_metrics_snapshot(metric_csv_files):
@@ -235,6 +336,6 @@ def parse_metrics_snapshot(metric_csv_files):
 def parse_metrics_from_run_dir(run_dir):
     run_dir = Path(run_dir)
 
-    metric_files = sorted((run_dir /"builtin_api_outputs" / "metrics"/"metric"/"container").rglob("kpi_*.csv"))
+    metric_files = discover_metric_csv_files(run_dir)
 
     return parse_metrics_snapshot(metric_files)

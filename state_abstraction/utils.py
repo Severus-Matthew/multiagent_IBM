@@ -122,31 +122,17 @@ def normalize_service_name(name):
     if not name:
         return "unknown"
     name = str(name).strip()
-    if not name:
-        return "unknown"
-
-    # Get basename (handles both path separators)
-    name = Path(name).name
-
-    # kind-control-plane.compose-post-service-9f655fc76-cvsfn → compose-post-service-9f655fc76-cvsfn
-    if "." in name and name.startswith("kind-"):
-        name = name.split(".", 1)[1]
-
-    # Strip common file extensions
     for suffix in [".log", ".stderr", ".txt", ".json", ".csv"]:
         if name.endswith(suffix):
             name = name[: -len(suffix)]
-
-    # pod/<pod-name>/<container> → pod-name
+    if "/" in name:
+        name = name.split("/")[-1]
     if name.startswith("pod/"):
         parts = name.split("/")
         if len(parts) >= 2:
             name = parts[1]
-
-    # Strip k8s replica suffix: -9f655fc76-cvsfn  or  -abc12def-xyz12
     name = REPLICA_SUFFIX_RE.sub("", name)
-
-    return name or "unknown"
+    return name
 
 
 def service_from_filename(path):
