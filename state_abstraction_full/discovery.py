@@ -1,6 +1,7 @@
 from pathlib import Path
 from utils import read_json, normalize_service_name
 
+
 def discover_run_files(run_dir):
     run_dir = Path(run_dir)
 
@@ -14,7 +15,7 @@ def discover_run_files(run_dir):
         "services_json": run_dir / "direct_k8s_outputs" / "services.json",
         "deployments_json": run_dir / "direct_k8s_outputs" / "deployments.json",
 
-        "metrics_csv_files": sorted((run_dir /"builtin_api_outputs" / "metrics"/"metric"/"container").rglob("kpi_*.csv")),
+        "metrics_csv_files": sorted((run_dir / "builtin_api_outputs" / "metrics" / "metric" / "container").rglob("kpi_*.csv")),
         "trace_csv_files": sorted((run_dir / "builtin_api_outputs" / "traces").glob("*.csv")),
 
         "topology_json": run_dir / "topology" / "topology.json",
@@ -39,7 +40,7 @@ def discover_services(run_dir):
                 if name:
                     services.add(name)
 
-    topo = read_json(run_dir/"topology" / "topology.json") or read_json(paths["topology"] / "graph.json") or read_json(run_dir / "topology.json")
+    topo = read_json(paths["topology_json"]) or read_json(paths["graph_json"]) or read_json(run_dir / "topology.json")
     if isinstance(topo, dict):
         for item in topo.get("services", []):
             if isinstance(item, str):
@@ -60,9 +61,12 @@ def discover_services(run_dir):
             if name:
                 services.add(name)
 
+    # Service discovery should use Kubernetes objects and pod log filenames.
+    # Built-in get_logs files are named step_XXX_get_logs.txt; treating those
+    # filenames as service names pollutes the state with fake services.
     pod_logs_dir = run_dir / "direct_k8s_outputs" / "pod_logs"
     if pod_logs_dir.exists():
-        for f in list(pod_logs_dir.glob("*.log")) + list(pod_logs_dir.glob("*.stderr")):
+        for f in list(pod_logs_dir.glob("*.log")) + list(pod_logs_dir.glob("*.stderr")) + list(pod_logs_dir.glob("*.txt")):
             services.add(normalize_service_name(f.name))
 
     return sorted(x for x in services if x and x != "unknown")
