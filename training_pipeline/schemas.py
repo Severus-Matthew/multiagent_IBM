@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any
+
+FAULT_TYPE_ALIASES = {
+    "assign_non_existent_node": "infra_failure",
+    "assign_to_non_existent_node": "infra_failure",
+    "pod_failure": "infra_failure",
+    "pod_kill": "infra_failure",
+    "container_kill": "infra_failure",
+    "scale_pod": "infra_failure",
+    "cpu": "resource_exhaustion",
+    "memory": "resource_exhaustion",
+    "oom": "resource_exhaustion",
+    "auth": "auth_failure",
+    "revoke_auth": "auth_failure",
+    "auth_miss_mongodb": "auth_failure",
+    "mongodb": "dependency_failure",
+    "mongo": "dependency_failure",
+    "network_delay": "latency_degradation",
+    "latency": "latency_degradation",
+    "delay": "latency_degradation",
+    "network_loss": "network_failure",
+    "k8s_target_port": "config_error",
+    "misconfig": "config_error",
+    "config": "config_error",
+}
+
+CANONICAL_FAULT_TYPES = {
+    "auth_failure", "dependency_failure", "infra_failure", "latency_degradation",
+    "config_error", "pod_failure", "network_failure", "resource_exhaustion",
+    "multifault", "unknown",
+}
+
+@dataclass(frozen=True)
+class FaultLabel:
+    service: str
+    fault_type: str
+    fault_family: str = ""
+    variant_name: str = "default"
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def canonical_key(self) -> str:
+        return f"{self.service}::{normalize_fault_type(self.fault_type or self.fault_family)}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+@dataclass
+class RCAAttempt:
+    iteration: int
+    instruction: str
+    prediction_text: str
+    predicted_faults: list[FaultLabel]
+    reward: float
+    reward_components: dict[str, Any]
+    success: bool
+    feedback: str
+    token_counts: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        out = asdict(self)
+        out["predicted_faults"] = [f.to_dict() for f in self.predicted_faults]
+        return out
+
+@dataclass
+class ActionAttempt:
+    iteration: int
+    instruction_prompt: str
+    commands: list[str]
+    reward: float
+    reward_components: dict[str, Any]
+    success: bool
+    feedback: str
+    execution_result: dict[str, Any] = field(default_factory=dict)
+    verifier_result: dict[str, Any] = field(default_factory=dict)
+    token_counts: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+def normalize_fault_type(text: str | None) -> str:
+    value = str(text or "").strip().lower()
+    if not value:
+        return "unknown"
+    if value in CANONICAL_FAULT_TYPES:
+        return value
+    for pattern, canonical in FAULT_TYPE_ALIASES.items():
+        if pattern in value:
+            return canonical
+    return value if value in CANONICAL_FAULT_TYPES else "unknown"
+
+def parse_fault_lines(text: str) -> list[FaultLabel]:
+    """Parse strict RCA output lines: service::fault_type."""
+    labels: list[FaultLabel] = []
+    seen: set[str] = set()
+    for raw in str(text or "").splitlines():
+        line = raw.strip().strip("`").strip()
+        if not line or line.startswith("#") or "::" not in line:
+            continue
+        service, fault_type = [x.strip() for x in line.split("::", 1)]
+        if not service:
+            continue
+        label = FaultLabel(service=service, fault_type=normalize_fault_type(fault_type))
+        key = label.canonical_key()
+        if key not in seen:
+            labels.append(label)
+            seen.add(key)
+    return labels
+
+def approx_token_count(text: str) -> int:
+    return max(1, int(len(str(text or "").split()) * 1.25))
