@@ -26,8 +26,9 @@ class DebugActionAgent:
         fault_type = context.get("rca_result", {}).get("fault_type") or "unknown"
         ns = context.get("namespace") or "default"
         if fault_type == "infra_failure":
+            patch = "'[{\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeName\"}]'"
             return [
-                f"kubectl patch deployment/{svc} -n {ns} --type=json -p='[{ {\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeName\"} }]'".replace("{ {'", "[{").replace("'} }", "}]"),
+                f"kubectl patch deployment/{svc} -n {ns} --type=json -p={patch}",
                 f"kubectl rollout restart deployment/{svc} -n {ns}",
                 f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s",
             ]
