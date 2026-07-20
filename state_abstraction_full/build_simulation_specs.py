@@ -1,5 +1,5 @@
 import argparse
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from config import DEFAULT_ACTIONS, DEFAULT_FAULT_TYPES
 from utils import read_json, read_jsonl, write_json, ensure_dir
@@ -29,7 +29,9 @@ def build_topology(graph):
         outgoing[src].append(dst)
         incoming[dst].append(src)
         edges.append({
-            "edge_id": f"{src}->{dst}", "src": src, "dst": dst,
+            "edge_id": f"{src}->{dst}",
+            "src": src,
+            "dst": dst,
             "criticality": classify_edge_criticality(feats),
             "observed_request_count": feats.get("request_count", 0),
             "observed_error_ratio": feats.get("error_ratio", 0.0),
@@ -45,18 +47,36 @@ def build_fault_library(states, topology):
     sig = defaultdict(lambda: defaultdict(int))
     for st in states:
         fc = st.get("fault_context", {})
-        if fc.get("faulty_service"):
-            sig[fc["faulty_service"]][str(fc.get("fault_family") or "known_fault_context")] += 1
+        instances = fc.get("fault_instances") or []
+        if not instances and fc.get("faulty_service"):
+            instances = [{
+                "faulty_service": fc.get("faulty_service"),
+                "fault_family": fc.get("fault_family"),
+                "variant_name": fc.get("variant_name", "default"),
+                "variant_params": fc.get("variant_params", {}),
+            }]
+        for inst in instances:
+            svc = inst.get("faulty_service")
+            if not svc:
+                continue
+            family = str(inst.get("fault_family") or fc.get("fault_family") or "known_fault_context")
+            sig[svc][family] += 1
+            variant_name = inst.get("variant_name")
+            if variant_name and variant_name != "default":
+                sig[svc][f"variant:{variant_name}"] += 1
         for edge, feats in st.get("traces", {}).items():
             if "->" in edge:
-                src, dst = edge.split("->", 1)
+                _, dst = edge.split("->", 1)
                 if feats.get("error_ratio", 0.0) > 0.2:
                     sig[dst]["trace_error_edges"] += 1
                 if feats.get("latency_p95_us", 0.0) > 100000:
                     sig[dst]["latency_degradation_edges"] += 1
         for svc, sy in st.get("system", {}).items():
-            if sy.get("infra_issue_flag"):
+            status = sy.get("service_health_status")
+            has_direct_infra = status not in (None, "healthy", "unknown")
+            if has_direct_infra:
                 sig[svc]["infra_issue_count"] += 1
+                sig[svc][f"system_status:{status}"] += 1
         for svc, lg in st.get("logs", {}).items():
             if lg.get("log_anomaly_score", 0.0) > 0.2:
                 sig[svc]["log_anomaly_count"] += 1
@@ -69,6 +89,8 @@ def build_fault_library(states, topology):
             lib.append({"fault_id": f"{svc}_latency_degradation", "target_service": svc, "fault_type": "latency_degradation", "trigger_signature": dict(s), "expected_observables": {"latency": "high"}})
         if s.get("infra_issue_count", 0) > 0:
             lib.append({"fault_id": f"{svc}_infra_failure", "target_service": svc, "fault_type": "infra_failure", "trigger_signature": dict(s), "expected_observables": {"pod_health": "unready_or_crashloop"}})
+        if any(k.startswith("variant:") for k in s):
+            lib.append({"fault_id": f"{svc}_variant_specific", "target_service": svc, "fault_type": "variant_specific", "trigger_signature": dict(s), "expected_observables": {"variant": "see trigger_signature"}})
     existing = {f["fault_type"] for f in lib}
     for ft in DEFAULT_FAULT_TYPES:
         if ft not in existing:
