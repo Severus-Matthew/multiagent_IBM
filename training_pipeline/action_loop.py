@@ -13,17 +13,35 @@ class ActionAgentLike(Protocol):
     def get_commands(self, instruction_prompt: str, context: dict[str, Any]) -> list[str]: ...
 
 
+def _namespace(full_state: dict[str, Any], compressed_state: dict[str, Any]) -> str:
+    return (
+        compressed_state.get("namespace")
+        or compressed_state.get("target_namespace")
+        or (full_state.get("fault_context", {}) or {}).get("target_namespace")
+        or (full_state.get("fault_context", {}) or {}).get("namespace")
+        or "default"
+    )
+
+
 def run_action_prompt_optimizer_loop(full_state: dict[str, Any], compressed_state: dict[str, Any],
                                      rca_result: dict[str, Any], rca_faults: list[FaultLabel],
                                      prompt_policy: ActionPromptPolicy, action_agent: ActionAgentLike,
                                      twin_verifier, max_iterations: int = 5) -> dict[str, Any]:
     attempts: list[ActionAttempt] = []
     history: list[dict[str, Any]] = []
+    namespace = _namespace(full_state, compressed_state)
     for iteration in range(max_iterations):
-        context = {"scenario_id": compressed_state.get("scenario_id"), "namespace": compressed_state.get("namespace"),
-                   "iteration": iteration, "max_iterations": max_iterations, "rca_result": rca_result,
-                   "redacted_state": compressed_state, "previous_attempts": history,
-                   "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm commands."}
+        context = {
+            "scenario_id": compressed_state.get("scenario_id") or full_state.get("scenario_id"),
+            "namespace": namespace,
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "rca_result": rca_result,
+            "rca_faults": [f.to_dict() for f in rca_faults],
+            "redacted_state": compressed_state,
+            "previous_attempts": history,
+            "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm commands.",
+        }
         instruction = prompt_policy.generate(context)
         commands = action_agent.get_commands(instruction, context)
         safety = check_command_safety(commands)
