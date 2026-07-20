@@ -1,0 +1,27 @@
+{
+  "max_rca_iterations": 5,
+  "max_action_iterations": 5,
+  "rca_reward": {
+    "pair_score_weight": 2.0,
+    "twin_reproduction_weight": 0.5,
+    "iteration_penalty": 0.10,
+    "instruction_token_penalty": 0.001,
+    "success_bonus": 1.0,
+    "terminal_failure_penalty": -2.0
+  },
+  "action_reward": {
+    "resolved_weight": 2.0,
+    "symptom_reduction_weight": 0.8,
+    "command_validity_weight": 0.4,
+    "verification_bonus": 0.3,
+    "command_count_penalty": 0.05,
+    "instruction_token_penalty": 0.001,
+    "success_bonus": 1.0,
+    "terminal_failure_penalty": -2.0
+  },
+  "digital_twin": {
+    "default_mode": "behavioral_offline",
+    "predicted_twin_neighborhood_radius": 1,
+    "real_k8s_twin_enabled": false
+  }
+}
