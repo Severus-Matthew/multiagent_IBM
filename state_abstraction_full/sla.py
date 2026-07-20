@@ -63,6 +63,8 @@ def evaluate_sla(state):
     global_reasons = []
     if dep_violations:
         global_reasons.append("dependency_failures_present")
+    if unhealthy:
+        global_reasons.append("unhealthy_services_present")
     if len(unhealthy) > 1:
         global_reasons.append("multiple_unhealthy_services")
     # Do not fail global solely because trace traffic is absent; mark as observability gap.
