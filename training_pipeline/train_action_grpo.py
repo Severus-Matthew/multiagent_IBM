@@ -10,13 +10,27 @@ from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 class DebugPromptPolicy:
     def generate(self, context):
         svc = context.get("rca_result", {}).get("root_cause_service") or "<service>"
-        ns = context.get("namespace") or "<namespace>"
+        fault_type = context.get("rca_result", {}).get("fault_type") or "unknown"
+        ns = context.get("namespace") or "default"
+        if fault_type == "infra_failure":
+            return (
+                f"Repair Kubernetes scheduling for deployment/{svc} in namespace {ns}. "
+                "Remove invalid nodeName/nodeSelector/affinity constraints if present, then restart the deployment and verify rollout. "
+                "Output only kubectl commands."
+            )
         return f"Restart deployment/{svc} in namespace {ns}, then verify rollout status. Output only kubectl commands."
 
 class DebugActionAgent:
     def get_commands(self, instruction_prompt, context):
         svc = context.get("rca_result", {}).get("root_cause_service") or "<service>"
-        ns = context.get("namespace") or "<namespace>"
+        fault_type = context.get("rca_result", {}).get("fault_type") or "unknown"
+        ns = context.get("namespace") or "default"
+        if fault_type == "infra_failure":
+            return [
+                f"kubectl patch deployment/{svc} -n {ns} --type=json -p='[{ {\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeName\"} }]'".replace("{ {'", "[{").replace("'} }", "}]"),
+                f"kubectl rollout restart deployment/{svc} -n {ns}",
+                f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s",
+            ]
         return [f"kubectl rollout restart deployment/{svc} -n {ns}",
                 f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s"]
 
