@@ -23,6 +23,16 @@ def _namespace(full_state: dict[str, Any], compressed_state: dict[str, Any]) -> 
     )
 
 
+def _first_valid_mitigation_action(normalized: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in normalized:
+        if not item.get("valid"):
+            continue
+        if item.get("action") in ("verify", "unknown", "invalid"):
+            continue
+        return item
+    return None
+
+
 def run_action_prompt_optimizer_loop(full_state: dict[str, Any], compressed_state: dict[str, Any],
                                      rca_result: dict[str, Any], rca_faults: list[FaultLabel],
                                      prompt_policy: ActionPromptPolicy, action_agent: ActionAgentLike,
@@ -46,11 +56,17 @@ def run_action_prompt_optimizer_loop(full_state: dict[str, Any], compressed_stat
         commands = action_agent.get_commands(instruction, context)
         safety = check_command_safety(commands)
         normalized = normalize_commands(commands)
-        action = next((x for x in normalized if x.get("action") not in ("verify", "unknown", "invalid")), None)
+        action = _first_valid_mitigation_action(normalized)
         if safety.get("safe") and action:
             verifier = twin_verifier.apply_action_and_score(full_state, rca_faults, action)
         else:
-            verifier = {"resolved": False, "symptom_reduction": 0.0, "reason": "no_safe_mitigation_action"}
+            verifier = {
+                "resolved": False,
+                "symptom_reduction": 0.0,
+                "reason": "no_safe_valid_mitigation_action",
+                "has_safe_commands": bool(safety.get("safe")),
+                "has_valid_normalized_action": bool(action),
+            }
         reward_obj = action_reward(commands, safety, verifier, approx_token_count(instruction), iteration)
         attempt = ActionAttempt(iteration=iteration, instruction_prompt=instruction, commands=commands,
                                 reward=reward_obj["reward"], reward_components=reward_obj["components"],
