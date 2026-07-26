@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any, Iterable
@@ -14,7 +14,9 @@ except Exception:  # pragma: no cover - keeps script usable if imported outside 
     iter_scenarios = None
 
 
-def _read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+def _read_jsonl(path: str | Path | None) -> list[dict[str, Any]]:
+    if not path:
+        return []
     p = Path(path).expanduser()
     rows: list[dict[str, Any]] = []
     if not p.exists():
@@ -120,8 +122,8 @@ def _group_stats(samples: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[st
     for s in samples:
         groups[str(s.get("group_id"))].append(s)
 
-    group_reward_stds = []
-    group_adv_stds = []
+    group_reward_stds: list[float] = []
+    group_adv_stds: list[float] = []
     zero_reward_std = nonzero_reward_std = 0
     zero_adv_std = nonzero_adv_std = 0
     single_sample_groups = 0
@@ -150,7 +152,7 @@ def _group_stats(samples: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[st
         if any(r.get("terminal") for r in rows):
             terminal_groups += 1
 
-    summary = {
+    return {
         "num_groups": len(groups),
         "single_sample_groups": single_sample_groups,
         "groups_with_success_sample": successful_groups,
@@ -161,8 +163,7 @@ def _group_stats(samples: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[st
         "groups_with_nonzero_advantage_std": nonzero_adv_std,
         "group_reward_std": _stats(group_reward_stds),
         "group_advantage_std": _stats(group_adv_stds),
-    }
-    return summary, groups
+    }, groups
 
 
 def _bucket_summary(items: list[dict[str, Any]], meta: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
@@ -202,12 +203,14 @@ def _episode_bucket_summary(episodes: list[dict[str, Any]], meta: dict[str, dict
     out: dict[str, Any] = {}
     for name, rows in sorted(buckets.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         passed = sum(1 for r in rows if r.get("success"))
+        terminal_failures = sum(1 for r in rows if _episode_terminal_failure(r))
         out[name] = {
             "episodes": len(rows),
             "passed": passed,
             "failed": len(rows) - passed,
             "success_rate": _rate(passed, len(rows)),
-            "terminal_failures": sum(1 for r in rows if _episode_terminal_failure(r)),
+            "terminal_failures": terminal_failures,
+            "terminal_failure_rate": _rate(terminal_failures, len(rows)),
             "avg_attempts": round(mean([len(r.get("attempts") or []) for r in rows]), 6) if rows else 0.0,
         }
     return out
@@ -222,8 +225,10 @@ def audit_rollout(rollout_dir: str | Path | None = None,
         grpo_samples_path = grpo_samples_path or rd / "grpo_samples.jsonl"
         rollouts_path = rollouts_path or rd / "rollouts.jsonl"
 
-    samples = _read_jsonl(grpo_samples_path) if grpo_samples_path else []
-    episodes = _read_jsonl(rollouts_path) if rollouts_path else []
+    samples_path = Path(grpo_samples_path).expanduser() if grpo_samples_path else None
+    episodes_path = Path(rollouts_path).expanduser() if rollouts_path else None
+    samples = _read_jsonl(samples_path)
+    episodes = _read_jsonl(episodes_path)
     meta = _metadata_from_processed_states(processed_states)
 
     comps = [_sample_components(s) for s in samples]
@@ -241,8 +246,10 @@ def audit_rollout(rollout_dir: str | Path | None = None,
     summary = {
         "inputs": {
             "rollout_dir": str(Path(rollout_dir).expanduser()) if rollout_dir else None,
-            "grpo_samples_jsonl": str(Path(grpo_samples_path).expanduser()) if grpo_samples_path else None,
-            "rollouts_jsonl": str(Path(rollouts_path).expanduser()) if rollouts_path else None,
+            "grpo_samples_jsonl": str(samples_path) if samples_path else None,
+            "grpo_samples_jsonl_exists": bool(samples_path and samples_path.exists()),
+            "rollouts_jsonl": str(episodes_path) if episodes_path else None,
+            "rollouts_jsonl_exists": bool(episodes_path and episodes_path.exists()),
             "processed_states": str(Path(processed_states).expanduser()) if processed_states else None,
         },
         "episodes": {
@@ -283,6 +290,14 @@ def audit_rollout(rollout_dir: str | Path | None = None,
         "warnings": [],
     }
 
+    if samples_path and not samples_path.exists():
+        summary["warnings"].append(f"grpo_samples_jsonl not found: {samples_path}")
+    if episodes_path and not episodes_path.exists():
+        summary["warnings"].append(f"rollouts_jsonl not found: {episodes_path}")
+    if not samples:
+        summary["warnings"].append("No GRPO samples found; run train_rca_grpo before auditing rewards.")
+    if not episodes:
+        summary["warnings"].append("No episode rollouts found; run train_rca_grpo before auditing episodes.")
     if samples and group_summary["groups_with_nonzero_reward_std"] == 0:
         summary["warnings"].append(
             "All GRPO groups have zero within-group reward variance; there is no group-relative learning signal yet."
@@ -295,11 +310,14 @@ def audit_rollout(rollout_dir: str | Path | None = None,
         summary["warnings"].append("High invalid-format rate; solver output schema may need stronger prompting or parsing.")
     if summary["reward_components"]["count_mismatch_rate"] > 0.25:
         summary["warnings"].append("High count-mismatch rate; multifault/root-cause-count handling may be weak.")
+    if samples and summary["reward_components"]["twin_reproduction_score"]["std"] == 0.0:
+        summary["warnings"].append("Twin reproduction score has zero variance; twin reward may be too coarse for learning signal.")
     return summary
 
 
 def _print_human(summary: dict[str, Any]) -> None:
     print(json.dumps({
+        "inputs": summary["inputs"],
         "episodes": summary["episodes"],
         "samples": summary["samples"],
         "groups": summary["groups"],
@@ -310,18 +328,20 @@ def _print_human(summary: dict[str, Any]) -> None:
     print("\nTop sample buckets by family:")
     for name, row in list(summary["by_family_samples"].items())[:20]:
         print(
-            f"  {name:55s} samples={row['samples']:5d} "
-            f"succ={row['success_sample_rate']:.3f} "
-            f"reward_mean={row['reward']['mean']:.3f} "
-            f"pair={row['pair_score_mean']:.3f} twin={row['twin_reproduction_score_mean']:.3f}"
+            f"  {name:55s} samples={int(row.get('samples', 0)):5d} "
+            f"succ={_safe_float(row.get('success_sample_rate')):.3f} "
+            f"reward_mean={_safe_float((row.get('reward') or {}).get('mean')):.3f} "
+            f"pair={_safe_float(row.get('pair_score_mean')):.3f} "
+            f"twin={_safe_float(row.get('twin_reproduction_score_mean')):.3f}"
         )
 
     print("\nEpisode pass rate by family:")
     for name, row in list(summary["by_family_episodes"].items())[:20]:
         print(
-            f"  {name:55s} episodes={row['episodes']:4d} "
-            f"pass={row['success_rate']:.3f} terminal={row['terminal_failure_rate']:.3f} "
-            f"avg_attempts={row['avg_attempts']:.2f}"
+            f"  {name:55s} episodes={int(row.get('episodes', 0)):4d} "
+            f"pass={_safe_float(row.get('success_rate')):.3f} "
+            f"terminal={_safe_float(row.get('terminal_failure_rate')):.3f} "
+            f"avg_attempts={_safe_float(row.get('avg_attempts')):.2f}"
         )
 
 
