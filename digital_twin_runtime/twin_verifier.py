@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from training_pipeline.schemas import FaultLabel
-from .telemetry_comparator import compare_symptoms, score_resolution
+from .telemetry_comparator import compare_symptoms
 
 
 def _import_behavioral_simulator():
@@ -39,15 +39,16 @@ class BehavioralTwinVerifier:
                                mitigation_action: dict[str, Any]) -> dict[str, Any]:
         target = mitigation_action.get("service")
         action = mitigation_action.get("action")
-        matched_fault = next((f for f in rca_faults if not target or f.service == target), None)
+        matched_fault, match_error = _select_matched_fault(action, target, rca_faults)
 
         if not matched_fault:
             return {
                 "mode": "behavioral_offline",
                 "resolved": False,
                 "symptom_reduction": 0.0,
-                "reason": "action_target_does_not_match_rca_fault",
+                "reason": match_error or "action_target_does_not_match_rca_fault",
                 "target_service": target,
+                "mitigation_action": mitigation_action,
             }
 
         repaired = _action_repairs_fault(action, matched_fault.fault_type)
@@ -62,6 +63,24 @@ class BehavioralTwinVerifier:
             "reason": "target_fault_repaired" if repaired else "action_does_not_repair_target_fault",
             "after_sla": {"violated": not repaired, "offline_target_centric": True},
         }
+
+
+def _select_matched_fault(action: str | None, target: str | None, faults: list[FaultLabel]) -> tuple[FaultLabel | None, str | None]:
+    if not faults:
+        return None, "no_rca_faults_available"
+    if target:
+        match = next((f for f in faults if f.service == target), None)
+        return match, None if match else "action_target_does_not_match_rca_fault"
+
+    # Untargeted actions such as helm rollback are ambiguous for multifault cases.
+    repairable = [f for f in faults if _action_repairs_fault(action, f.fault_type)]
+    if len(faults) == 1 and repairable:
+        return repairable[0], None
+    if len(repairable) == 1:
+        return repairable[0], None
+    if len(repairable) > 1:
+        return None, "ambiguous_untargeted_action_for_multifault"
+    return None, "untargeted_action_does_not_repair_any_rca_fault"
 
 
 def _action_repairs_fault(action: str | None, fault_type: str | None) -> bool:
