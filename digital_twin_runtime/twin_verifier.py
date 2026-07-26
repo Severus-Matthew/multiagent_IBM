@@ -1,42 +1,48 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 from training_pipeline.schemas import FaultLabel
-from .telemetry_comparator import compare_symptoms
-
-
-def _import_behavioral_simulator():
-    repo_root = Path(__file__).resolve().parents[1]
-    state_abs = repo_root / "state_abstraction_full"
-    if str(state_abs) not in sys.path:
-        sys.path.insert(0, str(state_abs))
-    from behavioral_simulator import AbstractBehavioralSimulator  # type: ignore
-    return AbstractBehavioralSimulator
+from .telemetry_comparator import score_prediction_reproduction
 
 
 class BehavioralTwinVerifier:
-    """Offline Stage-2 verifier using the existing abstract behavioral simulator.
+    """Offline Stage-2 verifier.
 
-    RCA validation compares symptom reproduction. Action validation is intentionally
-    target-centric in this offline mode: the full observed state already contains
-    many cascade/log anomalies, so global SLA alone is too strict for a synthetic
-    command smoke test. Real K8s twin verification will replace this later.
+    RCA validation uses a prediction-sensitive behavioral proxy over the redacted
+    compressed state. It scores whether the predicted RCA service/fault type is
+    supported by observed degraded services, log-error services, trace-edge
+    anomalies, metric anomalies, and graph-neighborhood coverage.
+
+    Action validation remains target-centric in this offline mode: the full
+    observed state already contains many cascade/log anomalies, so global SLA
+    alone is too strict for a synthetic command smoke test. Real K8s twin
+    verification should replace this later.
     """
 
-    def validate_rca_prediction(self, full_state: dict[str, Any], compressed_state: dict[str, Any],
-                                predicted_faults: list[FaultLabel]) -> dict[str, Any]:
-        Sim = _import_behavioral_simulator(); sim = Sim(full_state.get("graph", {}))
-        twin_state = full_state
-        for fault in predicted_faults:
-            twin_state, _ = sim.simulate(twin_state, rca_fault={"service": fault.service, "fault_type": fault.fault_type})
-        result = compare_symptoms(compressed_state, twin_state)
-        result["mode"] = "behavioral_offline"
+    def validate_rca_prediction(
+        self,
+        full_state: dict[str, Any],
+        compressed_state: dict[str, Any],
+        predicted_faults: list[FaultLabel],
+    ) -> dict[str, Any]:
+        # Use only agent-visible evidence plus the predicted RCA labels for the
+        # reproduction score. The previous version simulated on top of the
+        # already-faulted full state, which made overlap almost constant.
+        result = score_prediction_reproduction(
+            compressed_state,
+            [f.to_dict() for f in predicted_faults],
+        )
+        result["mode"] = "behavioral_offline_proxy"
+        result["uses_full_state_for_rca_score"] = False
+        result["uses_oracle_labels"] = False
         return result
 
-    def apply_action_and_score(self, full_state: dict[str, Any], rca_faults: list[FaultLabel],
-                               mitigation_action: dict[str, Any]) -> dict[str, Any]:
+    def apply_action_and_score(
+        self,
+        full_state: dict[str, Any],
+        rca_faults: list[FaultLabel],
+        mitigation_action: dict[str, Any],
+    ) -> dict[str, Any]:
         target = mitigation_action.get("service")
         action = mitigation_action.get("action")
         matched_fault, match_error = _select_matched_fault(action, target, rca_faults)
