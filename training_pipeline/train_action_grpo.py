@@ -5,6 +5,7 @@ from .data_loader import iter_scenarios
 from .ground_truth import labels_from_full_state
 from .rollout_logger import RolloutLogger
 from .action_loop import run_action_prompt_optimizer_loop
+from .split_utils import read_scenario_ids
 from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 
 class DebugPromptPolicy:
@@ -40,13 +41,25 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Stage 3 action-loop rollout smoke-test")
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--output_dir", required=True)
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None, help="Maximum selected labeled scenarios to run after filtering.")
+    ap.add_argument("--scenario_ids", default=None, help="Optional file with one allowed scenario_id per line.")
     args = ap.parse_args()
+
+    allowed_ids = read_scenario_ids(args.scenario_ids)
     logger = RolloutLogger(args.output_dir); twin = BehavioralTwinVerifier()
-    total = passed = 0
-    for rec in iter_scenarios(args.processed_states, limit=args.limit):
+    total = passed = skipped_unlabeled = skipped_filter = 0
+
+    for rec in iter_scenarios(args.processed_states):
+        if allowed_ids is not None and rec.scenario_id not in allowed_ids:
+            skipped_filter += 1
+            continue
         gt = labels_from_full_state(rec.full_state)
-        if not gt: continue
+        if not gt:
+            skipped_unlabeled += 1
+            continue
+        if args.limit is not None and total >= args.limit:
+            break
+
         total += 1
         rca_result = {"root_cause_service": gt[0].service, "fault_type": gt[0].fault_type, "affected_services": []}
         result = run_action_prompt_optimizer_loop(rec.full_state, rec.compressed_state, rca_result, gt,
@@ -54,7 +67,16 @@ def main() -> None:
         passed += int(result["success"])
         logger.log({"stage": "action", **result})
         print(f"[ACTION] {total} {rec.scenario_id} success={result['success']}")
-    summary = {"stage": "action", "total": total, "passed": passed, "failed": total - passed}
+
+    summary = {
+        "stage": "action",
+        "total": total,
+        "passed": passed,
+        "failed": total - passed,
+        "skipped_unlabeled": skipped_unlabeled,
+        "skipped_filter": skipped_filter,
+        "scenario_ids_file": args.scenario_ids,
+    }
     logger.write_summary(summary)
     print(json.dumps(summary, indent=2))
 
