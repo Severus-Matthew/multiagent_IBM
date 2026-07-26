@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from statistics import mean, pstdev
 from typing import Any, Protocol
 from .ground_truth import ground_truth_summary, labels_from_full_state
@@ -136,6 +135,7 @@ def _safe_history_entry(attempt: RCAAttempt) -> dict[str, Any]:
             "count_mismatch": c.get("count_mismatch"),
             "invalid_format": c.get("invalid_format"),
             "repeated_wrong_guess": c.get("repeated_wrong_guess"),
+            "terminal_failure": c.get("terminal_failure", False),
         },
     }
 
@@ -153,12 +153,68 @@ def _compute_group_advantages(samples: list[GRPORolloutSample]) -> None:
         s.advantage = round((float(s.reward) - mu) / denom, 6)
 
 
+def _recompute_dict_group_advantages(samples: list[dict[str, Any]], group_id: str) -> None:
+    group = [s for s in samples if s.get("group_id") == group_id]
+    rewards = [float(s.get("reward", 0.0)) for s in group]
+    if not rewards:
+        return
+    mu = mean(rewards)
+    sigma = pstdev(rewards) if len(rewards) > 1 else 0.0
+    denom = sigma if sigma > 1e-8 else 1.0
+    for s in group:
+        s["group_reward_mean"] = round(mu, 6)
+        s["group_reward_std"] = round(sigma, 6)
+        s["advantage"] = round((float(s.get("reward", 0.0)) - mu) / denom, 6)
+
+
 def _select_sample(samples: list[tuple[GRPORolloutSample, RCAAttempt]], strategy: str) -> tuple[GRPORolloutSample, RCAAttempt]:
     if strategy == "sample0":
         return samples[0]
     if strategy != "best":
         raise ValueError(f"unknown RCA selection_strategy={strategy!r}; use best or sample0")
     return max(samples, key=lambda x: (x[0].reward, int(x[0].success)))
+
+
+def _apply_terminal_failure_penalty(
+    attempts: list[RCAAttempt],
+    grpo_samples: list[dict[str, Any]],
+    terminal: dict[str, Any],
+) -> None:
+    """Attach terminal failure penalty to the final failed decision point.
+
+    Earlier code only logged the terminal object. That meant the stated terminal
+    penalty never reached the training sample rewards. Here we subtract it from
+    all samples in the final iteration group and from the selected final attempt.
+    """
+    if not attempts:
+        return
+    final_iter = attempts[-1].iteration
+    penalty = float(terminal.get("reward", 0.0) or 0.0)
+    final_group_id = attempts[-1].group_id
+
+    attempts[-1].reward = round(float(attempts[-1].reward) + penalty, 4)
+    attempts[-1].reward_components = {
+        **attempts[-1].reward_components,
+        "terminal_failure": True,
+        "terminal_failure_penalty": penalty,
+        "reward_after_terminal_penalty": attempts[-1].reward,
+    }
+    attempts[-1].feedback = f"{attempts[-1].feedback} {terminal.get('feedback', '')}".strip()
+
+    affected_group_ids: set[str] = set()
+    for s in grpo_samples:
+        if s.get("iteration") == final_iter:
+            s["terminal"] = True
+            s["reward"] = round(float(s.get("reward", 0.0)) + penalty, 4)
+            comps = dict(s.get("reward_components", {}) or {})
+            comps["terminal_failure"] = True
+            comps["terminal_failure_penalty"] = penalty
+            comps["reward_after_terminal_penalty"] = s["reward"]
+            s["reward_components"] = comps
+            if s.get("group_id"):
+                affected_group_ids.add(str(s["group_id"]))
+    for gid in affected_group_ids:
+        _recompute_dict_group_advantages(grpo_samples, gid)
 
 
 def run_rca_grpo_episode(
@@ -286,9 +342,7 @@ def run_rca_grpo_episode(
 
     terminal = None if attempts and attempts[-1].success else terminal_rca_failure_penalty(max_iterations)
     if terminal is not None:
-        for s in grpo_samples:
-            if s.get("iteration") == max_iterations - 1:
-                s["terminal"] = True
+        _apply_terminal_failure_penalty(attempts, grpo_samples, terminal)
 
     return {
         "scenario_id": scenario_id,
