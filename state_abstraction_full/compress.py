@@ -6,6 +6,15 @@ from collections import Counter, defaultdict
 
 
 STAT_KEYS = ["count", "first", "last", "min", "max", "mean", "delta"]
+LEAK_VALUE_MARKERS = (
+    "scenario_fault_context",
+    "generated_fault_context",
+    "oracle_ground_truth",
+    "oracle_ground_truth_fault",
+    "oracle_neighbor_of_",
+    "ranked_by_rca_context_or_weak_signals",
+    "suspect_silent_failure",
+)
 
 
 def read_json(path):
@@ -216,6 +225,36 @@ def compress_system(system):
     return out
 
 
+def _leaky_text(value) -> bool:
+    low = str(value or "").lower()
+    return any(marker in low for marker in LEAK_VALUE_MARKERS)
+
+
+def sanitize_service_health(service_health):
+    """Return agent-safe service-health entries.
+
+    Older full states may contain oracle-derived RCA weak labels such as
+    `suspect_silent_failure` or `ranked_by_rca_context_or_weak_signals`.
+    Those are removed here before compressed state generation.
+    """
+    out = {}
+    for svc, h in (service_health or {}).items():
+        if not isinstance(h, dict):
+            continue
+        status = h.get("status") or "unknown"
+        reasons = [str(r) for r in (h.get("reasons", []) or []) if not _leaky_text(r)]
+        if _leaky_text(status):
+            status = "healthy"
+        if status in {"healthy", "unknown", None, ""} and not reasons:
+            continue
+        if status == "suspect_silent_failure":
+            if not reasons:
+                continue
+            status = "observable_suspect"
+        out[svc] = {"status": status, "reasons": reasons[:8]}
+    return out
+
+
 def build_model_vector(state):
     rows = []
     for svc in state.get("services", []):
@@ -275,6 +314,7 @@ def compress_state(state):
             "ground_truth_removed": True,
             "fault_context_removed": True,
             "rca_weak_labels_removed": True,
+            "service_health_oracle_markers_removed": True,
             "safe_for_rca_agent": True,
         },
         "namespace": fault_ctx.get("target_namespace"),
@@ -288,7 +328,7 @@ def compress_state(state):
     compressed["workload"] = state.get("workload", {})
     compressed["graph"] = state.get("graph", {})
     compressed["sla"] = state.get("sla", {})
-    compressed["service_health"] = state.get("service_health", {})
+    compressed["service_health"] = sanitize_service_health(state.get("service_health", {}))
     compressed["observability_metadata"] = state.get("observability_metadata", {})
     model_rows = build_model_vector(state)
     compressed["model_table"] = model_rows
@@ -308,6 +348,7 @@ def main():
     write_json(compressed, out)
     print(f"[OK] wrote redacted compressed state to {out}")
     print(f"[INFO] services: {len(compressed.get('services', []))}")
+
 
 if __name__ == "__main__":
     main()
