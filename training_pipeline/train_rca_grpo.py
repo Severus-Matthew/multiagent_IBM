@@ -31,11 +31,22 @@ def main() -> None:
                     help="Which candidate advances episode history. Use sample0 for stricter on-policy debugging; best for offline verifier-guided data generation.")
 
     # Swappable RCA prompt-policy and solver controls.
-    ap.add_argument("--instruction_policy", choices=["heuristic", "operator", "qwen_stub"], default="heuristic",
+    ap.add_argument("--instruction_policy", choices=["heuristic", "operator", "gnn", "qwen_stub"], default="heuristic",
                     help="Trainable/control policy family that emits instructions for the fixed RCA solver.")
     ap.add_argument("--operator_profile", choices=["auto", "system_first", "trace_first", "log_first", "multifault_first"], default="auto",
                     help="Structured prompt-operator profile used when --instruction_policy operator.")
     ap.add_argument("--operator_max_focus_services", type=int, default=6)
+
+    # GNN controller controls. The current GNN path is inference-only; training comes next.
+    ap.add_argument("--gnn_hidden_dim", type=int, default=64)
+    ap.add_argument("--gnn_num_layers", type=int, default=2)
+    ap.add_argument("--gnn_seed", type=int, default=7)
+    ap.add_argument("--gnn_prior_weight", type=float, default=1.0,
+                    help="Weight for transparent telemetry priors added to untrained GNN policy logits.")
+    ap.add_argument("--gnn_device", default=None,
+                    help="Optional torch device for the GNN controller, e.g. cpu or cuda:0. Default lets torch choose CPU tensors.")
+
+    # Qwen stub controls. Real Qwen loading/training is intentionally not enabled in this patch.
     ap.add_argument("--qwen_model", default="Qwen/Qwen3-Coder-30B-A3B-Instruct")
     ap.add_argument("--qwen_adapter_path", default=None)
     ap.add_argument("--qwen_max_new_tokens", type=int, default=256)
