@@ -5,7 +5,34 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-LEAK_KEYS = ("faulty_service", "fault_instances", "raw_spec")
+# Exact keys that must never appear anywhere inside an agent-visible compressed state.
+# Keep these as exact-key checks rather than naive substring checks so that allowed
+# redaction markers such as `ground_truth_removed` and `fault_context_removed` do not
+# false-positive.
+FORBIDDEN_EXACT_KEYS = {
+    "fault_context",
+    "faulty_service",
+    "fault_instances",
+    "expected_faulty_services",
+    "known_fault_hypotheses",
+    "primary_fault",
+    "raw_spec",
+    "problem_description",
+    "ground_truth",
+}
+
+# Value-side markers that indicate an oracle/weak-label side channel even when the
+# dangerous value is not stored under an obvious key.
+FORBIDDEN_VALUE_MARKERS = (
+    "scenario_fault_context",
+    "generated_fault_context",
+    "oracle_ground_truth",
+    "oracle_ground_truth_fault",
+    "oracle_neighbor_of_",
+    "ranked_by_rca_context_or_weak_signals",
+    "suspect_silent_failure",
+)
+
 
 @dataclass
 class ScenarioRecord:
@@ -25,18 +52,34 @@ def read_json(path: str | Path, default=None):
         return json.load(f)
 
 
+def _scan_for_redaction_leaks(obj: Any, path: str = "$") -> list[str]:
+    leaks: list[str] = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            key_s = str(key)
+            child_path = f"{path}.{key_s}"
+            if key_s in FORBIDDEN_EXACT_KEYS:
+                leaks.append(f"forbidden_key:{child_path}")
+            leaks.extend(_scan_for_redaction_leaks(value, child_path))
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            leaks.extend(_scan_for_redaction_leaks(value, f"{path}[{i}]"))
+    elif isinstance(obj, str):
+        low = obj.lower()
+        for marker in FORBIDDEN_VALUE_MARKERS:
+            if marker in low:
+                leaks.append(f"forbidden_value:{path}:{marker}")
+    return leaks
+
+
 def assert_redacted_state_safe(compressed: dict[str, Any], scenario_id: str = "") -> None:
     redaction = compressed.get("redaction", {}) or {}
     if not redaction.get("safe_for_rca_agent"):
         raise ValueError(f"{scenario_id}: compressed state is not marked safe_for_rca_agent")
-    if compressed.get("fault_context") not in (None, {}, ""):
-        raise ValueError(f"{scenario_id}: compressed state contains fault_context")
-    blob = json.dumps(compressed, sort_keys=True)
-    leaks = [k for k in LEAK_KEYS if k in blob]
+
+    leaks = _scan_for_redaction_leaks(compressed)
     if leaks:
-        raise ValueError(f"{scenario_id}: compressed state may leak keys: {leaks}")
-    if '"ground_truth":' in blob:
-        raise ValueError(f"{scenario_id}: compressed state contains ground_truth object")
+        raise ValueError(f"{scenario_id}: compressed state has redaction leaks: {leaks[:10]}")
 
 
 def iter_scenarios(processed_states_dir: str | Path, limit: int | None = None,
@@ -80,6 +123,7 @@ def main() -> None:
     ap.add_argument("--processed_states", required=True)
     args = ap.parse_args()
     print(json.dumps(summarize_dataset(args.processed_states), indent=2))
+
 
 if __name__ == "__main__":
     main()
