@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
+
 from .data_loader import iter_scenarios
 from .ground_truth import labels_from_full_state
 from .prompt_policy_factory import (
@@ -14,6 +16,7 @@ from .rca_loop import run_rca_grpo_episode
 from .rollout_logger import RolloutLogger
 from .split_utils import read_scenario_ids
 from .wandb_logger import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT, WandbRunLogger, parse_tags
+from digital_twin_runtime.twin_preflight import preflight_behavioral_twin, require_twin_preflight_ok
 from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 
 
@@ -25,6 +28,16 @@ def main() -> None:
     ap.add_argument("--scenario_ids", default=None, help="Optional file with one allowed scenario_id per line.")
     ap.add_argument("--include_unlabeled", action="store_true", help="Include scenarios without oracle labels. Not recommended for reward training.")
     ap.add_argument("--use_behavioral_twin", action="store_true")
+    ap.add_argument("--twin_mode", choices=["none", "behavioral"], default=None,
+                    help="Twin verifier mode. Defaults to behavioral when --use_behavioral_twin is set, otherwise none. Live mode will be added after the K8s twin builder is wired.")
+    ap.add_argument("--twin_preflight", action="store_true",
+                    help="Run and log a twin preflight before each selected RCA episode.")
+    ap.add_argument("--abort_on_twin_preflight_failure", action="store_true",
+                    help="Stop the rollout immediately if twin preflight fails.")
+    ap.add_argument("--require_rca_twin_verification", action="store_true",
+                    help="Require final successful RCA attempts to have a computed twin verification score above --min_twin_reproduction_score.")
+    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0,
+                    help="Minimum RCA twin reproduction score when --require_rca_twin_verification is enabled.")
     ap.add_argument("--max_iterations", type=int, default=5)
     ap.add_argument("--group_size", type=int, default=4, help="Number of instruction candidates per state/history group.")
     ap.add_argument("--selection_strategy", choices=["best", "sample0"], default="best",
@@ -67,12 +80,20 @@ def main() -> None:
     ap.add_argument("--wandb_tags", default="")
     args = ap.parse_args()
 
+    twin_mode = args.twin_mode or ("behavioral" if args.use_behavioral_twin else "none")
+    if args.require_rca_twin_verification and twin_mode == "none":
+        raise ValueError("--require_rca_twin_verification requires --use_behavioral_twin or --twin_mode behavioral")
+    if twin_mode == "behavioral":
+        args.use_behavioral_twin = True
+
     allowed_ids = read_scenario_ids(args.scenario_ids)
     logger = RolloutLogger(args.output_dir)
+    preflight_path = Path(args.output_dir).expanduser() / "twin_preflight.jsonl"
     policy = build_rca_instruction_policy(args)
     solver = build_rca_solver(args)
-    twin = BehavioralTwinVerifier() if args.use_behavioral_twin else None
+    twin = BehavioralTwinVerifier() if twin_mode == "behavioral" else None
     total = passed = skipped_unlabeled = skipped_filter = sample_count = 0
+    twin_preflight_count = twin_preflight_failed = twin_verified_successes = twin_blocked_successes = 0
 
     policy_model_name = args.policy_model_name or default_policy_model_name(args)
     run_config = {
@@ -82,6 +103,11 @@ def main() -> None:
         "scenario_ids_file": args.scenario_ids,
         "include_unlabeled": args.include_unlabeled,
         "use_behavioral_twin": args.use_behavioral_twin,
+        "twin_mode": twin_mode,
+        "twin_preflight": args.twin_preflight,
+        "abort_on_twin_preflight_failure": args.abort_on_twin_preflight_failure,
+        "require_rca_twin_verification": args.require_rca_twin_verification,
+        "min_twin_reproduction_score": args.min_twin_reproduction_score,
         "max_iterations": args.max_iterations,
         "group_size": args.group_size,
         "selection_strategy": args.selection_strategy,
@@ -111,6 +137,17 @@ def main() -> None:
                 break
 
             total += 1
+            twin_preflight = None
+            if args.twin_preflight or args.require_rca_twin_verification:
+                if twin_mode != "behavioral":
+                    raise ValueError("twin preflight currently supports --twin_mode behavioral only")
+                twin_preflight = preflight_behavioral_twin(rec.full_state, rec.compressed_state)
+                twin_preflight_count += 1
+                twin_preflight_failed += int(not twin_preflight.get("ok", False))
+                _append_jsonl(preflight_path, {"stage": "twin_preflight", **twin_preflight})
+                if args.abort_on_twin_preflight_failure:
+                    require_twin_preflight_ok(twin_preflight)
+
             result = run_rca_grpo_episode(
                 rec.full_state,
                 rec.compressed_state,
@@ -123,6 +160,21 @@ def main() -> None:
                 policy_model_name=policy_model_name,
                 policy_version=args.policy_version,
             )
+            if twin_preflight is not None:
+                result["twin_preflight"] = twin_preflight
+
+            if args.require_rca_twin_verification:
+                gate = _final_rca_twin_gate(result, args.min_twin_reproduction_score)
+                result["rca_twin_gate"] = gate
+                if result.get("success") and gate.get("rca_twin_verified"):
+                    twin_verified_successes += 1
+                elif result.get("success") and not gate.get("rca_twin_verified"):
+                    # Keep the raw result in logs, but the episode no longer counts
+                    # as pipeline-success because it failed the explicit twin gate.
+                    result["success_before_twin_gate"] = True
+                    result["success"] = False
+                    twin_blocked_successes += 1
+
             samples = result.pop("grpo_samples", [])
             for sample in samples:
                 logger.log_grpo_sample(sample)
@@ -147,6 +199,14 @@ def main() -> None:
             "grpo_samples": sample_count,
             "rollouts_jsonl": str(logger.jsonl_path),
             "grpo_samples_jsonl": str(logger.grpo_jsonl_path),
+            "twin_preflight_jsonl": str(preflight_path) if (args.twin_preflight or args.require_rca_twin_verification) else None,
+            "twin_mode": twin_mode,
+            "twin_preflight_count": twin_preflight_count,
+            "twin_preflight_failed": twin_preflight_failed,
+            "require_rca_twin_verification": args.require_rca_twin_verification,
+            "min_twin_reproduction_score": args.min_twin_reproduction_score,
+            "twin_verified_successes": twin_verified_successes,
+            "twin_blocked_successes": twin_blocked_successes,
             "policy_model_name": policy_model_name,
             "policy_version": args.policy_version,
             "instruction_policy": args.instruction_policy,
@@ -163,6 +223,35 @@ def main() -> None:
         print(json.dumps(summary, indent=2))
     finally:
         wandb_logger.finish()
+
+
+def _append_jsonl(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+
+
+def _final_rca_twin_gate(result: dict, min_score: float) -> dict:
+    attempts = result.get("attempts", []) or []
+    if not attempts:
+        return {
+            "rca_twin_verified": False,
+            "reason": "no_attempts",
+            "min_reproduction_score": float(min_score),
+            "reproduction_score": 0.0,
+        }
+    final = attempts[-1]
+    comps = final.get("reward_components", {}) or {}
+    score = float(comps.get("twin_reproduction_score", 0.0) or 0.0)
+    ok = score >= float(min_score)
+    return {
+        "rca_twin_verified": ok,
+        "reason": "score_above_threshold" if ok else "score_below_threshold",
+        "min_reproduction_score": float(min_score),
+        "reproduction_score": round(score, 6),
+        "final_attempt_success": bool(final.get("success")),
+        "final_prediction": final.get("prediction_text", ""),
+    }
 
 
 if __name__ == "__main__":
