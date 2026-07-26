@@ -1,13 +1,23 @@
 {
+  "note": "Configuration mirror for current hard-coded debug reward defaults. Loading this file into reward code is still pending; do not treat it as the source of truth until config loading is wired.",
   "max_rca_iterations": 5,
   "max_action_iterations": 5,
   "rca_reward": {
+    "format_reward_valid": 0.2,
+    "format_reward_invalid": -1.0,
     "pair_score_weight": 2.0,
-    "twin_reproduction_weight": 0.5,
-    "iteration_penalty": 0.10,
-    "instruction_token_penalty": 0.001,
-    "success_bonus": 1.0,
-    "terminal_failure_penalty": -2.0
+    "service_exact_weight_inside_pair": 0.55,
+    "fault_type_exact_weight_inside_pair": 0.3,
+    "neighborhood_match_weight_inside_pair": 0.15,
+    "twin_reproduction_weight": 1.0,
+    "count_mismatch_penalty": 0.2,
+    "repeated_wrong_guess_penalty": 0.25,
+    "iteration_penalty": 0.1,
+    "instruction_token_penalty_after_120_tokens": 0.001,
+    "exact_set_success_bonus": 1.0,
+    "terminal_failure_penalty": -2.0,
+    "soft_success_pair_score_threshold": 0.9,
+    "soft_success_twin_score_threshold": 0.6
   },
   "action_reward": {
     "resolved_weight": 2.0,
