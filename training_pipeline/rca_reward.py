@@ -4,28 +4,40 @@ from typing import Any
 from .schemas import FaultLabel, normalize_fault_type
 
 
+def normalize_service_name(service: str | None) -> str:
+    return str(service or "").strip().lower().replace("_", "-")
+
+
 def _neighbors(full_state: dict[str, Any], service: str) -> set[str]:
-    out = {service}
+    target = normalize_service_name(service)
+    out = {target}
     for edge in (full_state.get("graph", {}) or {}).get("edges", []) or []:
         src, dst = edge.get("src"), edge.get("dst")
-        if src == service and dst:
-            out.add(dst)
-        if dst == service and src:
-            out.add(src)
+        src_n, dst_n = normalize_service_name(src), normalize_service_name(dst)
+        if src_n == target and dst:
+            out.add(dst_n)
+        if dst_n == target and src:
+            out.add(src_n)
     return out
 
 
+def _canonical_key(label: FaultLabel) -> str:
+    return f"{normalize_service_name(label.service)}::{normalize_fault_type(label.fault_type or label.fault_family)}"
+
+
 def _pair_score(gt: FaultLabel, pred: FaultLabel, full_state: dict[str, Any]) -> dict[str, Any]:
-    service_exact = 1.0 if gt.service == pred.service else 0.0
+    gt_service = normalize_service_name(gt.service)
+    pred_service = normalize_service_name(pred.service)
+    service_exact = 1.0 if gt_service == pred_service else 0.0
     fault_exact = 1.0 if normalize_fault_type(gt.fault_type) == normalize_fault_type(pred.fault_type) else 0.0
-    neighborhood = 1.0 if pred.service in _neighbors(full_state, gt.service) else 0.0
+    neighborhood = 1.0 if pred_service in _neighbors(full_state, gt.service) else 0.0
     score = 0.55 * service_exact + 0.30 * fault_exact + 0.15 * neighborhood
     return {
         "score": score,
         "service_exact": service_exact,
         "fault_type_exact": fault_exact,
         "neighborhood_match": neighborhood,
-        "predicted_key": pred.canonical_key(),
+        "predicted_key": _canonical_key(pred),
     }
 
 
@@ -51,7 +63,7 @@ def greedy_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel], ful
 
 
 def exact_set_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel]) -> bool:
-    return {x.canonical_key() for x in gt_labels} == {x.canonical_key() for x in pred_labels}
+    return {_canonical_key(x) for x in gt_labels} == {_canonical_key(x) for x in pred_labels}
 
 
 def rca_reward(
@@ -127,6 +139,7 @@ def rca_reward(
         "num_pred": len(pred_labels),
         "soft_success": soft_success,
         "matches_public": matches,
+        "service_normalization": "case_insensitive_underscore_to_dash",
     }
     return {
         "reward": round(float(reward), 4),
