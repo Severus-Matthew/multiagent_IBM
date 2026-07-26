@@ -29,8 +29,7 @@ FAULT_TYPE_ALIASES = {
 
 CANONICAL_FAULT_TYPES = {
     "auth_failure", "dependency_failure", "infra_failure", "latency_degradation",
-    "config_error", "pod_failure", "network_failure", "resource_exhaustion",
-    "multifault", "unknown",
+    "config_error", "network_failure", "resource_exhaustion", "multifault", "unknown",
 }
 
 @dataclass(frozen=True)
@@ -58,6 +57,8 @@ class RCAAttempt:
     success: bool
     feedback: str
     token_counts: dict[str, int] = field(default_factory=dict)
+    group_id: str | None = None
+    selected_sample_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -80,6 +81,43 @@ class ActionAttempt:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+@dataclass
+class GRPORolloutSample:
+    """One trainable-policy sample for GRPO-style optimization.
+
+    In this project the trainable RCA policy produces the *instruction*.
+    The fixed RCA solver later consumes that instruction and emits service::fault_type.
+    Therefore `completion` is the policy-produced instruction, not the RCA answer.
+    """
+    stage: str
+    scenario_id: str
+    group_id: str
+    sample_id: str
+    sample_index: int
+    iteration: int
+    policy_role: str
+    policy_prompt: str
+    completion: str
+    completion_tokens: int
+    old_logprob_sum: float | None
+    old_logprobs: list[float] | None
+    reward: float
+    reward_components: dict[str, Any]
+    advantage: float | None
+    group_reward_mean: float | None
+    group_reward_std: float | None
+    solver_prediction: str
+    parsed_prediction: list[dict[str, Any]]
+    success: bool
+    terminal: bool
+    model_name: str
+    policy_version: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def normalize_fault_type(text: str | None) -> str:
     value = str(text or "").strip().lower()
     if not value:
@@ -90,6 +128,7 @@ def normalize_fault_type(text: str | None) -> str:
         if pattern in value:
             return canonical
     return value if value in CANONICAL_FAULT_TYPES else "unknown"
+
 
 def parse_fault_lines(text: str) -> list[FaultLabel]:
     """Parse strict RCA output lines: service::fault_type."""
@@ -108,6 +147,7 @@ def parse_fault_lines(text: str) -> list[FaultLabel]:
             labels.append(label)
             seen.add(key)
     return labels
+
 
 def approx_token_count(text: str) -> int:
     return max(1, int(len(str(text or "").split()) * 1.25))
