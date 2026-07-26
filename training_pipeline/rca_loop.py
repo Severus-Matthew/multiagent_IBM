@@ -86,6 +86,27 @@ def _stable_hash(obj: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _json_safe(obj: Any) -> Any:
+    """Convert policy metadata into JSON-safe values for rollout logging."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_safe(v) for v in obj]
+    try:
+        return float(obj)
+    except Exception:
+        return str(obj)
+
+
+def _policy_info_from_policy(policy: RCAInstructionPolicy) -> dict[str, Any]:
+    info = getattr(policy, "last_policy_info", None)
+    if not isinstance(info, dict):
+        return {}
+    return _json_safe(info)
+
+
 def build_rca_policy_prompt(
     compressed_state: dict[str, Any],
     history: list[dict[str, Any]],
@@ -180,17 +201,11 @@ def _apply_terminal_failure_penalty(
     grpo_samples: list[dict[str, Any]],
     terminal: dict[str, Any],
 ) -> None:
-    """Attach terminal failure penalty to the final failed decision point.
-
-    Earlier code only logged the terminal object. That meant the stated terminal
-    penalty never reached the training sample rewards. Here we subtract it from
-    all samples in the final iteration group and from the selected final attempt.
-    """
+    """Attach terminal failure penalty to the final failed decision point."""
     if not attempts:
         return
     final_iter = attempts[-1].iteration
     penalty = float(terminal.get("reward", 0.0) or 0.0)
-    final_group_id = attempts[-1].group_id
 
     attempts[-1].reward = round(float(attempts[-1].reward) + penalty, 4)
     attempts[-1].reward_components = {
@@ -253,6 +268,17 @@ def run_rca_grpo_episode(
             instruction = instruction_policy.generate_instruction(
                 compressed_state, history, iteration, sample_index=sample_index, group_id=group_id
             )
+            policy_info = _policy_info_from_policy(instruction_policy)
+            old_logprob_sum = policy_info.get("old_logprob_sum")
+            old_logprobs = policy_info.get("old_logprobs")
+            if old_logprob_sum is not None:
+                try:
+                    old_logprob_sum = float(old_logprob_sum)
+                except Exception:
+                    old_logprob_sum = None
+            if not isinstance(old_logprobs, list):
+                old_logprobs = None
+
             prediction_text = solver.solve(compressed_state, instruction)
             pred_labels = parse_fault_lines(prediction_text)
             pred_key = "\n".join(sorted(x.canonical_key() for x in pred_labels))
@@ -301,8 +327,8 @@ def run_rca_grpo_episode(
                 policy_prompt=policy_prompt,
                 completion=instruction,
                 completion_tokens=approx_token_count(instruction),
-                old_logprob_sum=None,
-                old_logprobs=None,
+                old_logprob_sum=old_logprob_sum,
+                old_logprobs=old_logprobs,
                 reward=reward_obj["reward"],
                 reward_components=reward_obj["components"],
                 advantage=None,
@@ -319,6 +345,7 @@ def run_rca_grpo_episode(
                     "redacted_state_hash": _stable_hash(compressed_state),
                     "selection_strategy": selection_strategy,
                     "twin_enabled": twin_validator is not None,
+                    "policy_info": policy_info,
                 },
             )
             group_pairs.append((sample, attempt))
