@@ -120,27 +120,91 @@ def require_twin_preflight_ok(result: dict[str, Any]) -> None:
 def rca_twin_gate(
     twin_result: dict[str, Any] | None,
     min_reproduction_score: float = 0.0,
+    rca_success: bool | None = None,
 ) -> dict[str, Any]:
-    """Turn a per-attempt RCA twin result into an explicit gate object."""
+    """Turn a per-attempt RCA twin result into an explicit gate object.
+
+    This gate is intentionally stricter than a raw reproduction score. A predicted
+    RCA is considered pipeline-verified only when:
+      1. the RCA attempt itself succeeded, when rca_success is provided;
+      2. the predicted fault was injected/evaluated by the behavioral twin proxy;
+      3. the injected prediction reproduces the same observable error pattern in
+         the input state abstraction above min_reproduction_score;
+      4. the score path did not use oracle labels or full-state RCA scoring.
+    """
     if not twin_result:
         return {
             "rca_twin_verified": False,
             "reason": "missing_twin_result",
             "min_reproduction_score": float(min_reproduction_score),
             "reproduction_score": 0.0,
+            "same_error_pattern_score": 0.0,
+            "predicted_fault_injection_checked": False,
+            "same_error_pattern_verified": False,
+            "rca_success_required": rca_success is not None,
+            "rca_success": bool(rca_success) if rca_success is not None else None,
         }
+
     score = float(twin_result.get("reproduction_score", 0.0) or 0.0)
     mode = twin_result.get("mode", "unknown")
-    ok = score >= float(min_reproduction_score)
+    uses_oracle = bool(twin_result.get("uses_oracle_labels", False))
+    uses_full_state = bool(twin_result.get("uses_full_state_for_rca_score", False))
+    injection_checked = bool(twin_result.get("predicted_signature")) and bool(twin_result.get("evidence_signature"))
+    same_error_pattern_verified = injection_checked and score >= float(min_reproduction_score)
+    rca_ok = True if rca_success is None else bool(rca_success)
+    ok = rca_ok and same_error_pattern_verified and not uses_oracle and not uses_full_state
+
+    if not rca_ok:
+        reason = "rca_attempt_not_successful"
+    elif uses_oracle:
+        reason = "twin_score_used_oracle_labels"
+    elif uses_full_state:
+        reason = "twin_score_used_full_state_rca_scoring"
+    elif not injection_checked:
+        reason = "missing_predicted_or_evidence_signature"
+    elif not same_error_pattern_verified:
+        reason = "score_below_threshold"
+    else:
+        reason = "rca_success_and_same_error_pattern_reproduced"
+
     return {
         "rca_twin_verified": ok,
-        "reason": "score_above_threshold" if ok else "score_below_threshold",
+        "reason": reason,
         "mode": mode,
         "min_reproduction_score": float(min_reproduction_score),
         "reproduction_score": round(score, 6),
-        "uses_oracle_labels": bool(twin_result.get("uses_oracle_labels", False)),
-        "uses_full_state_for_rca_score": bool(twin_result.get("uses_full_state_for_rca_score", False)),
+        "same_error_pattern_score": round(score, 6),
+        "predicted_fault_injection_checked": injection_checked,
+        "same_error_pattern_verified": same_error_pattern_verified,
+        "rca_success_required": rca_success is not None,
+        "rca_success": bool(rca_success) if rca_success is not None else None,
+        "uses_oracle_labels": uses_oracle,
+        "uses_full_state_for_rca_score": uses_full_state,
+        "predicted_signature": twin_result.get("predicted_signature"),
+        "evidence_signature_summary": _signature_summary(twin_result.get("evidence_signature", {})),
+        "per_fault": twin_result.get("per_fault", []),
     }
+
+
+def _signature_summary(sig: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(sig, dict):
+        return {}
+    keys = [
+        "degraded_services",
+        "failed_edges",
+        "top_error_services",
+        "trace_sources",
+        "trace_targets",
+        "metric_anomaly_services",
+        "affected_services",
+    ]
+    out: dict[str, Any] = {}
+    for key in keys:
+        vals = sig.get(key, []) or []
+        out[f"num_{key}"] = len(vals) if isinstance(vals, list) else 0
+        if isinstance(vals, list):
+            out[f"sample_{key}"] = vals[:10]
+    return out
 
 
 def _probe_fault_from_redacted_state(compressed_state: dict[str, Any]) -> FaultLabel:
