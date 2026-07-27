@@ -8,7 +8,7 @@ from typing import Any
 
 from .data_loader import iter_scenarios
 from .ground_truth import ground_truth_summary, labels_from_full_state
-from .rca_candidate_generator_v3 import compact_state_for_llm_v3
+from .rca_candidate_generator_v4 import compact_state_for_llm_v4
 from .rca_reward import normalize_service_name
 from .schemas import FaultLabel, normalize_fault_type
 from .split_utils import read_scenario_ids
@@ -68,7 +68,7 @@ def _candidate_excerpt(row: dict[str, Any]) -> dict[str, Any]:
 
 def audit_one(rec: Any, top_k: int = 20) -> dict[str, Any]:
     labels = labels_from_full_state(rec.full_state)
-    compact = compact_state_for_llm_v3(rec.compressed_state)
+    compact = compact_state_for_llm_v4(rec.compressed_state)
     evidence = compact.get("high_signal_evidence", {}) if isinstance(compact, dict) else {}
     valid_services = [normalize_service_name(x) for x in _safe_list(compact.get("valid_services", []))]
     valid_service_set = set(valid_services)
@@ -263,7 +263,7 @@ def main() -> None:
         rows.append(audit_one(rec, top_k=args.top_k))
 
     out = {
-        "audit_name": "rca_evidence_recoverability_audit_v3",
+        "audit_name": "rca_evidence_recoverability_audit_v4",
         "oracle_usage": "offline_eval_only_full_state_fault_context; not agent-visible",
         "processed_states": str(Path(args.processed_states).expanduser()),
         "scenario_ids_file": args.scenario_ids,
