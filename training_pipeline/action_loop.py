@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from digital_twin_runtime.sla_verifier import sla_verdict_from_state
 from digital_twin_runtime.twin_preflight import rca_twin_gate as build_rca_twin_gate
 
 from .action_reward import action_reward, terminal_action_failure_penalty
@@ -45,23 +46,19 @@ def _scenario_id(full_state: dict[str, Any], compressed_state: dict[str, Any]) -
 def _derive_rca_twin_gate(
     full_state: dict[str, Any],
     compressed_state: dict[str, Any],
-    rca_result: dict[str, Any],
     rca_faults: list[FaultLabel],
     twin_verifier,
     provided_gate: dict[str, Any] | None,
     min_reproduction_score: float,
+    upstream_rca_success: bool | None = None,
 ) -> dict[str, Any]:
-    upstream_success = bool(rca_result.get("upstream_success", rca_result.get("success", False)))
     if isinstance(provided_gate, dict) and provided_gate:
         gate = dict(provided_gate)
-        # Never allow action from a failed upstream RCA even if an old gate only
-        # stored a reproduction score. This prevents plausible-but-wrong RCA
-        # guesses from reaching the ActionAgent.
-        gate["upstream_rca_success"] = upstream_success
-        if not upstream_success:
-            gate["rca_twin_verified_before_upstream_success_check"] = bool(gate.get("rca_twin_verified"))
-            gate["rca_twin_verified"] = False
-            gate["reason"] = "upstream_rca_not_successful"
+        if upstream_rca_success is not None:
+            gate["upstream_rca_success"] = bool(upstream_rca_success)
+            if not upstream_rca_success:
+                gate["rca_twin_verified"] = False
+                gate["reason"] = "upstream_rca_failed"
         return gate
     if twin_verifier is None:
         return {
@@ -69,7 +66,7 @@ def _derive_rca_twin_gate(
             "reason": "missing_twin_verifier",
             "min_reproduction_score": float(min_reproduction_score),
             "reproduction_score": 0.0,
-            "upstream_rca_success": upstream_success,
+            "upstream_rca_success": upstream_rca_success,
         }
     if not rca_faults:
         return {
@@ -77,12 +74,12 @@ def _derive_rca_twin_gate(
             "reason": "missing_rca_faults",
             "min_reproduction_score": float(min_reproduction_score),
             "reproduction_score": 0.0,
-            "upstream_rca_success": upstream_success,
+            "upstream_rca_success": upstream_rca_success,
         }
     twin_result = twin_verifier.validate_rca_prediction(full_state, compressed_state, rca_faults)
-    gate = build_rca_twin_gate(twin_result, min_reproduction_score, rca_success=upstream_success)
+    gate = build_rca_twin_gate(twin_result, min_reproduction_score, rca_success=upstream_rca_success)
     gate["computed_inside_action_loop"] = True
-    gate["upstream_rca_success"] = upstream_success
+    gate["upstream_rca_success"] = upstream_rca_success
     return gate
 
 
@@ -132,18 +129,21 @@ def run_action_prompt_optimizer_loop(
 ) -> dict[str, Any]:
     """Run the action-prompt loop after RCA.
 
-    The action stage can now be explicitly gated by RCA twin verification. When
+    The action stage is explicitly gated by RCA twin verification. When
     require_rca_twin_verification=True and the final RCA is not verified by the
     twin, no remediation commands are generated or scored.
     """
+    upstream_success = rca_result.get("upstream_success")
+    if upstream_success is not None:
+        upstream_success = bool(upstream_success)
     gate = _derive_rca_twin_gate(
         full_state,
         compressed_state,
-        rca_result,
         rca_faults,
         twin_verifier,
         provided_gate=rca_twin_gate or rca_result.get("rca_twin_gate"),
         min_reproduction_score=min_twin_reproduction_score,
+        upstream_rca_success=upstream_success,
     )
     if require_rca_twin_verification and skip_action_if_rca_unverified and not gate.get("rca_twin_verified"):
         return _blocked_by_rca_gate_result(full_state, compressed_state, rca_result, rca_faults, gate, max_iterations)
@@ -151,6 +151,7 @@ def run_action_prompt_optimizer_loop(
     attempts: list[ActionAttempt] = []
     history: list[dict[str, Any]] = []
     namespace = _namespace(full_state, compressed_state)
+    current_sla = sla_verdict_from_state(compressed_state)
     for iteration in range(max_iterations):
         context = {
             "scenario_id": compressed_state.get("scenario_id") or full_state.get("scenario_id"),
@@ -161,21 +162,38 @@ def run_action_prompt_optimizer_loop(
             "rca_faults": [f.to_dict() for f in rca_faults],
             "rca_twin_gate": gate,
             "require_rca_twin_verification": require_rca_twin_verification,
+            "current_sla": current_sla,
             "redacted_state": compressed_state,
             "previous_attempts": history,
-            "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm commands.",
+            "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm/mongosh commands.",
+            "action_requirements": [
+                "Use only scoped namespace commands.",
+                "Prefer the minimal remediation matching the RCA fault type.",
+                "Include at least one verification command such as kubectl rollout status, kubectl get, or helm status.",
+                "Do not use exec, apply, replace, shell pipelines, broad deletes, or cluster-wide flags.",
+            ],
         }
         instruction = prompt_policy.generate(context)
         commands = action_agent.get_commands(instruction, context)
         safety = check_command_safety(commands)
         normalized = normalize_commands(commands)
         action = _first_valid_mitigation_action(normalized)
-        if safety.get("safe") and action:
-            verifier = twin_verifier.apply_action_and_score(full_state, rca_faults, action)
+        if safety.get("safe") and action and twin_verifier is not None:
+            verifier = twin_verifier.apply_action_and_score(
+                full_state,
+                rca_faults,
+                action,
+                compressed_state=compressed_state,
+            )
         else:
             verifier = {
                 "resolved": False,
+                "twin_resolved": False,
+                "sla_restored": False,
+                "target_sla_restored": False,
                 "symptom_reduction": 0.0,
+                "global_symptom_reduction": 0.0,
+                "target_symptom_reduction": 0.0,
                 "reason": "no_safe_valid_mitigation_action",
                 "has_safe_commands": bool(safety.get("safe")),
                 "has_valid_normalized_action": bool(action),
@@ -207,4 +225,5 @@ def run_action_prompt_optimizer_loop(
         "rca_result": rca_result,
         "rca_faults": [f.to_dict() for f in rca_faults],
         "rca_twin_gate": gate,
+        "initial_sla": current_sla,
     }
