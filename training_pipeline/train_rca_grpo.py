@@ -72,6 +72,8 @@ def main() -> None:
     ap.add_argument("--llm_max_tokens", type=int, default=300)
     ap.add_argument("--llm_temperature", type=float, default=0.0)
     ap.add_argument("--llm_state_char_budget", type=int, default=24000)
+    ap.add_argument("--llm_max_root_causes", type=int, default=1,
+                    help="Maximum root-cause lines returned by the LLM RCA postprocessor. Use 1 for single-fault smoke; use 2+ for multifault experiments.")
     ap.add_argument("--llm_cache_path", default=None,
                     help="Optional JSONL cache for LLM RCA calls, useful for repeated smoke tests.")
 
@@ -96,7 +98,7 @@ def main() -> None:
     allowed_ids = read_scenario_ids(args.scenario_ids)
     logger = RolloutLogger(args.output_dir)
     preflight_path = Path(args.output_dir).expanduser() / "twin_preflight.jsonl"
-    if args.rca_solver == "llm" and args.llm_cache_path is None:
+    if args.rca_solver == "llm" and not args.llm_cache_path:
         args.llm_cache_path = str(Path(args.output_dir).expanduser() / "llm_rca_cache.jsonl")
     policy = build_rca_instruction_policy(args)
     solver = build_rca_solver(args)
