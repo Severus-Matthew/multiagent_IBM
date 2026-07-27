@@ -18,33 +18,55 @@ from .split_utils import read_scenario_ids
 
 class DebugPromptPolicy:
     def generate(self, context):
-        svc = context.get("rca_result", {}).get("root_cause_service") or "<service>"
-        fault_type = context.get("rca_result", {}).get("fault_type") or "unknown"
+        rca = context.get("rca_result", {}) or {}
+        root_causes = rca.get("root_causes") or context.get("rca_faults") or []
+        first = root_causes[0] if root_causes else {}
+        svc = first.get("service") or rca.get("root_cause_service") or "<service>"
+        fault_type = first.get("fault_type") or rca.get("fault_type") or "unknown"
         ns = context.get("namespace") or "default"
-        if fault_type == "infra_failure":
-            return (
-                f"Repair Kubernetes scheduling for deployment/{svc} in namespace {ns}. "
-                "Remove invalid nodeName/nodeSelector/affinity constraints if present, then restart the deployment and verify rollout. "
-                "Output only kubectl commands."
-            )
-        return f"Restart deployment/{svc} in namespace {ns}, then verify rollout status. Output only kubectl commands."
+        sla = context.get("current_sla", {}) or {}
+        return (
+            f"Repair RCA target deployment/{svc} in namespace {ns}. "
+            f"RCA fault type is {fault_type}. "
+            f"Current SLA hard violations: {sla.get('hard_violations')}; weighted violations: {sla.get('weighted_violations')}. "
+            "Choose the minimal safe remediation that matches the fault type, then verify rollout or service health. "
+            "Output only kubectl/helm/mongosh commands, one command per line. "
+            "Do not use exec, apply, replace, broad delete, shell pipes, sudo, or cluster-wide flags."
+        )
 
 
 class DebugActionAgent:
     def get_commands(self, instruction_prompt, context):
-        svc = context.get("rca_result", {}).get("root_cause_service") or "<service>"
-        fault_type = context.get("rca_result", {}).get("fault_type") or "unknown"
+        rca = context.get("rca_result", {}) or {}
+        root_causes = rca.get("root_causes") or context.get("rca_faults") or []
+        first = root_causes[0] if root_causes else {}
+        svc = first.get("service") or rca.get("root_cause_service") or "<service>"
+        fault_type = first.get("fault_type") or rca.get("fault_type") or "unknown"
         ns = context.get("namespace") or "default"
+
+        verify = f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s"
         if fault_type == "infra_failure":
             patch = "'[{\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeName\"}]'"
             return [
                 f"kubectl patch deployment/{svc} -n {ns} --type=json -p={patch}",
                 f"kubectl rollout restart deployment/{svc} -n {ns}",
-                f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s",
+                verify,
+            ]
+        if fault_type in {"resource_exhaustion", "latency_degradation"}:
+            return [
+                f"kubectl scale deployment/{svc} -n {ns} --replicas=2",
+                verify,
+                f"kubectl get pods -n {ns}",
+            ]
+        if fault_type in {"config_error", "auth_failure", "dependency_failure", "network_failure"}:
+            return [
+                f"kubectl rollout restart deployment/{svc} -n {ns}",
+                verify,
+                f"kubectl get deployment/{svc} -n {ns}",
             ]
         return [
             f"kubectl rollout restart deployment/{svc} -n {ns}",
-            f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s",
+            verify,
         ]
 
 
@@ -80,6 +102,7 @@ def main() -> None:
 
     total = passed = skipped_unlabeled = skipped_filter = skipped_missing_rca = skipped_action_gate = 0
     twin_preflight_count = twin_preflight_failed = 0
+    action_attempt_count = sla_restored_count = target_sla_restored_count = 0
     uses_oracle_rca = not bool(args.rca_rollout_dir)
 
     for rec in iter_scenarios(args.processed_states):
@@ -128,11 +151,17 @@ def main() -> None:
             rca_twin_gate=rca_gate,
         )
         skipped_action_gate += int(bool(result.get("skipped_action")))
+        attempts = result.get("attempts", []) or []
+        action_attempt_count += len(attempts)
+        if attempts:
+            final_verifier = attempts[-1].get("verifier_result", {}) or {}
+            sla_restored_count += int(bool(final_verifier.get("sla_restored")))
+            target_sla_restored_count += int(bool(final_verifier.get("target_sla_restored")))
         passed += int(result["success"])
         logger.log({"stage": "action", **result})
         print(
             f"[ACTION] {total} {rec.scenario_id} "
-            f"success={result['success']} skipped_action={bool(result.get('skipped_action'))}"
+            f"success={result['success']} skipped_action={bool(result.get('skipped_action'))} attempts={len(attempts)}"
         )
 
     summary = {
@@ -145,6 +174,9 @@ def main() -> None:
         "skipped_filter": skipped_filter,
         "skipped_missing_rca": skipped_missing_rca,
         "skipped_action_gate": skipped_action_gate,
+        "action_attempt_count": action_attempt_count,
+        "sla_restored_count": sla_restored_count,
+        "target_sla_restored_count": target_sla_restored_count,
         "scenario_ids_file": args.scenario_ids,
         "rca_rollout_dir": args.rca_rollout_dir,
         "uses_oracle_rca": uses_oracle_rca,
