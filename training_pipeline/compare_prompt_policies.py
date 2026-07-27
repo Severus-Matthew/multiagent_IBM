@@ -10,13 +10,16 @@ from typing import Any
 from .wandb_logger import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT
 
 
+VALID_POLICIES = {"heuristic", "operator", "qwen_stub"}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Compare RCA prompt policies on the same scenario split.")
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--scenario_ids", required=True)
     ap.add_argument("--output_root", required=True)
-    ap.add_argument("--policies", default="heuristic,operator,gnn,qwen_stub",
-                    help="Comma-separated policies: heuristic,operator,gnn,qwen_stub")
+    ap.add_argument("--policies", default="heuristic,operator,qwen_stub",
+                    help="Comma-separated policies: heuristic,operator,qwen_stub")
     ap.add_argument("--use_behavioral_twin", action="store_true")
     ap.add_argument("--group_size", type=int, default=4)
     ap.add_argument("--max_iterations", type=int, default=5)
@@ -24,11 +27,6 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--rca_solver", choices=["heuristic"], default="heuristic")
     ap.add_argument("--operator_max_focus_services", type=int, default=6)
-    ap.add_argument("--gnn_hidden_dim", type=int, default=64)
-    ap.add_argument("--gnn_num_layers", type=int, default=2)
-    ap.add_argument("--gnn_seed", type=int, default=7)
-    ap.add_argument("--gnn_prior_weight", type=float, default=1.0)
-    ap.add_argument("--gnn_device", default=None)
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb_project", default=DEFAULT_WANDB_PROJECT)
     ap.add_argument("--wandb_entity", default=DEFAULT_WANDB_ENTITY)
@@ -38,6 +36,9 @@ def main() -> None:
     output_root = Path(args.output_root).expanduser()
     output_root.mkdir(parents=True, exist_ok=True)
     policies = [p.strip() for p in args.policies.split(",") if p.strip()]
+    invalid = sorted(set(policies) - VALID_POLICIES)
+    if invalid:
+        raise ValueError(f"unknown policies {invalid}; valid={sorted(VALID_POLICIES)}")
 
     rows: dict[str, Any] = {}
     for policy in policies:
@@ -56,13 +57,7 @@ def main() -> None:
             "--max_iterations", str(args.max_iterations),
             "--selection_strategy", args.selection_strategy,
             "--operator_max_focus_services", str(args.operator_max_focus_services),
-            "--gnn_hidden_dim", str(args.gnn_hidden_dim),
-            "--gnn_num_layers", str(args.gnn_num_layers),
-            "--gnn_seed", str(args.gnn_seed),
-            "--gnn_prior_weight", str(args.gnn_prior_weight),
         ]
-        if args.gnn_device:
-            train_cmd += ["--gnn_device", args.gnn_device]
         if args.limit is not None:
             train_cmd += ["--limit", str(args.limit)]
         if args.use_behavioral_twin:
@@ -99,11 +94,6 @@ def main() -> None:
         "selection_strategy": args.selection_strategy,
         "use_behavioral_twin": args.use_behavioral_twin,
         "operator_max_focus_services": args.operator_max_focus_services,
-        "gnn_hidden_dim": args.gnn_hidden_dim,
-        "gnn_num_layers": args.gnn_num_layers,
-        "gnn_seed": args.gnn_seed,
-        "gnn_prior_weight": args.gnn_prior_weight,
-        "gnn_device": args.gnn_device,
         "results": rows,
     }
     (output_root / "comparison_summary.json").write_text(
