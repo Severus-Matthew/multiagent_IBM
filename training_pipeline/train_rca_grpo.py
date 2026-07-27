@@ -14,9 +14,14 @@ from .prompt_policy_factory import (
 )
 from .rca_loop import run_rca_grpo_episode
 from .rollout_logger import RolloutLogger
+from .schemas import parse_fault_lines
 from .split_utils import read_scenario_ids
 from .wandb_logger import DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT, WandbRunLogger, parse_tags
-from digital_twin_runtime.twin_preflight import preflight_behavioral_twin, require_twin_preflight_ok
+from digital_twin_runtime.twin_preflight import (
+    preflight_behavioral_twin,
+    rca_twin_gate,
+    require_twin_preflight_ok,
+)
 from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 
 
@@ -35,7 +40,7 @@ def main() -> None:
     ap.add_argument("--abort_on_twin_preflight_failure", action="store_true",
                     help="Stop the rollout immediately if twin preflight fails.")
     ap.add_argument("--require_rca_twin_verification", action="store_true",
-                    help="Require final successful RCA attempts to have a computed twin verification score above --min_twin_reproduction_score.")
+                    help="Require final successful RCA attempts to reproduce the same observable error pattern in the twin.")
     ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0,
                     help="Minimum RCA twin reproduction score when --require_rca_twin_verification is enabled.")
     ap.add_argument("--max_iterations", type=int, default=5)
@@ -94,6 +99,7 @@ def main() -> None:
     twin = BehavioralTwinVerifier() if twin_mode == "behavioral" else None
     total = passed = skipped_unlabeled = skipped_filter = sample_count = 0
     twin_preflight_count = twin_preflight_failed = twin_verified_successes = twin_blocked_successes = 0
+    same_error_pattern_verified_count = 0
 
     policy_model_name = args.policy_model_name or default_policy_model_name(args)
     run_config = {
@@ -164,8 +170,9 @@ def main() -> None:
                 result["twin_preflight"] = twin_preflight
 
             if args.require_rca_twin_verification:
-                gate = _final_rca_twin_gate(result, args.min_twin_reproduction_score)
+                gate = _final_rca_twin_gate(rec.full_state, rec.compressed_state, twin, result, args.min_twin_reproduction_score)
                 result["rca_twin_gate"] = gate
+                same_error_pattern_verified_count += int(bool(gate.get("same_error_pattern_verified")))
                 if result.get("success") and gate.get("rca_twin_verified"):
                     twin_verified_successes += 1
                 elif result.get("success") and not gate.get("rca_twin_verified"):
@@ -205,6 +212,7 @@ def main() -> None:
             "twin_preflight_failed": twin_preflight_failed,
             "require_rca_twin_verification": args.require_rca_twin_verification,
             "min_twin_reproduction_score": args.min_twin_reproduction_score,
+            "same_error_pattern_verified_count": same_error_pattern_verified_count,
             "twin_verified_successes": twin_verified_successes,
             "twin_blocked_successes": twin_blocked_successes,
             "policy_model_name": policy_model_name,
@@ -231,27 +239,20 @@ def _append_jsonl(path: Path, row: dict) -> None:
         f.write(json.dumps(row, sort_keys=True, default=str) + "\n")
 
 
-def _final_rca_twin_gate(result: dict, min_score: float) -> dict:
+def _final_rca_twin_gate(full_state: dict, compressed_state: dict, twin, result: dict, min_score: float) -> dict:
     attempts = result.get("attempts", []) or []
     if not attempts:
-        return {
-            "rca_twin_verified": False,
-            "reason": "no_attempts",
-            "min_reproduction_score": float(min_score),
-            "reproduction_score": 0.0,
-        }
+        return rca_twin_gate(None, min_score, rca_success=False)
     final = attempts[-1]
-    comps = final.get("reward_components", {}) or {}
-    score = float(comps.get("twin_reproduction_score", 0.0) or 0.0)
-    ok = score >= float(min_score)
-    return {
-        "rca_twin_verified": ok,
-        "reason": "score_above_threshold" if ok else "score_below_threshold",
-        "min_reproduction_score": float(min_score),
-        "reproduction_score": round(score, 6),
-        "final_attempt_success": bool(final.get("success")),
-        "final_prediction": final.get("prediction_text", ""),
-    }
+    rca_success = bool(final.get("success"))
+    faults = parse_fault_lines(final.get("prediction_text", ""))
+    twin_result = None
+    if twin is not None and faults:
+        twin_result = twin.validate_rca_prediction(full_state, compressed_state, faults)
+    gate = rca_twin_gate(twin_result, min_score, rca_success=rca_success)
+    gate["final_attempt_success"] = rca_success
+    gate["final_prediction"] = final.get("prediction_text", "")
+    return gate
 
 
 if __name__ == "__main__":
