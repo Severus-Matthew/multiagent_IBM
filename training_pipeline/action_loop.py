@@ -45,19 +45,31 @@ def _scenario_id(full_state: dict[str, Any], compressed_state: dict[str, Any]) -
 def _derive_rca_twin_gate(
     full_state: dict[str, Any],
     compressed_state: dict[str, Any],
+    rca_result: dict[str, Any],
     rca_faults: list[FaultLabel],
     twin_verifier,
     provided_gate: dict[str, Any] | None,
     min_reproduction_score: float,
 ) -> dict[str, Any]:
+    upstream_success = bool(rca_result.get("upstream_success", rca_result.get("success", False)))
     if isinstance(provided_gate, dict) and provided_gate:
-        return dict(provided_gate)
+        gate = dict(provided_gate)
+        # Never allow action from a failed upstream RCA even if an old gate only
+        # stored a reproduction score. This prevents plausible-but-wrong RCA
+        # guesses from reaching the ActionAgent.
+        gate["upstream_rca_success"] = upstream_success
+        if not upstream_success:
+            gate["rca_twin_verified_before_upstream_success_check"] = bool(gate.get("rca_twin_verified"))
+            gate["rca_twin_verified"] = False
+            gate["reason"] = "upstream_rca_not_successful"
+        return gate
     if twin_verifier is None:
         return {
             "rca_twin_verified": False,
             "reason": "missing_twin_verifier",
             "min_reproduction_score": float(min_reproduction_score),
             "reproduction_score": 0.0,
+            "upstream_rca_success": upstream_success,
         }
     if not rca_faults:
         return {
@@ -65,10 +77,12 @@ def _derive_rca_twin_gate(
             "reason": "missing_rca_faults",
             "min_reproduction_score": float(min_reproduction_score),
             "reproduction_score": 0.0,
+            "upstream_rca_success": upstream_success,
         }
     twin_result = twin_verifier.validate_rca_prediction(full_state, compressed_state, rca_faults)
-    gate = build_rca_twin_gate(twin_result, min_reproduction_score)
+    gate = build_rca_twin_gate(twin_result, min_reproduction_score, rca_success=upstream_success)
     gate["computed_inside_action_loop"] = True
+    gate["upstream_rca_success"] = upstream_success
     return gate
 
 
@@ -125,6 +139,7 @@ def run_action_prompt_optimizer_loop(
     gate = _derive_rca_twin_gate(
         full_state,
         compressed_state,
+        rca_result,
         rca_faults,
         twin_verifier,
         provided_gate=rca_twin_gate or rca_result.get("rca_twin_gate"),
