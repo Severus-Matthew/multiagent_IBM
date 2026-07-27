@@ -32,16 +32,16 @@ Output contract:
 
 Diagnosis rules:
 - Default to ONE root cause unless the evidence explicitly shows independent faults in unrelated services.
-- Use the candidate_root_causes list as a hint, not a hard override.
+- Use candidate_root_causes as an evidence shortlist and prefer top candidates when supported.
 - Do not blame downstream victims just because they log errors.
 - Do not blame helper/observability/proxy services such as jaeger or nginx-thrift unless they are directly unhealthy.
 - Prefer direct service-health evidence over noisy log fan-out.
-- If pods are Pending/CrashLooping/unready, nodeName is invalid, or scheduling is impossible, use infra_failure.
-- If evidence mentions auth, unauthorized, credentials, permission, or MongoDB auth problems, use auth_failure.
-- If target ports, service ports, connection refused due to service config, or endpoint/service misconfiguration dominates, use config_error.
+- If pods are Pending/CrashLooping/unready, nodeName is invalid, scheduling fails, or replicas are unavailable, use infra_failure.
+- If auth/unauthorized/credential/permission/MongoDB auth evidence dominates, use auth_failure.
+- If target ports, service ports, endpoint/service mismatch, or app config dominates, use config_error.
 - If latency/delay dominates, use latency_degradation.
 - If packet loss/network unreachable dominates, use network_failure.
-- Use dependency_failure only when an external dependency is unhealthy and the evidence does not indicate auth/config/network/infra.
+- Use dependency_failure only when a dependency is unhealthy and no more specific auth/config/network/infra cause is supported.
 """
 
 
@@ -54,6 +54,33 @@ _HELPER_SERVICE_PATTERNS = (
     "loadgenerator",
 )
 
+_SERVICE_VALUE_KEYS = {
+    "service", "service_name", "service_name_short", "source_service", "target_service",
+    "src_service", "dst_service", "destination_service", "source", "target", "src", "dst",
+    "component", "app", "workload", "deployment", "pod", "container", "name",
+}
+
+_SINGLE_WORD_SERVICE_HINTS = {
+    "geo", "rate", "profile", "recommendation", "reservation", "user", "search", "frontend",
+    "compose", "home", "media", "post", "text", "unique", "url",
+}
+
+_INFRA_TOKENS = (
+    "pending", "crashloop", "crash", "killed", "kill", "unready", "not ready", "no ready",
+    "unavailable", "node", "nodename", "schedule", "scheduling", "replica", "oom", "evicted",
+)
+_AUTH_TOKENS = (
+    "auth", "unauthorized", "not authorized", "credential", "permission", "forbidden", "access denied",
+    "authentication", "login", "password", "token",
+)
+_CONFIG_TOKENS = (
+    "target_port", "target port", "port_misconfig", "misconfig", "wrong bin", "wrong_bin",
+    "config", "configuration", "endpoint", "service port", "connection refused", "bad gateway",
+)
+_LATENCY_TOKENS = ("delay", "latency", "slow", "timeout", "timed out", "p99", "p95")
+_NETWORK_TOKENS = ("packet", "loss", "network", "unreachable", "reset", "dropped", "drop")
+_ERROR_TOKENS = ("error", "exception", "failed", "failure", "unhealthy", "degraded")
+
 
 class LLMRCASolver:
     """Fixed LLM RCA solver used behind the prompt-policy/controller.
@@ -61,11 +88,7 @@ class LLMRCASolver:
     The trainable/optimizable object remains the RCA instruction policy. This
     solver is fixed at rollout time: it consumes the policy-generated instruction
     and the redacted/compressed state, then returns strict service::fault_type
-    predictions.
-
-    Important: candidate_root_causes are logged and shown as hints only. They no
-    longer override model output because the v3 candidate-guided override reduced
-    smoke accuracy. Debug JSONL rows are written for every non-cached API call.
+    predictions. Debug JSONL rows are written for every non-cached API call.
     """
 
     def __init__(
@@ -90,7 +113,6 @@ class LLMRCASolver:
         if self.cache_path and self.cache_path.exists():
             self._load_cache()
 
-        # Lazy import so offline heuristic runs do not require API packages.
         from agents.llm_client import LLMClient
 
         self.client = LLMClient(provider=provider, model=model)
@@ -119,6 +141,7 @@ class LLMRCASolver:
         )
         sanitized_unlimited = sanitize_rca_prediction(raw, compressed_state, max_root_causes=None)
         cleaned = sanitize_rca_prediction(raw, compressed_state, max_root_causes=self.max_root_causes)
+        evidence = compact.get("high_signal_evidence") if isinstance(compact, dict) else None
         debug = {
             "key": cache_key,
             "provider": self.provider,
@@ -132,8 +155,8 @@ class LLMRCASolver:
             "sanitized_unlimited": sanitized_unlimited,
             "sanitized_prediction": cleaned,
             "postprocess_mode": "sanitize_only_no_candidate_override",
-            "high_signal_evidence": compact.get("high_signal_evidence") if isinstance(compact, dict) else None,
-            "candidate_root_causes": ((compact.get("high_signal_evidence") or {}).get("candidate_root_causes") if isinstance(compact, dict) else None),
+            "high_signal_evidence": evidence,
+            "candidate_root_causes": (evidence or {}).get("candidate_root_causes") if isinstance(evidence, dict) else None,
         }
         self._cache[cache_key] = cleaned
         self._append_cache(cache_key, cleaned, raw)
@@ -190,15 +213,15 @@ class LLMRCASolver:
 def compact_state_for_llm(compressed_state: dict[str, Any], char_budget: int = 24000) -> dict[str, Any]:
     """Build a compact redacted state for an LLM RCA solver.
 
-    The function intentionally uses only the compressed state. It excludes
-    scenario_id because generated scenario IDs can encode fault labels. It
-    prioritizes direct service health, graph/trace/log/metric summaries, and a
-    high-signal RCA evidence summary before including larger raw maps.
+    Excludes scenario_id because generated IDs encode labels. The high-signal
+    evidence extractor is recursive so it works even when telemetry is nested
+    under metrics_output/logs_output/traces_output or other redacted schemas.
     """
     evidence = high_signal_evidence_summary(compressed_state)
     keys = [
         "namespace",
         "services",
+        "system",
         "service_health",
         "health",
         "graph",
@@ -208,6 +231,10 @@ def compact_state_for_llm(compressed_state: dict[str, Any], char_budget: int = 2
         "metrics",
         "llm_view",
         "clusters",
+        "metrics_output",
+        "logs_output",
+        "traces_output",
+        "workload",
     ]
     compact = {k: compressed_state.get(k) for k in keys if k in compressed_state}
     compact = {"high_signal_evidence": evidence, **compact}
@@ -215,26 +242,12 @@ def compact_state_for_llm(compressed_state: dict[str, Any], char_budget: int = 2
     if len(text) <= char_budget:
         return compact
 
-    services = compressed_state.get("services", []) or []
-    system = compressed_state.get("system", {}) or {}
-    slim_system: dict[str, Any] = {}
-    for svc in services[:120]:
-        info = system.get(svc, {}) if isinstance(system, dict) else {}
-        if isinstance(info, dict):
-            health = info.get("health") or {}
-            if _is_interesting_health(health):
-                slim_system[str(svc)] = {
-                    "health": health,
-                    "summary": info.get("summary"),
-                }
     compact2 = {
         "high_signal_evidence": evidence,
         "namespace": compressed_state.get("namespace"),
-        "services": services[:160],
-        "interesting_system_health": slim_system,
-        "graph": compressed_state.get("graph"),
+        "services": evidence.get("observed_services_sample", [])[:160],
         "llm_view": compressed_state.get("llm_view"),
-        "clusters": compressed_state.get("clusters"),
+        "graph": compressed_state.get("graph") or compressed_state.get("service_graph"),
     }
     text2 = json.dumps(compact2, sort_keys=True, default=str)
     if len(text2) <= char_budget:
@@ -246,56 +259,62 @@ def compact_state_for_llm(compressed_state: dict[str, Any], char_budget: int = 2
 
 
 def high_signal_evidence_summary(compressed_state: dict[str, Any]) -> dict[str, Any]:
-    system = compressed_state.get("system", {}) or {}
-    services = [str(s) for s in (compressed_state.get("services", []) or [])]
+    leaf_rows = list(_iter_leaf_text(compressed_state, max_items=40000))
+    services = _observed_services(compressed_state, leaf_rows)
+    service_set = set(services)
     llm_view = compressed_state.get("llm_view", {}) or {}
 
-    direct_health: list[dict[str, Any]] = []
-    if isinstance(system, dict):
-        for svc, info in system.items():
-            if not isinstance(info, dict):
-                continue
-            health = info.get("health", {}) or {}
-            if _is_interesting_health(health):
-                direct_health.append({
-                    "service": str(svc),
-                    "health": health,
-                    "root_cause_signal_score": _health_signal_score(health),
-                })
-    direct_health.sort(key=lambda x: float(x.get("root_cause_signal_score", 0.0)), reverse=True)
+    direct_health = _direct_health_from_system(compressed_state, service_set)
+    recursive_health = _recursive_signal_rows(leaf_rows, service_set)
+    direct_health.extend(recursive_health)
+    direct_health = _dedupe_health_rows(direct_health)
 
     signature = _symptom_signature_fallback(compressed_state)
     service_mentions = Counter()
-    for field in [
-        "degraded_services",
-        "top_error_services",
-        "trace_sources",
-        "trace_targets",
-        "metric_anomaly_services",
-        "affected_services",
-    ]:
+    for svc in services:
+        count = 0
+        svc_l = svc.lower()
+        for path, text in leaf_rows:
+            if svc_l in f"{path} {text}".lower():
+                count += 1
+        if count:
+            service_mentions[svc] += count
+
+    for field in ["degraded_services", "top_error_services", "trace_sources", "trace_targets", "metric_anomaly_services", "affected_services"]:
         for svc in signature.get(field, []) or []:
-            service_mentions[str(svc)] += 1
+            if svc:
+                service_mentions[str(svc)] += 3
     for edge in signature.get("failed_edges", []) or []:
         for part in str(edge).split("->"):
             if part:
-                service_mentions[part] += 1
+                service_mentions[part] += 2
 
-    candidates = build_candidate_root_causes(compressed_state, signature=signature, direct_health=direct_health)
+    text_corpus = "\n".join(f"{p}: {t}" for p, t in leaf_rows[:12000]).lower()
+    candidates = build_candidate_root_causes(
+        compressed_state,
+        signature=signature,
+        direct_health=direct_health,
+        services=services,
+        service_mentions=service_mentions,
+        text_corpus=text_corpus,
+        leaf_rows=leaf_rows,
+    )
     return {
+        "extractor_version": "recursive_schema_v1",
         "root_cause_ranking_hint": [
             "Prefer direct_health_services first when direct infra/pod evidence exists.",
-            "Use candidate_root_causes as a hint only; it is logged for debugging and is not a hard postprocess override.",
-            "Then use symptom_signature and service_mention_counts to distinguish root cause from fan-out victims.",
-            "Avoid helper services unless they appear in direct_health_services.",
+            "Use candidate_root_causes as an evidence shortlist, not as ground truth.",
+            "Use service_mention_counts and signal_by_service to avoid fan-out victims.",
+            "Avoid helper/frontend/proxy services unless direct health evidence supports them.",
         ],
         "candidate_root_causes": candidates[:40],
-        "direct_health_services": direct_health[:30],
+        "direct_health_services": direct_health[:40],
+        "signal_by_service": _signal_summary_by_service(leaf_rows, services)[:40],
         "symptom_signature": signature,
-        "service_mention_counts": service_mentions.most_common(40),
+        "service_mention_counts": service_mentions.most_common(60),
         "top_log_error_services": llm_view.get("top_log_error_services"),
         "top_metric_anomaly_services": llm_view.get("top_metric_anomaly_services"),
-        "observed_services_sample": services[:120],
+        "observed_services_sample": services[:160],
         "helper_service_patterns_to_avoid_without_direct_health": list(_HELPER_SERVICE_PATTERNS),
         "fault_type_mapping_hints": {
             "infra_failure": "Pending/unready/crashloop/killed pods, invalid nodeName, scheduling or replica availability failures.",
@@ -312,16 +331,18 @@ def build_candidate_root_causes(
     compressed_state: dict[str, Any],
     signature: dict[str, Any] | None = None,
     direct_health: list[dict[str, Any]] | None = None,
+    services: list[str] | None = None,
+    service_mentions: Counter | None = None,
+    text_corpus: str | None = None,
+    leaf_rows: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Deterministic evidence shortlist for debugging and LLM prompting.
-
-    This list is intentionally only advisory. It is not used to replace the LLM
-    prediction because an earlier hard override made the smoke worse.
-    """
     signature = signature or _symptom_signature_fallback(compressed_state)
     direct_health = direct_health if direct_health is not None else []
-    services = [str(s) for s in (compressed_state.get("services", []) or [])]
+    leaf_rows = leaf_rows if leaf_rows is not None else list(_iter_leaf_text(compressed_state, max_items=40000))
+    services = services or _observed_services(compressed_state, leaf_rows)
     service_set = set(services)
+    service_mentions = service_mentions or Counter()
+    text_corpus = text_corpus if text_corpus is not None else json.dumps(compressed_state, sort_keys=True, default=str).lower()
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
 
     def add(service: str, fault_type: str, score: float, reason: str) -> None:
@@ -336,7 +357,13 @@ def build_candidate_root_causes(
 
     for row in direct_health:
         svc = str(row.get("service") or "")
-        add(svc, "infra_failure", 5.0 + _safe_float(row.get("root_cause_signal_score")), "direct_service_health")
+        ft = str(row.get("suggested_fault_type") or "infra_failure")
+        add(svc, ft, 4.0 + _safe_float(row.get("root_cause_signal_score")), "direct_or_recursive_health")
+
+    for svc, count in service_mentions.most_common(80):
+        if svc not in service_set and not _looks_like_service(svc):
+            continue
+        add(svc, "dependency_failure", min(3.0, 0.2 * count), "service_mention_frequency")
 
     for svc in signature.get("degraded_services", []) or []:
         add(str(svc), "infra_failure", 2.5, "degraded_service")
@@ -350,28 +377,33 @@ def build_candidate_root_causes(
             add(parts[-1], "dependency_failure", 1.0, "failed_edge_target")
             add(parts[0], "dependency_failure", 0.5, "failed_edge_source")
 
-    all_text = json.dumps(compressed_state, sort_keys=True, default=str).lower()
-    auth_hint = any(t in all_text for t in ["auth", "unauthorized", "credential", "permission", "not authorized"])
-    config_hint = any(t in all_text for t in ["target_port", "target port", "port_misconfig", "misconfig", "wrong bin", "config"])
-    latency_hint = any(t in all_text for t in ["delay", "latency", "slow", "timeout"])
-    network_hint = any(t in all_text for t in ["loss", "packet", "network", "unreachable"])
+    auth_hint = _has_any(text_corpus, _AUTH_TOKENS)
+    config_hint = _has_any(text_corpus, _CONFIG_TOKENS)
+    latency_hint = _has_any(text_corpus, _LATENCY_TOKENS)
+    network_hint = _has_any(text_corpus, _NETWORK_TOKENS)
+    infra_hint = _has_any(text_corpus, _INFRA_TOKENS)
 
     if auth_hint:
         for svc in services:
-            if "mongodb" in svc.lower():
-                add(svc, "auth_failure", 3.0, "auth_hint_mongodb_service")
+            s = svc.lower()
+            if "mongo" in s or "db" in s or _service_context_has_tokens(leaf_rows, svc, _AUTH_TOKENS):
+                add(svc, "auth_failure", 4.0, "auth_hint_service_context")
     if config_hint:
-        for svc in service_set:
-            if not _is_helper_service(svc):
-                add(svc, "config_error", 0.75, "config_hint_observed_service")
+        for svc in services:
+            if not _is_helper_service(svc) and _service_context_has_tokens(leaf_rows, svc, _CONFIG_TOKENS):
+                add(svc, "config_error", 3.0, "config_hint_service_context")
     if latency_hint:
-        for svc in service_set:
-            if not _is_helper_service(svc):
-                add(svc, "latency_degradation", 0.5, "latency_hint_observed_service")
+        for svc in services:
+            if not _is_helper_service(svc) and _service_context_has_tokens(leaf_rows, svc, _LATENCY_TOKENS):
+                add(svc, "latency_degradation", 2.0, "latency_hint_service_context")
     if network_hint:
-        for svc in service_set:
-            if not _is_helper_service(svc):
-                add(svc, "network_failure", 0.5, "network_hint_observed_service")
+        for svc in services:
+            if not _is_helper_service(svc) and _service_context_has_tokens(leaf_rows, svc, _NETWORK_TOKENS):
+                add(svc, "network_failure", 2.0, "network_hint_service_context")
+    if infra_hint:
+        for svc in services:
+            if not _is_helper_service(svc) and _service_context_has_tokens(leaf_rows, svc, _INFRA_TOKENS):
+                add(svc, "infra_failure", 2.5, "infra_hint_service_context")
 
     rows = []
     for row in candidates.values():
@@ -380,24 +412,18 @@ def build_candidate_root_causes(
         if _is_helper_service(svc):
             score -= 5.0
             row["reasons"].append("helper_service_penalty")
-        if svc.endswith("-frontend") or svc in {"media-frontend", "nginx-web-server"}:
+        if svc.endswith("-frontend") or svc in {"media-frontend", "nginx-web-server", "frontend"}:
             score -= 1.5
             row["reasons"].append("frontend_proxy_penalty")
         if svc not in service_set:
             score -= 1.0
-            row["reasons"].append("not_in_services_list_penalty")
+            row["reasons"].append("not_in_observed_services_penalty")
         rows.append({**row, "score": round(score, 6)})
     rows.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
     return rows
 
 
 def sanitize_rca_prediction(raw: str, compressed_state: dict[str, Any] | None = None, max_root_causes: int | None = None) -> str:
-    """Convert an LLM response to strict service::fault_type lines.
-
-    This is intentionally sanitize-only. It sorts model-provided lines by public
-    evidence priority but does not replace the service/fault type with a separate
-    deterministic candidate. That avoids the v3 candidate-guided override failure.
-    """
     text = str(raw or "").strip()
     text = _strip_fences(text)
     lines: list[str] = []
@@ -419,9 +445,7 @@ def sanitize_rca_prediction(raw: str, compressed_state: dict[str, Any] | None = 
     if lines:
         return _dedupe_lines(lines, compressed_state=compressed_state, max_root_causes=max_root_causes)
 
-    services = []
-    if compressed_state:
-        services = [str(s) for s in (compressed_state.get("services", []) or [])]
+    services = _observed_services(compressed_state or {}, list(_iter_leaf_text(compressed_state or {}, max_items=8000)))
     lowered = text.lower()
     for svc in services:
         if svc.lower() not in lowered:
@@ -430,6 +454,208 @@ def sanitize_rca_prediction(raw: str, compressed_state: dict[str, Any] | None = 
             if ft != "multifault" and ft in lowered:
                 return f"{svc}::{ft}"
     return "unknown::unknown"
+
+
+def _iter_leaf_text(obj: Any, path: str = "", max_items: int = 20000):
+    count = 0
+    stack = [(path, obj)]
+    while stack and count < max_items:
+        p, v = stack.pop()
+        if isinstance(v, dict):
+            for k, val in list(v.items())[::-1]:
+                key = str(k)
+                if key == "scenario_id":
+                    continue
+                stack.append((f"{p}.{key}" if p else key, val))
+        elif isinstance(v, list):
+            for i, val in list(enumerate(v))[::-1]:
+                stack.append((f"{p}[{i}]", val))
+        else:
+            if v is None:
+                continue
+            text = str(v)
+            if text:
+                count += 1
+                yield p, text[:2000]
+
+
+def _observed_services(compressed_state: dict[str, Any], leaf_rows: list[tuple[str, str]]) -> list[str]:
+    services: set[str] = set()
+    for key in ("services", "service_names", "all_services", "observed_services"):
+        vals = compressed_state.get(key)
+        if isinstance(vals, list):
+            services.update(str(x) for x in vals if _looks_like_service(str(x)))
+    system = compressed_state.get("system") or {}
+    if isinstance(system, dict):
+        services.update(str(k) for k in system.keys() if _looks_like_service(str(k)))
+
+    for path, text in leaf_rows:
+        path_l = path.lower()
+        last_key = path_l.rsplit(".", 1)[-1].split("[", 1)[0]
+        if last_key in _SERVICE_VALUE_KEYS or "service" in path_l or "pod" in path_l or "deployment" in path_l:
+            for svc in _service_names_from_text(text):
+                services.add(svc)
+        for svc in _service_names_from_text(path):
+            services.add(svc)
+        for svc in _service_names_from_text(text):
+            if "-" in svc or svc in _SINGLE_WORD_SERVICE_HINTS:
+                services.add(svc)
+    return sorted(s for s in services if _looks_like_service(s))
+
+
+def _service_names_from_text(text: str) -> set[str]:
+    out = set()
+    for m in re.finditer(r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*\b", str(text).lower()):
+        token = m.group(0).strip("-_")
+        if _looks_like_service(token):
+            out.add(token)
+    return out
+
+
+def _looks_like_service(token: str) -> bool:
+    t = str(token or "").strip().lower()
+    if not t or len(t) < 3:
+        return False
+    deny = {
+        "default", "true", "false", "none", "null", "namespace", "service", "services", "pod", "pods",
+        "metrics", "metric", "logs", "log", "trace", "traces", "output", "status", "health", "error",
+        "warning", "failed", "success", "normal", "unknown", "node", "name", "type", "value",
+    }
+    if t in deny:
+        return False
+    if any(ch.isdigit() for ch in t) and not ("-" in t or "mongo" in t):
+        return False
+    if "-" in t:
+        return True
+    if t in _SINGLE_WORD_SERVICE_HINTS:
+        return True
+    if "mongo" in t or t.endswith("db"):
+        return True
+    return False
+
+
+def _direct_health_from_system(compressed_state: dict[str, Any], service_set: set[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    system = compressed_state.get("system", {}) or {}
+    if isinstance(system, dict):
+        for svc, info in system.items():
+            if not isinstance(info, dict):
+                continue
+            health = info.get("health", {}) or {}
+            if _is_interesting_health(health):
+                rows.append({
+                    "service": str(svc),
+                    "health": health,
+                    "suggested_fault_type": _suggest_fault_from_text(json.dumps(health, sort_keys=True, default=str)),
+                    "root_cause_signal_score": _health_signal_score(health),
+                    "source": "system.health",
+                })
+    return rows
+
+
+def _recursive_signal_rows(leaf_rows: list[tuple[str, str]], service_set: set[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for svc in service_set:
+        context = _service_context(leaf_rows, svc, max_rows=25)
+        if not context:
+            continue
+        joined = "\n".join(f"{p}: {t}" for p, t in context).lower()
+        if not _has_any(joined, _INFRA_TOKENS + _AUTH_TOKENS + _CONFIG_TOKENS + _LATENCY_TOKENS + _NETWORK_TOKENS + _ERROR_TOKENS):
+            continue
+        rows.append({
+            "service": svc,
+            "health": {"evidence_excerpt": context[:8]},
+            "suggested_fault_type": _suggest_fault_from_text(joined),
+            "root_cause_signal_score": _text_signal_score(joined),
+            "source": "recursive_text_context",
+        })
+    rows.sort(key=lambda x: float(x.get("root_cause_signal_score", 0.0)), reverse=True)
+    return rows
+
+
+def _signal_summary_by_service(leaf_rows: list[tuple[str, str]], services: list[str]) -> list[dict[str, Any]]:
+    out = []
+    for svc in services:
+        context = _service_context(leaf_rows, svc, max_rows=30)
+        joined = "\n".join(f"{p}: {t}" for p, t in context).lower()
+        if not joined:
+            continue
+        counts = {
+            "infra": _token_count(joined, _INFRA_TOKENS),
+            "auth": _token_count(joined, _AUTH_TOKENS),
+            "config": _token_count(joined, _CONFIG_TOKENS),
+            "latency": _token_count(joined, _LATENCY_TOKENS),
+            "network": _token_count(joined, _NETWORK_TOKENS),
+            "error": _token_count(joined, _ERROR_TOKENS),
+        }
+        score = sum(counts.values())
+        if score:
+            out.append({"service": svc, "signal_counts": counts, "score": score, "evidence_excerpt": context[:5]})
+    out.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
+    return out
+
+
+def _service_context(leaf_rows: list[tuple[str, str]], service: str, max_rows: int = 20) -> list[tuple[str, str]]:
+    svc = service.lower()
+    out = []
+    for path, text in leaf_rows:
+        hay = f"{path} {text}".lower()
+        if svc in hay:
+            out.append((path, text[:400]))
+            if len(out) >= max_rows:
+                break
+    return out
+
+
+def _service_context_has_tokens(leaf_rows: list[tuple[str, str]], service: str, tokens: tuple[str, ...]) -> bool:
+    joined = "\n".join(f"{p}: {t}" for p, t in _service_context(leaf_rows, service, max_rows=40)).lower()
+    return _has_any(joined, tokens)
+
+
+def _dedupe_health_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row.get("service") or ""), str(row.get("suggested_fault_type") or "unknown"))
+        if key not in best or _safe_float(row.get("root_cause_signal_score")) > _safe_float(best[key].get("root_cause_signal_score")):
+            best[key] = row
+    out = list(best.values())
+    out.sort(key=lambda x: float(x.get("root_cause_signal_score", 0.0)), reverse=True)
+    return out
+
+
+def _suggest_fault_from_text(text: str) -> str:
+    t = str(text or "").lower()
+    scores = {
+        "auth_failure": _token_count(t, _AUTH_TOKENS) * 3.0,
+        "config_error": _token_count(t, _CONFIG_TOKENS) * 2.5,
+        "network_failure": _token_count(t, _NETWORK_TOKENS) * 2.0,
+        "latency_degradation": _token_count(t, _LATENCY_TOKENS) * 2.0,
+        "infra_failure": _token_count(t, _INFRA_TOKENS) * 2.0,
+    }
+    best = max(scores.items(), key=lambda kv: kv[1])
+    return best[0] if best[1] > 0 else "dependency_failure"
+
+
+def _text_signal_score(text: str) -> float:
+    t = str(text or "").lower()
+    return float(
+        _token_count(t, _AUTH_TOKENS) * 3.0
+        + _token_count(t, _CONFIG_TOKENS) * 2.5
+        + _token_count(t, _INFRA_TOKENS) * 2.0
+        + _token_count(t, _LATENCY_TOKENS) * 1.5
+        + _token_count(t, _NETWORK_TOKENS) * 1.5
+        + _token_count(t, _ERROR_TOKENS) * 1.0
+    )
+
+
+def _token_count(text: str, tokens: tuple[str, ...]) -> int:
+    t = str(text or "").lower()
+    return sum(t.count(tok) for tok in tokens)
+
+
+def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
+    t = str(text or "").lower()
+    return any(tok in t for tok in tokens)
 
 
 def _lines_from_json(parsed: Any) -> list[str]:
@@ -514,6 +740,7 @@ def _dedupe_lines(
 def _prediction_priority(service: str, compressed_state: dict[str, Any] | None) -> float:
     if not compressed_state:
         return 0.0
+    leaf_rows = list(_iter_leaf_text(compressed_state, max_items=12000))
     svc = str(service or "")
     score = 0.0
     system = compressed_state.get("system", {}) or {}
@@ -534,6 +761,8 @@ def _prediction_priority(service: str, compressed_state: dict[str, Any] | None) 
     for edge in signature.get("failed_edges", []) or []:
         if svc in str(edge).split("->"):
             score += 1.5
+    if _service_context_has_tokens(leaf_rows, svc, _INFRA_TOKENS + _AUTH_TOKENS + _CONFIG_TOKENS + _LATENCY_TOKENS + _NETWORK_TOKENS):
+        score += 3.0
     if _is_helper_service(svc):
         score -= 4.0
     return score
@@ -543,21 +772,24 @@ def _symptom_signature_fallback(compressed_state: dict[str, Any]) -> dict[str, A
     try:
         from digital_twin_runtime.telemetry_comparator import symptom_signature
 
-        return symptom_signature(compressed_state)
+        sig = symptom_signature(compressed_state)
+        if any(sig.get(k) for k in ["degraded_services", "failed_edges", "top_error_services", "trace_sources", "trace_targets", "metric_anomaly_services", "affected_services"]):
+            return sig
     except Exception:
-        llm_view = compressed_state.get("llm_view", {}) or {}
-        return {
-            "degraded_services": llm_view.get("degraded_services", []) or [],
-            "failed_edges": llm_view.get("failed_edges", []) or [],
-            "top_error_services": [
-                x.get("service") if isinstance(x, dict) else x
-                for x in (llm_view.get("top_log_error_services", []) or [])
-            ],
-            "trace_sources": llm_view.get("trace_sources", []) or [],
-            "trace_targets": llm_view.get("trace_targets", []) or [],
-            "metric_anomaly_services": llm_view.get("top_metric_anomaly_services", []) or [],
-            "affected_services": llm_view.get("affected_services", []) or [],
-        }
+        pass
+    llm_view = compressed_state.get("llm_view", {}) or {}
+    return {
+        "degraded_services": llm_view.get("degraded_services", []) or [],
+        "failed_edges": llm_view.get("failed_edges", []) or [],
+        "top_error_services": [
+            x.get("service") if isinstance(x, dict) else x
+            for x in (llm_view.get("top_log_error_services", []) or [])
+        ],
+        "trace_sources": llm_view.get("trace_sources", []) or [],
+        "trace_targets": llm_view.get("trace_targets", []) or [],
+        "metric_anomaly_services": llm_view.get("top_metric_anomaly_services", []) or [],
+        "affected_services": llm_view.get("affected_services", []) or [],
+    }
 
 
 def _is_interesting_health(health: Any) -> bool:
@@ -568,12 +800,7 @@ def _is_interesting_health(health: Any) -> bool:
         health.get("infra_issue_flag")
         or _safe_float(health.get("pods_unready")) > 0
         or _safe_float(health.get("unavailable_replicas")) > 0
-        or "pending" in status
-        or "crash" in status
-        or "no_ready" in status
-        or "unready" in status
-        or "error" in status
-        or "failed" in status
+        or _has_any(status, _INFRA_TOKENS + _ERROR_TOKENS)
     )
 
 
@@ -585,9 +812,7 @@ def _health_signal_score(health: Any) -> float:
     score += 3.0 if health.get("infra_issue_flag") else 0.0
     score += min(3.0, _safe_float(health.get("pods_unready")))
     score += min(2.0, _safe_float(health.get("unavailable_replicas")))
-    for token in ["pending", "crash", "no_ready", "unready", "failed", "error"]:
-        if token in status:
-            score += 1.0
+    score += _text_signal_score(status)
     return score
 
 
