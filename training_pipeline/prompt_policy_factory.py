@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from .gnn_prompt_policy import GNNRCAInstructionPolicy
 from .prompt_operator_policy import OperatorRCAInstructionPolicy
 from .qwen_prompt_policy import QwenRCAInstructionPolicy
 from .rca_loop import HeuristicRCAInstructionPolicy, HeuristicRCASolver
 
 
-RCA_INSTRUCTION_POLICIES = {"heuristic", "operator", "gnn", "qwen_stub"}
+RCA_INSTRUCTION_POLICIES = {"heuristic", "operator", "qwen_stub"}
 RCA_SOLVERS = {"heuristic"}
 
 
@@ -20,15 +19,6 @@ def build_rca_instruction_policy(args: Any):
         return OperatorRCAInstructionPolicy(
             profile=getattr(args, "operator_profile", "auto"),
             max_focus_services=getattr(args, "operator_max_focus_services", 6),
-        )
-    if name == "gnn":
-        return GNNRCAInstructionPolicy(
-            hidden_dim=getattr(args, "gnn_hidden_dim", 64),
-            num_layers=getattr(args, "gnn_num_layers", 2),
-            max_focus_services=getattr(args, "operator_max_focus_services", 6),
-            seed=getattr(args, "gnn_seed", 7),
-            prior_weight=getattr(args, "gnn_prior_weight", 1.0),
-            device=getattr(args, "gnn_device", None),
         )
     if name == "qwen_stub":
         return QwenRCAInstructionPolicy(
@@ -54,11 +44,6 @@ def policy_metadata(args: Any) -> dict[str, Any]:
         "instruction_policy": getattr(args, "instruction_policy", "heuristic"),
         "operator_profile": getattr(args, "operator_profile", "auto"),
         "operator_max_focus_services": getattr(args, "operator_max_focus_services", 6),
-        "gnn_hidden_dim": getattr(args, "gnn_hidden_dim", 64),
-        "gnn_num_layers": getattr(args, "gnn_num_layers", 2),
-        "gnn_seed": getattr(args, "gnn_seed", 7),
-        "gnn_prior_weight": getattr(args, "gnn_prior_weight", 1.0),
-        "gnn_device": getattr(args, "gnn_device", None),
         "qwen_model": getattr(args, "qwen_model", "Qwen/Qwen3-Coder-30B-A3B-Instruct"),
         "qwen_adapter_path": getattr(args, "qwen_adapter_path", None),
         "qwen_dry_run": getattr(args, "instruction_policy", "heuristic") == "qwen_stub",
@@ -72,11 +57,4 @@ def default_policy_model_name(args: Any) -> str:
         return getattr(args, "qwen_model", "Qwen/Qwen3-Coder-30B-A3B-Instruct") + ":dry-run"
     if name == "operator":
         return "operator-controller:" + getattr(args, "operator_profile", "auto")
-    if name == "gnn":
-        return (
-            "gnn-operator-controller:"
-            f"h{getattr(args, 'gnn_hidden_dim', 64)}:"
-            f"l{getattr(args, 'gnn_num_layers', 2)}:"
-            f"prior{getattr(args, 'gnn_prior_weight', 1.0)}"
-        )
     return "debug-heuristic-policy"
