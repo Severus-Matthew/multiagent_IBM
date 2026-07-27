@@ -61,8 +61,19 @@ def main() -> None:
     ap.add_argument("--qwen_max_new_tokens", type=int, default=256)
     ap.add_argument("--qwen_temperature", type=float, default=0.7)
     ap.add_argument("--qwen_top_p", type=float, default=0.9)
-    ap.add_argument("--rca_solver", choices=["heuristic"], default="heuristic",
-                    help="Fixed RCA solver. GPT solver will be added after digital-twin verification plumbing is checked.")
+
+    # Fixed RCA solver controls.
+    ap.add_argument("--rca_solver", choices=["heuristic", "llm"], default="heuristic",
+                    help="Fixed RCA solver consumed by the prompt policy. Use llm for a real fixed LLM solver.")
+    ap.add_argument("--llm_provider", choices=["openai", "claude"], default="openai",
+                    help="Provider for --rca_solver llm. API key is read by agents.llm_client from environment variables.")
+    ap.add_argument("--llm_model", default=None,
+                    help="Optional provider-specific model name for --rca_solver llm. If omitted, agents.llm_client uses its provider default.")
+    ap.add_argument("--llm_max_tokens", type=int, default=300)
+    ap.add_argument("--llm_temperature", type=float, default=0.0)
+    ap.add_argument("--llm_state_char_budget", type=int, default=24000)
+    ap.add_argument("--llm_cache_path", default=None,
+                    help="Optional JSONL cache for LLM RCA calls, useful for repeated smoke tests.")
 
     # Metadata can still be overridden, but defaults now follow selected policy.
     ap.add_argument("--policy_model_name", default=None)
@@ -85,6 +96,8 @@ def main() -> None:
     allowed_ids = read_scenario_ids(args.scenario_ids)
     logger = RolloutLogger(args.output_dir)
     preflight_path = Path(args.output_dir).expanduser() / "twin_preflight.jsonl"
+    if args.rca_solver == "llm" and args.llm_cache_path is None:
+        args.llm_cache_path = str(Path(args.output_dir).expanduser() / "llm_rca_cache.jsonl")
     policy = build_rca_instruction_policy(args)
     solver = build_rca_solver(args)
     twin = BehavioralTwinVerifier() if twin_mode == "behavioral" else None
@@ -209,7 +222,7 @@ def main() -> None:
             "instruction_policy": args.instruction_policy,
             "rca_solver": args.rca_solver,
             "policy_metadata": policy_metadata(args),
-            "uses_real_llm": False,
+            "uses_real_llm": args.rca_solver == "llm",
             "uses_real_training_update": False,
             "wandb_enabled": bool(args.wandb),
             "wandb_project": args.wandb_project,
