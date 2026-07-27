@@ -19,7 +19,7 @@ from .split_utils import read_scenario_ids
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Stage 3 action-loop rollout generation")
+    ap = argparse.ArgumentParser(description="Stage 3 action-loop GRPO-ready rollout generation")
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--limit", type=int, default=None, help="Maximum selected labeled scenarios to run after filtering.")
@@ -37,6 +37,10 @@ def main() -> None:
                     help="Override the default skip behavior and still run action even if RCA is unverified.")
     ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
     ap.add_argument("--max_iterations", type=int, default=5)
+    ap.add_argument("--group_size", type=int, default=4,
+                    help="Number of action instruction candidates per state/history group.")
+    ap.add_argument("--selection_strategy", choices=["best", "sample0"], default="best",
+                    help="Which action candidate advances episode history. Use sample0 for stricter on-policy debugging; best for verifier-guided offline data generation.")
 
     # Active action policy/agent controls.
     ap.add_argument("--action_prompt_policy", choices=["structured"], default="structured",
@@ -48,6 +52,8 @@ def main() -> None:
     ap.add_argument("--llm_provider", choices=["claude", "openai"], default="claude")
     ap.add_argument("--llm_model", default=None)
     ap.add_argument("--max_commands", type=int, default=15)
+    ap.add_argument("--policy_model_name", default=None)
+    ap.add_argument("--policy_version", default="v0")
     args = ap.parse_args()
 
     if args.allow_action_if_rca_unverified:
@@ -60,10 +66,12 @@ def main() -> None:
     preflight_path = Path(args.output_dir).expanduser() / "twin_preflight.jsonl"
     prompt_policy = _build_action_prompt_policy(args)
     action_agent = _build_action_agent(args)
+    policy_model_name = args.policy_model_name or _default_action_policy_model_name(args)
 
     total = passed = skipped_unlabeled = skipped_filter = skipped_missing_rca = skipped_action_gate = 0
     twin_preflight_count = twin_preflight_failed = 0
     action_attempt_count = sla_restored_count = target_sla_restored_count = 0
+    grpo_sample_count = 0
     uses_oracle_rca = not bool(args.rca_rollout_dir)
 
     for rec in iter_scenarios(args.processed_states):
@@ -110,6 +118,10 @@ def main() -> None:
             skip_action_if_rca_unverified=args.skip_action_if_rca_unverified,
             min_twin_reproduction_score=args.min_twin_reproduction_score,
             rca_twin_gate=rca_gate,
+            group_size=args.group_size,
+            selection_strategy=args.selection_strategy,
+            policy_model_name=policy_model_name,
+            policy_version=args.policy_version,
         )
         result["action_policy_metadata"] = {
             "action_prompt_policy": args.action_prompt_policy,
@@ -118,7 +130,16 @@ def main() -> None:
             "llm_provider": args.llm_provider if args.action_agent == "llm" else None,
             "llm_model": args.llm_model if args.action_agent == "llm" else None,
             "max_commands": args.max_commands,
+            "group_size": args.group_size,
+            "selection_strategy": args.selection_strategy,
+            "policy_model_name": policy_model_name,
+            "policy_version": args.policy_version,
         }
+        samples = result.pop("grpo_samples", [])
+        for sample in samples:
+            logger.log_grpo_sample(sample)
+        grpo_sample_count += len(samples)
+
         skipped_action_gate += int(bool(result.get("skipped_action")))
         attempts = result.get("attempts", []) or []
         action_attempt_count += len(attempts)
@@ -130,7 +151,8 @@ def main() -> None:
         logger.log({"stage": "action", **result})
         print(
             f"[ACTION] {total} {rec.scenario_id} "
-            f"success={result['success']} skipped_action={bool(result.get('skipped_action'))} attempts={len(attempts)}"
+            f"success={result['success']} skipped_action={bool(result.get('skipped_action'))} "
+            f"attempts={len(attempts)} samples={len(samples)}"
         )
 
     summary = {
@@ -144,6 +166,9 @@ def main() -> None:
         "skipped_missing_rca": skipped_missing_rca,
         "skipped_action_gate": skipped_action_gate,
         "action_attempt_count": action_attempt_count,
+        "grpo_samples": grpo_sample_count,
+        "rollouts_jsonl": str(logger.jsonl_path),
+        "grpo_samples_jsonl": str(logger.grpo_jsonl_path),
         "sla_restored_count": sla_restored_count,
         "target_sla_restored_count": target_sla_restored_count,
         "scenario_ids_file": args.scenario_ids,
@@ -158,10 +183,14 @@ def main() -> None:
         "skip_action_if_rca_unverified": args.skip_action_if_rca_unverified,
         "min_twin_reproduction_score": args.min_twin_reproduction_score,
         "max_iterations": args.max_iterations,
+        "group_size": args.group_size,
+        "selection_strategy": args.selection_strategy,
         "action_prompt_policy": args.action_prompt_policy,
         "action_strategy": args.action_strategy,
         "action_agent": args.action_agent,
         "max_commands": args.max_commands,
+        "policy_model_name": policy_model_name,
+        "policy_version": args.policy_version,
         "uses_real_llm_action_agent": args.action_agent == "llm",
         "uses_real_training_update": False,
     }
@@ -186,6 +215,12 @@ def _build_action_agent(args):
 
         return ActionAgent(client=LLMClient(provider=args.llm_provider, model=args.llm_model), max_commands=args.max_commands)
     raise ValueError(f"unknown action agent {args.action_agent!r}")
+
+
+def _default_action_policy_model_name(args) -> str:
+    if args.action_prompt_policy == "structured":
+        return f"structured-action-policy:{args.action_strategy}"
+    return str(args.action_prompt_policy)
 
 
 def _load_rca_rollouts(rca_rollout_dir: str | None) -> dict[str, dict[str, Any]]:
