@@ -22,8 +22,10 @@ class StructuredActionPromptPolicy:
     redacted state abstraction, current SLA summary, and public attempt history
     into a concrete instruction prompt plus a machine-readable action plan.
 
-    A trainable Qwen/LoRA policy can later replace `generate()` while keeping the
-    same ActionAgent contract and reward/verifier path.
+    For GRPO rollouts, context["sample_index"] selects a different safe action
+    family variant for the same verified RCA state. A trainable Qwen/LoRA policy
+    can later replace `generate()` while keeping the same ActionAgent contract and
+    reward/verifier path.
     """
 
     def __init__(self, strategy: str = "auto", max_root_causes: int = 2):
@@ -40,12 +42,13 @@ class StructuredActionPromptPolicy:
         current_sla = context.get("current_sla", {}) or {}
         previous_attempts = context.get("previous_attempts", []) or []
         iteration = int(context.get("iteration", 0) or 0)
+        sample_index = int(context.get("sample_index", 0) or 0)
 
         plans = []
         for root in root_causes:
             service = str(root.get("service") or "unknown")
             fault_type = str(root.get("fault_type") or "unknown")
-            action_family = _choose_action_family(fault_type, self.strategy, iteration, previous_attempts)
+            action_family = _choose_action_family(fault_type, self.strategy, iteration, previous_attempts, sample_index)
             plans.append({
                 "service": service,
                 "fault_type": fault_type,
@@ -59,6 +62,7 @@ class StructuredActionPromptPolicy:
             "namespace": namespace,
             "strategy": self.strategy,
             "iteration": iteration,
+            "sample_index": sample_index,
             "rca_twin_verified": bool((context.get("rca_twin_gate", {}) or {}).get("rca_twin_verified")),
             "current_sla": {
                 "sla_restored": current_sla.get("sla_restored"),
@@ -115,7 +119,13 @@ def _root_causes(context: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _choose_action_family(fault_type: str, strategy: str, iteration: int, previous_attempts: list[dict[str, Any]]) -> str:
+def _choose_action_family(
+    fault_type: str,
+    strategy: str,
+    iteration: int,
+    previous_attempts: list[dict[str, Any]],
+    sample_index: int = 0,
+) -> str:
     ft = str(fault_type or "unknown")
     if strategy == "infra_patch_first":
         return "infra_patch_first"
@@ -126,15 +136,26 @@ def _choose_action_family(fault_type: str, strategy: str, iteration: int, previo
     if strategy == "scale_first":
         return "scale_service"
 
-    # Minimal/auto default mapping. On later retries, shift to a nearby safe
-    # family to create useful public feedback without unsafe exploration.
     retry = iteration > 0 or bool(previous_attempts)
     if ft == "infra_failure":
-        return "recreate_pod" if retry else "infra_patch_first"
+        families = ["infra_patch_first", "restart_service", "scale_service", "rollback_config"]
+        if retry:
+            families = ["restart_service", "infra_patch_first", "scale_service", "rollback_config"]
+        return families[sample_index % len(families)]
     if ft in {"resource_exhaustion", "latency_degradation"}:
-        return "restart_service" if retry else "scale_service"
+        families = ["scale_service", "restart_service", "rollback_config", "infra_patch_first"]
+        if retry:
+            families = ["restart_service", "scale_service", "rollback_config", "infra_patch_first"]
+        return families[sample_index % len(families)]
     if ft in {"config_error", "auth_failure", "dependency_failure"}:
-        return "restart_service" if retry else "rollback_config"
+        families = ["rollback_config", "restart_service", "scale_service", "infra_patch_first"]
+        if retry:
+            families = ["restart_service", "rollback_config", "scale_service", "infra_patch_first"]
+        return families[sample_index % len(families)]
     if ft == "network_failure":
-        return "rollback_config" if retry else "restart_service"
-    return "restart_service"
+        families = ["restart_service", "rollback_config", "scale_service", "infra_patch_first"]
+        if retry:
+            families = ["rollback_config", "restart_service", "scale_service", "infra_patch_first"]
+        return families[sample_index % len(families)]
+    families = ["restart_service", "rollback_config", "scale_service", "infra_patch_first"]
+    return families[sample_index % len(families)]
