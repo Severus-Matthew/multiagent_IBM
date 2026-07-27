@@ -45,6 +45,7 @@ def build_rca_solver(args: Any):
             temperature=getattr(args, "llm_temperature", 0.0),
             state_char_budget=getattr(args, "llm_state_char_budget", 24000),
             cache_path=getattr(args, "llm_cache_path", None),
+            max_root_causes=getattr(args, "llm_max_root_causes", 1),
         )
     raise ValueError(f"unknown RCA solver {name!r}; valid={sorted(RCA_SOLVERS)}")
 
@@ -63,6 +64,7 @@ def policy_metadata(args: Any) -> dict[str, Any]:
         "llm_temperature": getattr(args, "llm_temperature", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
         "llm_max_tokens": getattr(args, "llm_max_tokens", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
         "llm_state_char_budget": getattr(args, "llm_state_char_budget", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_max_root_causes": getattr(args, "llm_max_root_causes", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
         "llm_cache_path": getattr(args, "llm_cache_path", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
     }
 
