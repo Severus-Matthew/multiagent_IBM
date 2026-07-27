@@ -9,69 +9,17 @@ from digital_twin_runtime.twin_preflight import preflight_behavioral_twin, requi
 from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 
 from .action_loop import run_action_prompt_optimizer_loop
+from .action_prompt_policy import CANONICAL_ACTION_STRATEGIES, StructuredActionPromptPolicy
 from .data_loader import iter_scenarios
+from .fixed_action_agent import FixedActionAgent
 from .ground_truth import labels_from_full_state
 from .rollout_logger import RolloutLogger
 from .schemas import FaultLabel, parse_fault_lines
 from .split_utils import read_scenario_ids
 
 
-class DebugPromptPolicy:
-    def generate(self, context):
-        rca = context.get("rca_result", {}) or {}
-        root_causes = rca.get("root_causes") or context.get("rca_faults") or []
-        first = root_causes[0] if root_causes else {}
-        svc = first.get("service") or rca.get("root_cause_service") or "<service>"
-        fault_type = first.get("fault_type") or rca.get("fault_type") or "unknown"
-        ns = context.get("namespace") or "default"
-        sla = context.get("current_sla", {}) or {}
-        return (
-            f"Repair RCA target deployment/{svc} in namespace {ns}. "
-            f"RCA fault type is {fault_type}. "
-            f"Current SLA hard violations: {sla.get('hard_violations')}; weighted violations: {sla.get('weighted_violations')}. "
-            "Choose the minimal safe remediation that matches the fault type, then verify rollout or service health. "
-            "Output only kubectl/helm/mongosh commands, one command per line. "
-            "Do not use exec, apply, replace, broad delete, shell pipes, sudo, or cluster-wide flags."
-        )
-
-
-class DebugActionAgent:
-    def get_commands(self, instruction_prompt, context):
-        rca = context.get("rca_result", {}) or {}
-        root_causes = rca.get("root_causes") or context.get("rca_faults") or []
-        first = root_causes[0] if root_causes else {}
-        svc = first.get("service") or rca.get("root_cause_service") or "<service>"
-        fault_type = first.get("fault_type") or rca.get("fault_type") or "unknown"
-        ns = context.get("namespace") or "default"
-
-        verify = f"kubectl rollout status deployment/{svc} -n {ns} --timeout=120s"
-        if fault_type == "infra_failure":
-            patch = "'[{\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeName\"}]'"
-            return [
-                f"kubectl patch deployment/{svc} -n {ns} --type=json -p={patch}",
-                f"kubectl rollout restart deployment/{svc} -n {ns}",
-                verify,
-            ]
-        if fault_type in {"resource_exhaustion", "latency_degradation"}:
-            return [
-                f"kubectl scale deployment/{svc} -n {ns} --replicas=2",
-                verify,
-                f"kubectl get pods -n {ns}",
-            ]
-        if fault_type in {"config_error", "auth_failure", "dependency_failure", "network_failure"}:
-            return [
-                f"kubectl rollout restart deployment/{svc} -n {ns}",
-                verify,
-                f"kubectl get deployment/{svc} -n {ns}",
-            ]
-        return [
-            f"kubectl rollout restart deployment/{svc} -n {ns}",
-            verify,
-        ]
-
-
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Stage 3 action-loop rollout smoke-test")
+    ap = argparse.ArgumentParser(description="Stage 3 action-loop rollout generation")
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--limit", type=int, default=None, help="Maximum selected labeled scenarios to run after filtering.")
@@ -89,6 +37,17 @@ def main() -> None:
                     help="Override the default skip behavior and still run action even if RCA is unverified.")
     ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
     ap.add_argument("--max_iterations", type=int, default=5)
+
+    # Active action policy/agent controls.
+    ap.add_argument("--action_prompt_policy", choices=["structured"], default="structured",
+                    help="Prompt optimizer used before the fixed ActionAgent. Current active option: structured.")
+    ap.add_argument("--action_strategy", choices=CANONICAL_ACTION_STRATEGIES, default="auto",
+                    help="Structured action strategy family.")
+    ap.add_argument("--action_agent", choices=["fixed", "llm"], default="fixed",
+                    help="fixed is deterministic/safe for offline rollouts; llm uses agents.action_agent.ActionAgent.")
+    ap.add_argument("--llm_provider", choices=["claude", "openai"], default="claude")
+    ap.add_argument("--llm_model", default=None)
+    ap.add_argument("--max_commands", type=int, default=15)
     args = ap.parse_args()
 
     if args.allow_action_if_rca_unverified:
@@ -99,6 +58,8 @@ def main() -> None:
     logger = RolloutLogger(args.output_dir)
     twin = BehavioralTwinVerifier()
     preflight_path = Path(args.output_dir).expanduser() / "twin_preflight.jsonl"
+    prompt_policy = _build_action_prompt_policy(args)
+    action_agent = _build_action_agent(args)
 
     total = passed = skipped_unlabeled = skipped_filter = skipped_missing_rca = skipped_action_gate = 0
     twin_preflight_count = twin_preflight_failed = 0
@@ -141,8 +102,8 @@ def main() -> None:
             rec.compressed_state,
             rca_result,
             rca_faults,
-            DebugPromptPolicy(),
-            DebugActionAgent(),
+            prompt_policy,
+            action_agent,
             twin,
             max_iterations=args.max_iterations,
             require_rca_twin_verification=args.require_rca_twin_verification,
@@ -150,6 +111,14 @@ def main() -> None:
             min_twin_reproduction_score=args.min_twin_reproduction_score,
             rca_twin_gate=rca_gate,
         )
+        result["action_policy_metadata"] = {
+            "action_prompt_policy": args.action_prompt_policy,
+            "action_strategy": args.action_strategy,
+            "action_agent": args.action_agent,
+            "llm_provider": args.llm_provider if args.action_agent == "llm" else None,
+            "llm_model": args.llm_model if args.action_agent == "llm" else None,
+            "max_commands": args.max_commands,
+        }
         skipped_action_gate += int(bool(result.get("skipped_action")))
         attempts = result.get("attempts", []) or []
         action_attempt_count += len(attempts)
@@ -189,9 +158,34 @@ def main() -> None:
         "skip_action_if_rca_unverified": args.skip_action_if_rca_unverified,
         "min_twin_reproduction_score": args.min_twin_reproduction_score,
         "max_iterations": args.max_iterations,
+        "action_prompt_policy": args.action_prompt_policy,
+        "action_strategy": args.action_strategy,
+        "action_agent": args.action_agent,
+        "max_commands": args.max_commands,
+        "uses_real_llm_action_agent": args.action_agent == "llm",
+        "uses_real_training_update": False,
     }
     logger.write_summary(summary)
     print(json.dumps(summary, indent=2))
+
+
+def _build_action_prompt_policy(args):
+    if args.action_prompt_policy == "structured":
+        return StructuredActionPromptPolicy(strategy=args.action_strategy)
+    raise ValueError(f"unknown action prompt policy {args.action_prompt_policy!r}")
+
+
+def _build_action_agent(args):
+    if args.action_agent == "fixed":
+        return FixedActionAgent(max_commands=args.max_commands)
+    if args.action_agent == "llm":
+        # Optional live LLM path. Import lazily so offline smoke tests do not need
+        # API packages or API keys.
+        from agents.action_agent import ActionAgent
+        from agents.llm_client import LLMClient
+
+        return ActionAgent(client=LLMClient(provider=args.llm_provider, model=args.llm_model), max_commands=args.max_commands)
+    raise ValueError(f"unknown action agent {args.action_agent!r}")
 
 
 def _load_rca_rollouts(rca_rollout_dir: str | None) -> dict[str, dict[str, Any]]:
