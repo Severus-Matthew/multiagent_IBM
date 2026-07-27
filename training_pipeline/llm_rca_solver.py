@@ -17,7 +17,7 @@ You receive a redacted, agent-visible RCA evidence object. Generated scenario ID
 ground truth, raw specs, and faulty-service labels have been removed.
 
 Your task is to identify the true upstream root cause service, not downstream victims,
-helper services, nodes, app names, or fault-family names.
+helper services, Kubernetes nodes, app names, namespaces, or fault-family names.
 
 Output contract:
 - Output ONLY root-cause lines.
@@ -32,10 +32,12 @@ Output contract:
 Diagnosis rules:
 - Default to ONE root cause unless the evidence explicitly shows independent faults in unrelated services.
 - Prefer candidate_root_causes when supported by service health, logs, traces, or SLA.
-- Never output Kubernetes nodes, app names, namespaces, fault-family names, or helper/proxy/observability services as root cause services.
-- If pods are Pending/CrashLooping/unready, nodeName is invalid, scheduling fails, or replicas are unavailable, use infra_failure.
+- Do not pick the service with the largest fan-out unless there is direct evidence it is the upstream cause.
+- Degraded/log-error clusters often contain downstream victims; treat cluster-only dependency_failure as weak evidence.
+- Prefer explicit fault-type evidence over generic degraded-service evidence.
+- If pods are Pending/CrashLooping/unready, nodeName is invalid, scheduling fails, containers are killed, or replicas are unavailable, use infra_failure.
 - If auth/unauthorized/credential/permission/MongoDB auth evidence dominates, use auth_failure.
-- If target ports, service ports, endpoint/service mismatch, or app config dominates, use config_error.
+- If target ports, service ports, endpoint/service mismatch, wrong binary, or app config dominates, use config_error.
 - If latency/delay dominates, use latency_degradation.
 - If packet loss/network unreachable dominates, use network_failure.
 - Use dependency_failure only when a dependency is unhealthy and no more specific auth/config/network/infra cause is supported.
@@ -58,22 +60,36 @@ _NON_ROOT_SERVICE_PATTERNS = (
     "social-network-microservices",
     "hotel-reservation-microservices",
 )
-_INFRA_TOKENS = ("pending", "crashloop", "crash", "killed", "kill", "unready", "not ready", "unavailable", "node", "nodename", "schedule", "scheduling", "replica", "oom", "evicted")
-_AUTH_TOKENS = ("auth", "unauthorized", "not authorized", "credential", "permission", "forbidden", "access denied", "authentication", "login", "password", "token")
-_CONFIG_TOKENS = ("target_port", "target port", "port_misconfig", "misconfig", "wrong bin", "wrong_bin", "config", "configuration", "endpoint", "service port", "connection refused", "bad gateway")
+
+_INFRA_TOKENS = (
+    "pending", "crashloop", "crash", "killed", "kill", "unready", "not ready",
+    "unavailable", "nodename", "node name", "schedule", "scheduling", "replica",
+    "oom", "evicted", "containerstatus", "waiting", "terminated",
+)
+_AUTH_TOKENS = (
+    "auth", "unauthorized", "not authorized", "credential", "permission", "forbidden",
+    "access denied", "authentication", "login", "password", "token", "sasl",
+)
+# Keep generic "config" out of the main config detector. It appears in many
+# harmless schema/prompt locations and caused v6 to label infra faults as config.
+_CONFIG_TOKENS = (
+    "target_port", "target port", "targetport", "port_misconfig", "port misconfig",
+    "wrong bin", "wrong_bin", "endpoint mismatch", "service port", "container port",
+    "connection refused", "bad gateway", "no endpoints", "endpoint not found",
+)
 _LATENCY_TOKENS = ("delay", "latency", "slow", "timeout", "timed out", "p99", "p95")
 _NETWORK_TOKENS = ("packet", "loss", "network", "unreachable", "reset", "dropped", "drop")
 _ERROR_TOKENS = ("error", "exception", "failed", "failure", "unhealthy", "degraded")
+
+_CACHE_DB_MARKERS = ("redis", "memcached")
+_DB_MARKERS = ("mongo", "mongodb", "-db", "db")
 
 
 class LLMRCASolver:
     """Fixed API-backed RCA solver behind the prompt-policy/controller.
 
-    The solver uses only the redacted compressed state. It reuses the existing
-    RCA agent-input builder when available, because that code already knows the
-    project schema for service health, log errors, trace summaries, SLA, and
-    clusters. The candidate list is not ground truth; it is an evidence-derived
-    shortlist used for prompting, debug, and invalid-output recovery.
+    The trainable object remains the RCA instruction policy. This solver consumes
+    the policy-generated instruction plus only redacted compressed state.
     """
 
     def __init__(
@@ -129,7 +145,7 @@ class LLMRCASolver:
         evidence = compact.get("high_signal_evidence") if isinstance(compact, dict) else {}
         candidates = evidence.get("candidate_root_causes", []) if isinstance(evidence, dict) else []
         valid_services = set(str(x) for x in compact.get("valid_services", []) if x)
-        final = _repair_invalid_prediction(cleaned, valid_services, candidates)
+        final, repair_reason = _repair_prediction_with_candidates(cleaned, valid_services, candidates)
 
         debug = {
             "key": cache_key,
@@ -147,7 +163,8 @@ class LLMRCASolver:
             "sanitized_unlimited": sanitized_unlimited,
             "sanitized_prediction": cleaned,
             "final_prediction_after_validity_guard": final,
-            "postprocess_mode": "sanitize_plus_valid_service_guard",
+            "postprocess_mode": "sanitize_plus_candidate_guard_v2",
+            "candidate_repair_reason": repair_reason,
             "high_signal_evidence": evidence,
             "candidate_root_causes": candidates,
         }
@@ -162,6 +179,13 @@ class LLMRCASolver:
             "root_cause_count_instruction": f"Return at most {self.max_root_causes} root cause line(s). Use fewer if only one upstream cause is supported.",
             "valid_services": compact_state.get("valid_services", []),
             "candidate_root_causes": (compact_state.get("high_signal_evidence") or {}).get("candidate_root_causes", [])[:20],
+            "root_cause_selection_guidance": [
+                "A high reproduction/fan-out score is not enough; choose the most upstream specific service.",
+                "Cluster-only dependency_failure candidates are weak unless supported by explicit auth/config/network/infra text.",
+                "For MongoDB auth evidence, prefer the MongoDB service with the most local auth evidence, not a random MongoDB victim.",
+                "For target-port/service-port evidence, prefer the affected *-service, not nginx or a downstream caller.",
+                "For killed/crash/unready/scheduling evidence, prefer the application service over its database dependency.",
+            ],
             "redacted_rca_evidence": compact_state,
             "output_contract": "Return only service::fault_type lines. No prose.",
         }
@@ -235,8 +259,8 @@ def compact_state_for_llm(compressed_state: dict[str, Any], char_budget: int = 2
     compact2["rca_agent_structured_evidence"] = {
         "all_services": valid_services[:200],
         "service_health": slim_structured.get("service_health", {}),
-        "top_error_services": slim_structured.get("top_error_services", [])[:8],
-        "suspicious_trace_edges": slim_structured.get("suspicious_trace_edges", [])[:8],
+        "top_error_services": slim_structured.get("top_error_services", [])[:10],
+        "suspicious_trace_edges": slim_structured.get("suspicious_trace_edges", [])[:10],
     }
     return compact2
 
@@ -272,6 +296,7 @@ def high_signal_evidence_summary(compressed_state: dict[str, Any], structured: d
         services = _fallback_services_from_text(compressed_state)
     service_set = set(services)
 
+    signature = _symptom_signature(compressed_state)
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
     service_mentions: Counter[str] = Counter()
     signal_rows: dict[str, dict[str, Any]] = {}
@@ -298,39 +323,63 @@ def high_signal_evidence_summary(compressed_state: dict[str, Any], structured: d
         if reason not in row["reasons"]:
             row["reasons"].append(reason)
 
-    # Service health is the highest-quality redacted signal.
+    # Direct service health. Generic degraded status is weak; explicit type words are strong.
     service_health = structured.get("service_health", {}) or {}
     if isinstance(service_health, dict):
         for svc, h in service_health.items():
-            if not isinstance(h, dict):
+            if not isinstance(h, dict) or _is_non_root_service(str(svc)):
                 continue
             status = str(h.get("status") or "")
             reasons = [str(x) for x in (h.get("reasons", []) or [])]
             text = " ".join([status] + reasons)
-            ft = _suggest_fault_from_text(text) if text.strip() else "infra_failure"
-            score = 5.0 + _text_signal_score(text)
-            direct_health_rows.append({"service": svc, "status": status, "reasons": reasons[:8], "suggested_fault_type": ft, "root_cause_signal_score": round(score, 3), "source": "agent_input_builder.service_health"})
-            add_candidate(svc, ft, score, "degraded_service_health")
+            explicit_ft = _suggest_fault_from_text(text)
+            generic = explicit_ft == "dependency_failure" and not _has_any(text, _INFRA_TOKENS + _AUTH_TOKENS + _CONFIG_TOKENS + _LATENCY_TOKENS + _NETWORK_TOKENS)
+            score = 2.0 if generic else 7.0 + _text_signal_score(text)
+            if generic:
+                # A bare degraded flag alone means the service is affected, not necessarily root cause.
+                explicit_ft = "dependency_failure"
+            direct_health_rows.append({
+                "service": str(svc),
+                "status": status,
+                "reasons": reasons[:8],
+                "suggested_fault_type": explicit_ft,
+                "root_cause_signal_score": round(score, 3),
+                "source": "agent_input_builder.service_health",
+            })
+            add_candidate(str(svc), explicit_ft, score, "direct_service_health" if not generic else "generic_degraded_service_health")
             for group, toks in [("infra", _INFRA_TOKENS), ("auth", _AUTH_TOKENS), ("config", _CONFIG_TOKENS), ("latency", _LATENCY_TOKENS), ("network", _NETWORK_TOKENS), ("error", _ERROR_TOKENS)]:
                 c = _token_count(text, toks)
                 if c:
-                    signal(svc, group, c, text)
-            if not any(_token_count(text, toks) for toks in [_INFRA_TOKENS, _AUTH_TOKENS, _CONFIG_TOKENS, _LATENCY_TOKENS, _NETWORK_TOKENS]):
-                signal(svc, "error", 1, text or "degraded service health")
+                    signal(str(svc), group, c, text)
+            if generic:
+                signal(str(svc), "error", 1, text or "generic degraded service health")
 
-    # Logs: map dominant error text to the service that emitted it.
-    for item in structured.get("top_error_services", []) or []:
-        if not isinstance(item, dict):
-            continue
+    # Signature from behavioral comparator: useful to recover degraded services not exposed by builder.
+    for svc in signature.get("degraded_services", []) or []:
+        if str(svc) in service_set and not _is_non_root_service(str(svc)):
+            add_candidate(str(svc), "dependency_failure", 1.25, "symptom_signature_degraded")
+            signal(str(svc), "error", 1, "symptom_signature_degraded")
+    for svc in signature.get("metric_anomaly_services", []) or []:
+        if str(svc) in service_set:
+            add_candidate(str(svc), "resource_exhaustion", 2.0, "metric_anomaly_service")
+            signal(str(svc), "infra", 1, "metric_anomaly_service")
+
+    # Logs: local explicit fault words are useful. Generic log-error fan-out is lower weight.
+    top_error_services = [x for x in (structured.get("top_error_services", []) or []) if isinstance(x, dict)]
+    top_error_names = [str(x.get("service") or "") for x in top_error_services]
+    for item in top_error_services:
         svc = str(item.get("service") or "")
+        if not svc or _is_non_root_service(svc):
+            continue
         text = json.dumps(item, sort_keys=True, default=str)
         ft = _suggest_fault_from_text(text)
         cnt = _safe_float(item.get("error_count"), 1.0)
-        add_candidate(svc, ft, min(5.0, 1.0 + 0.05 * cnt + _text_signal_score(text) * 0.2), "top_log_error_service")
-        group = _fault_group(ft)
-        signal(svc, group, max(1.0, min(5.0, cnt)), text)
+        explicit = ft != "dependency_failure"
+        score = (2.0 if explicit else 0.75) + min(2.0, 0.02 * cnt) + min(3.0, _text_signal_score(text) * 0.15)
+        add_candidate(svc, ft, score, "explicit_top_log_error_service" if explicit else "generic_top_log_error_service")
+        signal(svc, _fault_group(ft), max(1.0, min(4.0, cnt)), text)
 
-    # Traces: a failing target can be the unhealthy dependency; source is lower weight.
+    # Traces: target is stronger than source, but still not enough to beat explicit health.
     trace_summary = structured.get("trace_summary", {}) or {}
     edge_rows = list(structured.get("suspicious_trace_edges", []) or [])
     for edge in trace_summary.get("failed_edges", []) or []:
@@ -345,53 +394,100 @@ def high_signal_evidence_summary(compressed_state: dict[str, Any], structured: d
         text = json.dumps(row, sort_keys=True, default=str)
         ft = _suggest_fault_from_text(text)
         if len(parts) >= 2:
-            add_candidate(parts[-1], ft, 2.0, "suspicious_trace_target")
-            add_candidate(parts[0], "dependency_failure", 0.75, "suspicious_trace_source")
+            add_candidate(parts[-1], ft, 1.75, "suspicious_trace_target")
+            add_candidate(parts[0], "dependency_failure", 0.4, "suspicious_trace_source")
             signal(parts[-1], _fault_group(ft), 2, text)
             signal(parts[0], "error", 1, text)
 
-    # SLA: unhealthy service names are useful, but lower confidence than direct health.
     for svc in _services_from_sla(structured.get("sla", {})):
-        add_candidate(svc, "infra_failure", 1.5, "sla_unhealthy_service")
+        add_candidate(svc, "dependency_failure", 0.75, "sla_unhealthy_service")
         signal(svc, "error", 1, "sla unhealthy service")
 
-    # Cluster buckets often identify behavior classes in the compressed state.
     clusters = structured.get("service_clusters", {}) or {}
     if isinstance(clusters, dict):
         for bucket, vals in clusters.items():
             if not isinstance(vals, list):
                 continue
-            ft = _suggest_fault_from_text(str(bucket))
+            bucket_s = str(bucket)
+            ft = _suggest_fault_from_text(bucket_s)
             for svc in vals:
-                add_candidate(str(svc), ft, 1.0, f"cluster:{bucket}")
-                signal(str(svc), _fault_group(ft), 1, f"cluster:{bucket}")
+                # Cluster-only evidence is weak; it should not dominate root-cause ranking.
+                add_candidate(str(svc), ft, 0.35, f"weak_cluster:{bucket_s}")
+                signal(str(svc), _fault_group(ft), 0.5, f"cluster:{bucket_s}")
 
-    # If a global auth/config hint exists, prefer matching DB/service candidates, not frontends.
     full_text = json.dumps(structured, sort_keys=True, default=str).lower()
-    if _has_any(full_text, _AUTH_TOKENS):
+    explicit_auth = _has_any(full_text, _AUTH_TOKENS)
+    explicit_config = _has_any(full_text, _CONFIG_TOKENS)
+    explicit_infra = _has_any(full_text, _INFRA_TOKENS)
+
+    if explicit_auth:
         for svc in services:
-            if "mongo" in svc.lower() or svc.lower().endswith("db"):
-                add_candidate(svc, "auth_failure", 4.0, "global_auth_hint_db_service")
-    if _has_any(full_text, _CONFIG_TOKENS):
+            if _is_db_service(svc):
+                local = _service_local_text(structured, svc)
+                bonus = 5.0 if _has_any(local, _AUTH_TOKENS) else 2.0
+                if svc in top_error_names:
+                    bonus += 1.5
+                add_candidate(svc, "auth_failure", bonus, "auth_hint_db_service")
+                signal(svc, "auth", 2, local[:400] or "global auth hint")
+
+    if explicit_config:
         for svc in services:
             if "service" in svc.lower() and not _is_helper_service(svc):
-                add_candidate(svc, "config_error", 2.5, "global_config_hint_service")
+                local = _service_local_text(structured, svc)
+                bonus = 5.0 if _has_any(local, _CONFIG_TOKENS) else 1.0
+                if svc in top_error_names:
+                    bonus += 1.0
+                add_candidate(svc, "config_error", bonus, "specific_config_hint_service")
+                signal(svc, "config", 2, local[:400] or "specific config hint")
+
+    if explicit_infra:
+        for svc in services:
+            local = _service_local_text(structured, svc)
+            if _has_any(local, _INFRA_TOKENS):
+                add_candidate(svc, "infra_failure", 5.0 + _text_signal_score(local) * 0.2, "infra_hint_local_service")
+                signal(svc, "infra", 2, local[:400])
+
+    # Special non-oracle structural cue: in hotel-reservation, a business service
+    # and its MongoDB dependency often both appear degraded. For killed/unready
+    # infra text, prefer the business service as the upstream container/pod fault.
+    if explicit_infra:
+        for svc in services:
+            if _is_db_or_cache_service(svc):
+                continue
+            paired = [d for d in services if d != svc and svc in d and _is_db_or_cache_service(d)]
+            if paired:
+                local = _service_local_text(structured, svc)
+                if _has_any(local + " " + full_text[:20000], _INFRA_TOKENS):
+                    add_candidate(svc, "infra_failure", 4.0, "business_service_over_paired_db_for_infra")
 
     rows = []
     for row in candidates.values():
         svc = str(row["service"])
+        ft = normalize_fault_type(str(row.get("fault_type") or "unknown"))
         score = float(row["score"])
+        reasons = list(row.get("reasons", []))
+
         if service_set and svc not in service_set:
             score -= 2.0
-            row["reasons"].append("not_in_valid_services_penalty")
+            reasons.append("not_in_valid_services_penalty")
         if _is_helper_service(svc):
-            score -= 6.0
-            row["reasons"].append("helper_service_penalty")
+            score -= 8.0
+            reasons.append("helper_service_penalty")
         if svc.endswith("-frontend") or svc == "frontend":
             score -= 2.0
-            row["reasons"].append("frontend_penalty")
-        rows.append({**row, "score": round(score, 6)})
-    rows.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
+            reasons.append("frontend_penalty")
+        if _is_cache_service(svc) and ft == "dependency_failure":
+            score -= 2.0
+            reasons.append("cache_dependency_fanout_penalty")
+        if _is_db_service(svc) and ft == "dependency_failure" and not explicit_auth and not explicit_network_local(structured, svc):
+            score -= 1.0
+            reasons.append("generic_db_dependency_penalty")
+        if ft == "dependency_failure" and reasons and all(r.startswith("weak_cluster") or r in {"symptom_signature_degraded", "sla_unhealthy_service"} for r in reasons):
+            score -= 2.0
+            reasons.append("cluster_only_dependency_penalty")
+        rows.append({**row, "fault_type": ft, "score": round(score, 6), "reasons": reasons})
+
+    rows.sort(key=lambda r: (float(r.get("score", 0.0)), _specificity_tiebreak(str(r.get("service", "")), str(r.get("fault_type", "")))), reverse=True)
 
     signal_list = []
     for row in signal_rows.values():
@@ -400,16 +496,17 @@ def high_signal_evidence_summary(compressed_state: dict[str, Any], structured: d
     signal_list.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
 
     return {
-        "extractor_version": "agent_input_builder_v1",
-        "candidate_root_causes": rows[:60],
-        "direct_health_services": sorted(direct_health_rows, key=lambda x: float(x.get("root_cause_signal_score", 0.0)), reverse=True)[:60],
-        "signal_by_service": signal_list[:60],
-        "service_mention_counts": service_mentions.most_common(80),
+        "extractor_version": "agent_input_builder_v2_typed_ranking",
+        "candidate_root_causes": rows[:80],
+        "direct_health_services": sorted(direct_health_rows, key=lambda x: float(x.get("root_cause_signal_score", 0.0)), reverse=True)[:80],
+        "signal_by_service": signal_list[:80],
+        "service_mention_counts": service_mentions.most_common(100),
         "observed_services_sample": services[:200],
-        "top_log_error_services": structured.get("top_error_services", [])[:12],
+        "top_log_error_services": top_error_services[:12],
         "suspicious_trace_edges": structured.get("suspicious_trace_edges", [])[:12],
         "trace_summary": structured.get("trace_summary", {}),
         "sla_excerpt": _slim_sla(structured.get("sla", {})),
+        "global_signal_flags": {"explicit_auth": explicit_auth, "explicit_config": explicit_config, "explicit_infra": explicit_infra},
         "builder_source": "state_abstraction_full.agent_input_builder.build_rca_agent_input",
         "invalid_service_examples": list(_NON_ROOT_SERVICE_PATTERNS),
     }
@@ -434,25 +531,58 @@ def sanitize_rca_prediction(raw: str, compressed_state: dict[str, Any] | None = 
     return "unknown::unknown"
 
 
-def _repair_invalid_prediction(prediction: str, valid_services: set[str], candidates: list[dict[str, Any]]) -> str:
+def _repair_prediction_with_candidates(prediction: str, valid_services: set[str], candidates: list[dict[str, Any]]) -> tuple[str, str]:
     parsed = parse_fault_lines(prediction)
-    if parsed:
-        kept = []
-        for label in parsed:
-            svc = label.service
-            if valid_services and svc not in valid_services:
-                continue
-            if _is_non_root_service(svc):
-                continue
-            kept.append(label.canonical_key())
-        if kept:
-            return "\n".join(kept)
+    best = _best_valid_candidate(candidates, valid_services)
+    if not parsed:
+        return (_candidate_key(best), "fallback_no_parse") if best else (prediction or "unknown::unknown", "no_parse_no_candidate")
+
+    label = parsed[0]
+    pred_key = label.canonical_key()
+    pred_service = label.service
+    pred_ft = normalize_fault_type(label.fault_type)
+
+    if (valid_services and pred_service not in valid_services) or _is_non_root_service(pred_service):
+        return (_candidate_key(best), "fallback_invalid_service") if best else (pred_key, "invalid_service_no_candidate")
+
+    pred_score = _candidate_score_for(pred_service, pred_ft, candidates)
+    best_score = _safe_float(best.get("score")) if best else 0.0
+    best_service = str(best.get("service") or "") if best else ""
+    best_ft = normalize_fault_type(str(best.get("fault_type") or "unknown")) if best else "unknown"
+
+    # Same service, better fault type: safe to repair because service identity is unchanged.
+    if best and best_service == pred_service and best_ft != pred_ft and best_score >= pred_score + 1.0:
+        return _candidate_key(best), "same_service_stronger_fault_type"
+
+    # Strong typed evidence candidate can override weak downstream dependency guesses.
+    if best and best_score >= 8.0 and best_score >= pred_score + 3.0:
+        if pred_ft == "dependency_failure" or _is_db_or_cache_service(pred_service) or pred_service.endswith("-frontend"):
+            return _candidate_key(best), "strong_candidate_over_weak_downstream_prediction"
+
+    # Keep a valid LLM prediction when no strong candidate contradicts it.
+    return pred_key, "kept_valid_llm_prediction"
+
+
+def _best_valid_candidate(candidates: list[dict[str, Any]], valid_services: set[str]) -> dict[str, Any] | None:
     for row in candidates or []:
         svc = str(row.get("service") or "")
-        ft = normalize_fault_type(str(row.get("fault_type") or "unknown"))
         if svc and (not valid_services or svc in valid_services) and not _is_non_root_service(svc):
-            return f"{svc}::{ft}"
-    return prediction if prediction else "unknown::unknown"
+            return row
+    return None
+
+
+def _candidate_score_for(service: str, fault_type: str, candidates: list[dict[str, Any]]) -> float:
+    best = 0.0
+    for row in candidates or []:
+        if str(row.get("service") or "") == service and normalize_fault_type(str(row.get("fault_type") or "unknown")) == normalize_fault_type(fault_type):
+            best = max(best, _safe_float(row.get("score")))
+    return best
+
+
+def _candidate_key(row: dict[str, Any] | None) -> str:
+    if not row:
+        return "unknown::unknown"
+    return f"{row.get('service')}::{normalize_fault_type(str(row.get('fault_type') or 'unknown'))}"
 
 
 def _lines_from_json(parsed: Any) -> list[str]:
@@ -498,6 +628,16 @@ def _strip_leaky_fields(obj: Any) -> Any:
     return obj
 
 
+def _symptom_signature(compressed_state: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from digital_twin_runtime.telemetry_comparator import symptom_signature
+
+        sig = symptom_signature(compressed_state)
+        return sig if isinstance(sig, dict) else {}
+    except Exception:
+        return {}
+
+
 def _slim_sla(sla: Any) -> Any:
     if not isinstance(sla, dict):
         return sla
@@ -536,11 +676,31 @@ def _fallback_services_from_text(obj: Any) -> list[str]:
     return sorted(vals)
 
 
+def _service_local_text(structured: dict[str, Any], service: str) -> str:
+    svc = str(service or "").lower()
+    chunks: list[str] = []
+    health = structured.get("service_health", {}) or {}
+    if isinstance(health, dict) and service in health:
+        chunks.append(json.dumps(health.get(service), sort_keys=True, default=str))
+    for item in structured.get("top_error_services", []) or []:
+        if isinstance(item, dict) and str(item.get("service") or "").lower() == svc:
+            chunks.append(json.dumps(item, sort_keys=True, default=str))
+    for item in structured.get("suspicious_trace_edges", []) or []:
+        if isinstance(item, dict) and svc in json.dumps(item, sort_keys=True, default=str).lower():
+            chunks.append(json.dumps(item, sort_keys=True, default=str))
+    clusters = structured.get("service_clusters", {}) or {}
+    if isinstance(clusters, dict):
+        for bucket, vals in clusters.items():
+            if isinstance(vals, list) and service in vals:
+                chunks.append(f"cluster:{bucket}")
+    return "\n".join(chunks).lower()
+
+
 def _suggest_fault_from_text(text: str) -> str:
     t = str(text or "").lower()
     scores = {
         "auth_failure": _token_count(t, _AUTH_TOKENS) * 3.0,
-        "config_error": _token_count(t, _CONFIG_TOKENS) * 2.5,
+        "config_error": _token_count(t, _CONFIG_TOKENS) * 3.0,
         "network_failure": _token_count(t, _NETWORK_TOKENS) * 2.0,
         "latency_degradation": _token_count(t, _LATENCY_TOKENS) * 2.0,
         "infra_failure": _token_count(t, _INFRA_TOKENS) * 2.0,
@@ -566,11 +726,11 @@ def _text_signal_score(text: str) -> float:
     t = str(text or "").lower()
     return float(
         _token_count(t, _AUTH_TOKENS) * 3.0
-        + _token_count(t, _CONFIG_TOKENS) * 2.5
+        + _token_count(t, _CONFIG_TOKENS) * 3.0
         + _token_count(t, _INFRA_TOKENS) * 2.0
         + _token_count(t, _LATENCY_TOKENS) * 1.5
         + _token_count(t, _NETWORK_TOKENS) * 1.5
-        + _token_count(t, _ERROR_TOKENS) * 1.0
+        + _token_count(t, _ERROR_TOKENS) * 0.75
     )
 
 
@@ -582,6 +742,27 @@ def _token_count(text: str, tokens: tuple[str, ...]) -> int:
 def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
     t = str(text or "").lower()
     return any(tok in t for tok in tokens)
+
+
+def explicit_network_local(structured: dict[str, Any], service: str) -> bool:
+    return _has_any(_service_local_text(structured, service), _NETWORK_TOKENS)
+
+
+def _specificity_tiebreak(service: str, fault_type: str) -> float:
+    s = service.lower()
+    ft = normalize_fault_type(fault_type)
+    score = 0.0
+    if ft != "dependency_failure":
+        score += 2.0
+    if "-service" in s:
+        score += 1.0
+    if _is_db_service(s) and ft == "auth_failure":
+        score += 1.0
+    if _is_db_or_cache_service(s) and ft == "dependency_failure":
+        score -= 1.0
+    if s.endswith("-frontend") or s == "frontend":
+        score -= 2.0
+    return score
 
 
 def _strip_fences(text: str) -> str:
@@ -626,14 +807,14 @@ def _looks_like_service(token: str) -> bool:
     t = str(token or "").strip().lower()
     if not t or len(t) < 3:
         return False
-    deny = {"default", "true", "false", "none", "null", "namespace", "service", "services", "pod", "pods", "metrics", "metric", "logs", "log", "trace", "traces", "output", "status", "health", "error", "warning", "failed", "success", "normal", "unknown", "node", "name", "type", "value", "analysis", "mitigation", "localization"}
+    deny = {"default", "true", "false", "none", "null", "namespace", "service", "services", "pod", "pods", "metrics", "metric", "logs", "log", "trace", "traces", "output", "status", "health", "error", "warning", "failed", "success", "normal", "unknown", "node", "name", "type", "value", "analysis", "mitigation", "localization", "root"}
     if t in deny:
         return False
     if _is_non_root_service(t):
         return False
     if "-" in t:
         return True
-    if t in {"geo", "rate", "profile", "recommendation", "reservation", "search", "frontend"}:
+    if t in {"geo", "rate", "profile", "recommendation", "reservation", "search", "frontend", "consul"}:
         return True
     if "mongo" in t or t.endswith("db"):
         return True
@@ -648,6 +829,20 @@ def _is_helper_service(service: str) -> bool:
 def _is_non_root_service(service: str) -> bool:
     s = str(service or "").lower()
     return any(pat == s or pat in s for pat in _NON_ROOT_SERVICE_PATTERNS) or _is_helper_service(s)
+
+
+def _is_cache_service(service: str) -> bool:
+    s = str(service or "").lower()
+    return any(x in s for x in _CACHE_DB_MARKERS)
+
+
+def _is_db_service(service: str) -> bool:
+    s = str(service or "").lower()
+    return "mongo" in s or s.endswith("db") or "-db" in s
+
+
+def _is_db_or_cache_service(service: str) -> bool:
+    return _is_db_service(service) or _is_cache_service(service)
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
