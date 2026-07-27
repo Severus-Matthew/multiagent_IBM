@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from .llm_rca_solver import LLMRCASolver
 from .prompt_operator_policy import OperatorRCAInstructionPolicy
 from .qwen_prompt_policy import QwenRCAInstructionPolicy
 from .rca_loop import HeuristicRCAInstructionPolicy, HeuristicRCASolver
 
 
 RCA_INSTRUCTION_POLICIES = {"heuristic", "operator", "qwen_stub"}
-RCA_SOLVERS = {"heuristic"}
+RCA_SOLVERS = {"heuristic", "llm"}
 
 
 def build_rca_instruction_policy(args: Any):
@@ -36,6 +37,15 @@ def build_rca_solver(args: Any):
     name = getattr(args, "rca_solver", "heuristic")
     if name == "heuristic":
         return HeuristicRCASolver()
+    if name == "llm":
+        return LLMRCASolver(
+            provider=getattr(args, "llm_provider", "openai"),
+            model=getattr(args, "llm_model", None),
+            max_tokens=getattr(args, "llm_max_tokens", 300),
+            temperature=getattr(args, "llm_temperature", 0.0),
+            state_char_budget=getattr(args, "llm_state_char_budget", 24000),
+            cache_path=getattr(args, "llm_cache_path", None),
+        )
     raise ValueError(f"unknown RCA solver {name!r}; valid={sorted(RCA_SOLVERS)}")
 
 
@@ -48,6 +58,12 @@ def policy_metadata(args: Any) -> dict[str, Any]:
         "qwen_adapter_path": getattr(args, "qwen_adapter_path", None),
         "qwen_dry_run": getattr(args, "instruction_policy", "heuristic") == "qwen_stub",
         "rca_solver": getattr(args, "rca_solver", "heuristic"),
+        "llm_provider": getattr(args, "llm_provider", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_model": getattr(args, "llm_model", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_temperature": getattr(args, "llm_temperature", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_max_tokens": getattr(args, "llm_max_tokens", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_state_char_budget": getattr(args, "llm_state_char_budget", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_cache_path": getattr(args, "llm_cache_path", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
     }
 
 
