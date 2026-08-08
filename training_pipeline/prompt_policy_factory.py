@@ -80,7 +80,7 @@ def policy_metadata(args: Any) -> dict[str, Any]:
         "llm_state_char_budget": getattr(args, "llm_state_char_budget", None) if getattr(args, "rca_solver", "heuristic") == "llm" and not use_sweep else None,
         "llm_max_root_causes": getattr(args, "llm_max_root_causes", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
         "llm_cache_path": getattr(args, "llm_cache_path", None) if getattr(args, "rca_solver", "heuristic") == "llm" and not use_sweep else None,
-        "llm_solver_impl": "CandidateSweepRCASolver:v5:wrong-bin-unknown-fallback" if use_sweep else ("LLMSelectorRCASolverV5:valid-candidate-selector" if getattr(args, "rca_solver", "heuristic") == "llm" else None),
+        "llm_solver_impl": "CandidateSweepRCASolver:v6:mixed-root-sweep" if use_sweep else ("LLMSelectorRCASolverV5:valid-candidate-selector" if getattr(args, "rca_solver", "heuristic") == "llm" else None),
     }
 
 
