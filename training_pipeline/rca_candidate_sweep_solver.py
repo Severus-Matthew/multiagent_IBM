@@ -21,7 +21,9 @@ class CandidateSweepRCASolver:
     ordering first and moved diagnostic variants to late fallback. v5 keeps that
     ordering but inserts a narrow auth+unknown fallback after config+auth pairs,
     so wrong_bin_usage-style unknown faults can be reached without crowding out
-    the successful config+auth and latency/auth families.
+    the successful config+auth and latency/auth families. v6 is mixed-root: when
+    max_root_causes > 1, it still emits single-root candidates first, then two-root
+    candidates. This lets one run cover both single-fault and multifault splits.
     """
 
     BASE_CONFIG_AUTH_TEMPLATES: tuple[tuple[str, str], ...] = (
@@ -99,7 +101,7 @@ class CandidateSweepRCASolver:
 
         state_key = _stable_hash({
             "compact_state": compact,
-            "solver": "candidate_sweep_v5",
+            "solver": "candidate_sweep_v6",
             "max_root_causes": self.max_root_causes,
             "include_dependency": self.include_dependency,
         })
@@ -121,9 +123,10 @@ class CandidateSweepRCASolver:
         plan: list[list[str]] = []
         seen_sets: set[tuple[str, ...]] = set()
 
-        def add(lines: list[str]) -> None:
+        def add(lines: list[str], *, min_lines: int | None = None) -> None:
             lines = self._dedupe_lines(lines)[: self.max_root_causes]
-            if len(lines) < min(2, self.max_root_causes):
+            required = min_lines if min_lines is not None else min(2, self.max_root_causes)
+            if len(lines) < required:
                 return
             key = tuple(sorted(lines))
             if key in seen_sets:
@@ -135,6 +138,12 @@ class CandidateSweepRCASolver:
         diagnostic_rows = self._diagnostic_variant_rows(filtered)
         diagnostic_rows_by_type = self._rows_by_type(diagnostic_rows)
         merged_rows_by_type = self._rows_by_type(filtered + diagnostic_rows)
+
+        # Stage 0: single-root candidates. This makes a max_root_causes=2 run
+        # usable for mixed single+multifault splits. Pair stages still follow, so
+        # multifault exact pairs remain reachable with a sufficiently large group.
+        for s in singles:
+            add([s], min_lines=1)
 
         # Stage 1a: exact high-precision config+auth pairs over the original
         # candidate set only. These account for most multifault successes.
@@ -249,22 +258,22 @@ class CandidateSweepRCASolver:
             # network_loss may appear latency/config/infra-like in redacted
             # telemetry. Add same-service network variants only as fallback.
             if not _is_db_or_cache_service(svc) and ft in {"latency_degradation", "config_error", "infra_failure"}:
-                add_variant(row, "network_failure", -0.35, "sweep_v5_late_network_loss_variant")
+                add_variant(row, "network_failure", -0.35, "sweep_v6_late_network_loss_variant")
             if not _is_db_or_cache_service(svc) and ft == "network_failure":
-                add_variant(row, "latency_degradation", -0.35, "sweep_v5_late_network_delay_variant")
+                add_variant(row, "latency_degradation", -0.35, "sweep_v6_late_network_delay_variant")
 
             # wrong_bin_usage is normalized as unknown, while symptoms can look
             # config/latency-like. Add unknown variants without using scenario
             # names or oracle labels.
             if not _is_db_or_cache_service(svc) and ft in {"config_error", "infra_failure", "latency_degradation", "network_failure"}:
-                add_variant(row, "unknown", -0.50, "sweep_v5_late_wrong_bin_unknown_variant")
+                add_variant(row, "unknown", -0.50, "sweep_v6_late_wrong_bin_unknown_variant")
 
             # user_unregistered_mongodb is dependency_failure; revoke_auth is
             # auth_failure. Add both DB interpretations late.
             if _is_db_or_cache_service(svc) and ft == "auth_failure":
-                add_variant(row, "dependency_failure", -0.25, "sweep_v5_late_db_dependency_variant")
+                add_variant(row, "dependency_failure", -0.25, "sweep_v6_late_db_dependency_variant")
             if _is_db_or_cache_service(svc) and ft == "dependency_failure":
-                add_variant(row, "auth_failure", -0.25, "sweep_v5_late_db_auth_variant")
+                add_variant(row, "auth_failure", -0.25, "sweep_v6_late_db_auth_variant")
 
         variants = list(variants_by_key.values())
         variants.sort(key=self._score, reverse=True)
