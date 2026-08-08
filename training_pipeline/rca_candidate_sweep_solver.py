@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .llm_rca_solver import _is_non_root_service, _stable_hash
+from .llm_rca_solver import _is_db_or_cache_service, _is_non_root_service, _stable_hash
 from .rca_candidate_generator_v5 import compact_state_for_llm_v5
 from .schemas import normalize_fault_type
 
@@ -17,20 +17,27 @@ class CandidateSweepRCASolver:
     whether the correct RCA is reachable from the redacted candidate universe and
     produce useful contrastive samples.
 
-    v2 adds multi-root candidate combinations. This is important because many
-    AIOpsLab mixed scenarios contain two faults, while v1 only emitted one
-    service::fault_type line and therefore could not succeed on exact-set RCA.
+    v2 added multi-root candidate combinations. v3 adds diagnostic fault-family
+    variants for the families that were still missed in the multifault sweep:
+    network_loss -> network_failure, user_unregistered -> dependency_failure,
+    and wrong_bin_usage -> unknown.
     """
 
     PAIR_TEMPLATES: tuple[tuple[str, str], ...] = (
-        ("config_error", "auth_failure"),
-        ("auth_failure", "config_error"),
-        ("auth_failure", "latency_degradation"),
-        ("latency_degradation", "auth_failure"),
+        # Put the families that v11 missed early. This is a diagnostic sweep, so
+        # coverage is more important than preserving the heuristic rank order.
         ("auth_failure", "network_failure"),
         ("network_failure", "auth_failure"),
         ("auth_failure", "dependency_failure"),
         ("dependency_failure", "auth_failure"),
+        ("auth_failure", "unknown"),
+        ("unknown", "auth_failure"),
+        ("auth_failure", "latency_degradation"),
+        ("latency_degradation", "auth_failure"),
+        ("config_error", "auth_failure"),
+        ("auth_failure", "config_error"),
+        ("config_error", "unknown"),
+        ("unknown", "config_error"),
         ("config_error", "latency_degradation"),
         ("latency_degradation", "config_error"),
         ("config_error", "network_failure"),
@@ -47,8 +54,8 @@ class CandidateSweepRCASolver:
         start_index: int = 0,
         stride: int = 1,
         include_dependency: bool | None = None,
-        pair_pool_per_type: int = 20,
-        sliding_pair_pool: int = 40,
+        pair_pool_per_type: int = 24,
+        sliding_pair_pool: int = 64,
     ):
         self.max_root_causes = max(1, int(max_root_causes))
         self.start_index = max(0, int(start_index))
@@ -72,7 +79,7 @@ class CandidateSweepRCASolver:
 
         state_key = _stable_hash({
             "compact_state": compact,
-            "solver": "candidate_sweep_v2",
+            "solver": "candidate_sweep_v3",
             "max_root_causes": self.max_root_causes,
             "include_dependency": self.include_dependency,
         })
@@ -109,6 +116,22 @@ class CandidateSweepRCASolver:
             seen_sets.add(key)
             plan.append(lines)
 
+        # Targeted same-service alternate-fault pairs. These are cheap and put the
+        # v11 miss families near the front of the sweep plan.
+        for row in filtered[: self.sliding_pair_pool]:
+            svc = str(row.get("service") or "")
+            ft = normalize_fault_type(str(row.get("fault_type") or "unknown"))
+            if ft == "latency_degradation":
+                add([f"{svc}::network_failure", f"{svc}::latency_degradation"])
+            if ft == "network_failure":
+                add([f"{svc}::network_failure", f"{svc}::latency_degradation"])
+            if ft == "auth_failure" and self.include_dependency:
+                add([f"{svc}::auth_failure", f"{svc}::dependency_failure"])
+            if ft == "dependency_failure":
+                add([f"{svc}::auth_failure", f"{svc}::dependency_failure"])
+            if ft in {"config_error", "infra_failure"} and not _is_db_or_cache_service(svc):
+                add([f"{svc}::unknown", f"{svc}::{ft}"])
+
         # High-priority typed multifault templates. These cover the synthetic
         # mixed cases: config+auth, auth+network/latency, auth+dependency, etc.
         for ft_a, ft_b in self.PAIR_TEMPLATES:
@@ -124,7 +147,7 @@ class CandidateSweepRCASolver:
 
         # Same-fault pairs are lower priority but useful for double DB/auth or
         # repeated infra/data-store failures.
-        for ft in ("auth_failure", "config_error", "infra_failure", "network_failure", "latency_degradation", "dependency_failure"):
+        for ft in ("auth_failure", "config_error", "infra_failure", "network_failure", "latency_degradation", "dependency_failure", "unknown"):
             rows = rows_by_type.get(ft, [])[: self.pair_pool_per_type]
             for i, a in enumerate(rows):
                 for b in rows[i + 1:]:
@@ -137,35 +160,74 @@ class CandidateSweepRCASolver:
             for b in top[i + 1:]:
                 add([self._candidate_key(a), self._candidate_key(b)])
 
-        # Add singles at the end as a fallback. They are not exact for multifault,
-        # but help diagnose whether at least one component is recoverable.
-        for s in singles:
-            add([s, s])  # ignored by add because it dedupes to length 1
         if not plan:
             return [[s] for s in singles]
         return plan
 
     def _filter_candidates(self, candidates: list[dict[str, Any]], valid_services: set[str]) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        rows_by_key: dict[str, dict[str, Any]] = {}
+
+        def add_row(row: dict[str, Any], fault_type: str | None = None, score_delta: float = 0.0, reason: str | None = None) -> None:
+            svc = str(row.get("service") or "").strip()
+            ft = normalize_fault_type(str(fault_type or row.get("fault_type") or "unknown"))
+            if not svc or _is_non_root_service(svc):
+                return
+            if valid_services and svc not in valid_services:
+                return
+            if ft == "dependency_failure" and not self.include_dependency:
+                return
+            if ft in {""}:
+                return
+            base_score = 0.0
+            try:
+                base_score = float(row.get("score", 0.0) or 0.0)
+            except Exception:
+                base_score = 0.0
+            key = f"{svc}::{ft}"
+            new_row = {**row, "service": svc, "fault_type": ft, "score": base_score + float(score_delta)}
+            if reason:
+                reasons = list(new_row.get("reasons", []) or [])
+                if reason not in reasons:
+                    reasons.append(reason)
+                new_row["reasons"] = reasons
+            old = rows_by_key.get(key)
+            if old is None or float(new_row.get("score", 0.0) or 0.0) > float(old.get("score", 0.0) or 0.0):
+                rows_by_key[key] = new_row
+
         for row in candidates or []:
             if not isinstance(row, dict):
                 continue
+            add_row(row)
             svc = str(row.get("service") or "").strip()
             ft = normalize_fault_type(str(row.get("fault_type") or "unknown"))
             if not svc or _is_non_root_service(svc):
                 continue
-            if valid_services and svc not in valid_services:
-                continue
-            if ft == "dependency_failure" and not self.include_dependency:
-                continue
-            if ft in {""}:
-                continue
-            key = f"{svc}::{ft}"
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append({**row, "service": svc, "fault_type": ft})
+
+            # network_loss scenarios can be represented as latency-like symptoms
+            # in the redacted telemetry. Add a same-service network variant for
+            # business services whenever the candidate universe has latency,
+            # config, or infra support for that service.
+            if not _is_db_or_cache_service(svc) and ft in {"latency_degradation", "config_error", "infra_failure"}:
+                add_row(row, "network_failure", score_delta=-0.35, reason="sweep_v3_network_loss_variant")
+            if not _is_db_or_cache_service(svc) and ft == "network_failure":
+                add_row(row, "latency_degradation", score_delta=-0.35, reason="sweep_v3_network_delay_variant")
+
+            # wrong_bin_usage uses canonical fault_type unknown. Redacted symptoms
+            # often look config-like, so add unknown variants for affected business
+            # services without using scenario names or oracle labels.
+            if not _is_db_or_cache_service(svc) and ft in {"config_error", "infra_failure", "latency_degradation", "network_failure"}:
+                add_row(row, "unknown", score_delta=-0.5, reason="sweep_v3_wrong_bin_unknown_variant")
+
+            # user_unregistered_mongodb is canonicalized as dependency_failure,
+            # while revoke_auth_mongodb is auth_failure. Redacted DB symptoms can
+            # be ambiguous, so include both typed variants for DB/cache services.
+            if _is_db_or_cache_service(svc) and ft == "auth_failure":
+                add_row(row, "dependency_failure", score_delta=-0.25, reason="sweep_v3_db_dependency_variant")
+            if _is_db_or_cache_service(svc) and ft == "dependency_failure":
+                add_row(row, "auth_failure", score_delta=-0.25, reason="sweep_v3_db_auth_variant")
+
+        rows = list(rows_by_key.values())
+        rows.sort(key=lambda r: float(r.get("score", 0.0) or 0.0), reverse=True)
         return rows
 
     @staticmethod
