@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .rca_candidate_generator_v4 import EvidenceFirstLLMRCASolverV4
+from .rca_candidate_generator_v5 import LLMSelectorRCASolverV5
 from .prompt_operator_policy import OperatorRCAInstructionPolicy
 from .qwen_prompt_policy import QwenRCAInstructionPolicy
 from .rca_loop import HeuristicRCAInstructionPolicy, HeuristicRCASolver
@@ -38,7 +38,7 @@ def build_rca_solver(args: Any):
     if name == "heuristic":
         return HeuristicRCASolver()
     if name == "llm":
-        return EvidenceFirstLLMRCASolverV4(
+        return LLMSelectorRCASolverV5(
             provider=getattr(args, "llm_provider", "openai"),
             model=getattr(args, "llm_model", None),
             max_tokens=getattr(args, "llm_max_tokens", 300),
@@ -66,7 +66,7 @@ def policy_metadata(args: Any) -> dict[str, Any]:
         "llm_state_char_budget": getattr(args, "llm_state_char_budget", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
         "llm_max_root_causes": getattr(args, "llm_max_root_causes", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
         "llm_cache_path": getattr(args, "llm_cache_path", None) if getattr(args, "rca_solver", "heuristic") == "llm" else None,
-        "llm_solver_impl": "EvidenceFirstLLMRCASolverV4:local-evidence" if getattr(args, "rca_solver", "heuristic") == "llm" else None,
+        "llm_solver_impl": "LLMSelectorRCASolverV5:valid-candidate-selector" if getattr(args, "rca_solver", "heuristic") == "llm" else None,
     }
 
 
