@@ -266,8 +266,6 @@ def _iter_candidate_rows(obj: Any):
 
 def _candidate_evidence_roots(state: dict[str, Any]) -> list[Any]:
     roots: list[Any] = []
-    # Only inspect verifier-side telemetry evidence summaries; never inspect
-    # ground_truth/fault_context fields even if they accidentally exist.
     for key in ("high_signal_evidence", "rca_agent_structured_evidence", "llm_view", "clusters", "service_health"):
         if isinstance(state.get(key), (dict, list)):
             roots.append(state[key])
@@ -283,8 +281,34 @@ def _candidate_evidence_roots(state: dict[str, Any]) -> list[Any]:
     return roots
 
 
-def _typed_candidate_support(state: dict[str, Any], service: str, fault_type: str) -> float:
+def _fault_evidence_tokens(fault_type: str) -> tuple[str, ...]:
     ft = _norm_fault_type(fault_type)
+    if ft == "infra_failure":
+        return ("pod", "container", "crash", "oom", "endpoint", "replica", "schedule", "node", "unready", "killed", "pending")
+    if ft == "auth_failure":
+        return ("auth", "unauthorized", "forbidden", "permission", "credential", "login", "denied")
+    if ft == "dependency_failure":
+        return ("dependency", "connection refused", "upstream", "downstream", "database", "mongodb", "redis", "unavailable")
+    if ft == "latency_degradation":
+        return ("latency", "timeout", "timed out", "slow", "delay", "p95", "p99")
+    if ft == "network_failure":
+        return ("network", "packet", "loss", "unreachable", "reset", "dns", "no route", "drop")
+    if ft == "config_error":
+        return ("config", "misconfig", "target port", "wrong port", "wrong binary", "wrong-bin", "env", "environment")
+    if ft == "resource_exhaustion":
+        return ("oom", "memory", "cpu", "resource", "throttle", "quota", "limit")
+    return ("wrong binary", "wrong-bin", "wrong_bin", "unknown", "invalid executable")
+
+
+def _typed_candidate_support(state: dict[str, Any], service: str, fault_type: str) -> float:
+    """Use verifier-side candidate evidence only when it contains typed evidence.
+
+    Broad candidate rows alone are not evidence. They made the previous scorer
+    pass same-service wrong-type controls. This function requires the candidate
+    row's reasons/evidence to contain tokens specific to the requested mechanism.
+    """
+    ft = _norm_fault_type(fault_type)
+    tokens = _fault_evidence_tokens(ft)
     best = 0.0
     for root in _candidate_evidence_roots(state):
         for row in _iter_candidate_rows(root):
@@ -294,15 +318,16 @@ def _typed_candidate_support(state: dict[str, Any], service: str, fault_type: st
             row_ft = _norm_fault_type(str(row.get("fault_type") or row.get("fault_family") or "unknown"))
             if not _same_service(row_service, service) or row_ft != ft:
                 continue
+            evidence_text = " ".join([
+                " ".join(str(x) for x in (row.get("reasons", []) or [])),
+                " ".join(str(x) for x in (row.get("evidence_excerpt", []) or [])),
+                str(row.get("source", "")),
+                str(row.get("evidence", "")),
+            ]).lower()
+            if not _has(evidence_text, tokens):
+                continue
             raw_score = _safe_float(row.get("score"), 0.0)
-            support = min(1.0, raw_score / 14.0) if raw_score > 0 else 0.25
-            reasons = " ".join(str(x) for x in (row.get("reasons", []) or [])).lower()
-            if any(tok in reasons for tok in ("local", "explicit", "typed", "direct", "v4_local")):
-                support = max(support, 0.85)
-            elif any(tok in reasons for tok in ("backstop", "paired", "family", "v4_")):
-                support = max(support, 0.55)
-            elif any(tok in reasons for tok in ("generic", "symptom_signature", "cluster")):
-                support = min(support, 0.18)
+            support = 0.55 if raw_score <= 0 else min(0.90, max(0.55, raw_score / 16.0))
             best = max(best, support)
     return best
 
@@ -315,48 +340,49 @@ def _fault_type_compatibility(state: dict[str, Any], service: str, fault_type: s
     health_text = _service_health_text(state, service)
     local = " ".join([log_text, trace_text, health_text])
     typed_support = _typed_candidate_support(state, service, ft)
+    tokens = _fault_evidence_tokens(ft)
 
     if ft == "infra_failure":
-        if _service_in(sig["degraded_services"], service) and _has(local, ("pod", "container", "crash", "oom", "endpoint", "replica", "schedule", "node", "unready", "killed")):
+        if _service_in(sig["degraded_services"], service) and _has(local, tokens):
             return max(1.0, typed_support)
         return max(typed_support, 0.10 if _service_in(sig["degraded_services"], service) else 0.03)
     if ft == "auth_failure":
-        if _has(local, ("auth", "unauthorized", "forbidden", "permission", "credential", "login", "denied")):
+        if _has(local, tokens):
             return max(1.0, typed_support)
         if _service_in(sig["top_error_services"], service) and _has(local, ("mongo", "mongodb", "database")):
             return max(typed_support, 0.18)
         return max(typed_support, 0.03)
     if ft == "dependency_failure":
-        if _has(local, ("dependency", "connection refused", "connection", "unavailable", "upstream", "downstream", "database", "mongodb", "redis")):
+        if _has(local, tokens):
             return max(0.9, typed_support)
         if _service_in(sig["trace_targets"], service) or _service_in(sig["top_error_services"], service):
             return max(typed_support, 0.12)
         return max(typed_support, 0.03)
     if ft == "latency_degradation":
-        if _has(local, ("latency", "timeout", "timed out", "slow", "delay", "p95", "p99")):
+        if _has(local, tokens):
             return max(1.0, typed_support)
         if _service_in(sig["trace_sources"], service) or _service_in(sig["trace_targets"], service) or _service_in(sig["metric_anomaly_services"], service):
             return max(typed_support, 0.14)
         return max(typed_support, 0.03)
     if ft == "network_failure":
-        if _has(local, ("network", "packet", "loss", "unreachable", "reset", "dns", "no route", "drop")):
+        if _has(local, tokens):
             return max(1.0, typed_support)
         if _service_in(sig["trace_sources"], service) or _service_in(sig["trace_targets"], service):
             return max(typed_support, 0.12)
         return max(typed_support, 0.03)
     if ft == "config_error":
-        if _has(local, ("config", "misconfig", "target port", "port", "wrong", "binary", "bin", "env", "environment")):
+        if _has(local, tokens):
             return max(1.0, typed_support)
         if _service_in(sig["degraded_services"], service) and _service_in(sig["top_error_services"], service):
             return max(typed_support, 0.12)
         return max(typed_support, 0.03)
     if ft == "resource_exhaustion":
-        if _has(local, ("oom", "memory", "cpu", "resource", "throttle", "quota", "limit")):
+        if _has(local, tokens):
             return max(1.0, typed_support)
         if _service_in(sig["metric_anomaly_services"], service):
             return max(typed_support, 0.24)
         return max(typed_support, 0.03)
-    if _has(local, ("wrong binary", "wrong-bin", "wrong_bin", "unknown", "invalid executable")):
+    if _has(local, tokens):
         return max(0.75, typed_support)
     return max(typed_support, 0.04 if _service_in(sig["affected_services"], service) else 0.0)
 
@@ -379,10 +405,9 @@ def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
 def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[dict[str, Any]]) -> dict[str, Any]:
     """Counterfactual behavioral-twin score for RCA predictions.
 
-    v4 is verifier-side only: it may use typed evidence mined from the redacted
-    state abstraction, but that evidence is not shown to the RCA agent. A label
-    must have both service-local evidence and fault-type-specific support; noisy
-    downstream services and wrong fault types should not pass merely by overlap.
+    v5 is verifier-side only: it uses typed evidence mined from the redacted
+    state abstraction, but a broad candidate menu is not enough. A label must
+    have both local service support and fault-specific evidence.
     """
     sig = symptom_signature(state)
     observed = set(sig["affected_services"])
@@ -392,7 +417,7 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     if not predicted_faults:
         return {
             "reproduction_score": 0.0,
-            "mode": "behavioral_offline_proxy_v4_typed_evidence_counterfactual",
+            "mode": "behavioral_offline_proxy_v5_fault_specific_evidence",
             "reason": "empty_prediction",
             "evidence_signature": sig,
             "predicted_signature": {"services": [], "neighborhood": []},
@@ -428,7 +453,7 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     if not predicted_rows:
         return {
             "reproduction_score": 0.0,
-            "mode": "behavioral_offline_proxy_v4_typed_evidence_counterfactual",
+            "mode": "behavioral_offline_proxy_v5_fault_specific_evidence",
             "reason": "no_valid_predicted_services",
             "evidence_signature": sig,
             "predicted_signature": {"services": [], "neighborhood": []},
@@ -442,7 +467,7 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
 
     return {
         "reproduction_score": round(score, 4),
-        "mode": "behavioral_offline_proxy_v4_typed_evidence_counterfactual",
+        "mode": "behavioral_offline_proxy_v5_fault_specific_evidence",
         "direct_evidence_score": round(sum(r["direct_evidence_score"] for r in predicted_rows) / len(predicted_rows), 4),
         "graph_neighborhood_score": round(sum(r["neighborhood_score"] for r in predicted_rows) / len(predicted_rows), 4),
         "fault_type_compatibility_score": round(sum(r["fault_type_compatibility"] for r in predicted_rows) / len(predicted_rows), 4),
