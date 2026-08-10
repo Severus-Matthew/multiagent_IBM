@@ -45,9 +45,11 @@ def main() -> None:
     ap.add_argument("--abort_on_twin_preflight_failure", action="store_true",
                     help="Stop the rollout immediately if twin preflight fails.")
     ap.add_argument("--require_rca_twin_verification", action="store_true",
-                    help="Require final successful RCA attempts to reproduce the same observable error pattern in the twin.")
+                    help="Compute the RCA twin gate for the final attempt. Blocking behavior is controlled by --rca_twin_gate_mode.")
+    ap.add_argument("--rca_twin_gate_mode", choices=["diagnostic", "strict"], default="diagnostic",
+                    help="diagnostic logs twin reproduction without changing RCA success; strict blocks label successes that fail the twin gate.")
     ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0,
-                    help="Minimum RCA twin reproduction score when --require_rca_twin_verification is enabled.")
+                    help="Minimum RCA twin reproduction score for the gate.")
     ap.add_argument("--max_iterations", type=int, default=5)
     ap.add_argument("--group_size", type=int, default=4, help="Number of instruction candidates per state/history group.")
     ap.add_argument("--selection_strategy", choices=["best", "sample0"], default="best",
@@ -114,6 +116,7 @@ def main() -> None:
     twin = BehavioralTwinVerifier() if twin_mode == "behavioral" else None
     total = passed = skipped_unlabeled = skipped_filter = sample_count = 0
     twin_preflight_count = twin_preflight_failed = twin_verified_successes = twin_blocked_successes = 0
+    twin_diagnostic_label_success_but_twin_fail = 0
     same_error_pattern_verified_count = 0
     agent_input_safety_failed = 0
 
@@ -132,6 +135,7 @@ def main() -> None:
         "twin_preflight": args.twin_preflight,
         "abort_on_twin_preflight_failure": args.abort_on_twin_preflight_failure,
         "require_rca_twin_verification": args.require_rca_twin_verification,
+        "rca_twin_gate_mode": args.rca_twin_gate_mode,
         "min_twin_reproduction_score": args.min_twin_reproduction_score,
         "max_iterations": args.max_iterations,
         "group_size": args.group_size,
@@ -203,13 +207,18 @@ def main() -> None:
             if args.require_rca_twin_verification:
                 gate = _final_rca_twin_gate(rec.full_state, rec.compressed_state, twin, result, args.min_twin_reproduction_score)
                 result["rca_twin_gate"] = gate
+                result["rca_twin_gate_mode"] = args.rca_twin_gate_mode
                 same_error_pattern_verified_count += int(bool(gate.get("same_error_pattern_verified")))
                 if result.get("success") and gate.get("rca_twin_verified"):
                     twin_verified_successes += 1
                 elif result.get("success") and not gate.get("rca_twin_verified"):
-                    result["success_before_twin_gate"] = True
-                    result["success"] = False
-                    twin_blocked_successes += 1
+                    if args.rca_twin_gate_mode == "strict":
+                        result["success_before_twin_gate"] = True
+                        result["success"] = False
+                        twin_blocked_successes += 1
+                    else:
+                        result["twin_gate_diagnostic_only"] = True
+                        twin_diagnostic_label_success_but_twin_fail += 1
 
             samples = result.pop("grpo_samples", [])
             for sample in samples:
@@ -244,10 +253,12 @@ def main() -> None:
             "twin_preflight_count": twin_preflight_count,
             "twin_preflight_failed": twin_preflight_failed,
             "require_rca_twin_verification": args.require_rca_twin_verification,
+            "rca_twin_gate_mode": args.rca_twin_gate_mode,
             "min_twin_reproduction_score": args.min_twin_reproduction_score,
             "same_error_pattern_verified_count": same_error_pattern_verified_count,
             "twin_verified_successes": twin_verified_successes,
             "twin_blocked_successes": twin_blocked_successes,
+            "twin_diagnostic_label_success_but_twin_fail": twin_diagnostic_label_success_but_twin_fail,
             "policy_model_name": policy_model_name,
             "policy_version": args.policy_version,
             "instruction_policy": args.instruction_policy,
