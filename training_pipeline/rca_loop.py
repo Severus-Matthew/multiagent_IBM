@@ -4,6 +4,7 @@ import hashlib
 import json
 from statistics import mean, pstdev
 from typing import Any, Protocol
+
 from .ground_truth import ground_truth_summary, labels_from_full_state
 from .rca_reward import rca_reward, terminal_rca_failure_penalty
 from .schemas import GRPORolloutSample, RCAAttempt, approx_token_count, parse_fault_lines
@@ -25,11 +26,8 @@ class RCASolver(Protocol):
 
 
 class HeuristicRCAInstructionPolicy:
-    """Debug baseline. Replace with trainable Qwen/LoRA policy.
+    """Debug baseline. Replace with trainable Qwen/LoRA policy."""
 
-    The different sample_index variants exist only to exercise GRPO grouping.
-    They are not meant to be competitive RCA prompts.
-    """
     def generate_instruction(
         self,
         compressed_state: dict[str, Any],
@@ -50,13 +48,14 @@ class HeuristicRCAInstructionPolicy:
         return (
             "Read only the redacted telemetry. "
             + strategy
-            + " Output only service::fault_type, one root cause per line."
+            + " Output only component::fault_mechanism, one root cause per line."
             + retry
         )
 
 
 class HeuristicRCASolver:
     """No-LLM smoke-test baseline using redacted state only."""
+
     def solve(self, compressed_state: dict[str, Any], instruction: str) -> str:
         candidates = []
         for svc, info in (compressed_state.get("system", {}) or {}).items():
@@ -87,7 +86,6 @@ def _stable_hash(obj: Any) -> str:
 
 
 def _json_safe(obj: Any) -> Any:
-    """Convert policy metadata into JSON-safe values for rollout logging."""
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     if isinstance(obj, dict):
@@ -102,9 +100,7 @@ def _json_safe(obj: Any) -> Any:
 
 def _policy_info_from_policy(policy: RCAInstructionPolicy) -> dict[str, Any]:
     info = getattr(policy, "last_policy_info", None)
-    if not isinstance(info, dict):
-        return {}
-    return _json_safe(info)
+    return _json_safe(info) if isinstance(info, dict) else {}
 
 
 def build_rca_policy_prompt(
@@ -115,16 +111,12 @@ def build_rca_policy_prompt(
 ) -> str:
     """Prompt text for the trainable instruction policy.
 
-    This is what Qwen/LoRA will later condition on. It contains only redacted
-    telemetry and non-leaking feedback history.
+    `compressed_state` must be the agent-facing state, not the evaluator/private
+    state.  The training-safe runner passes a candidate/oracle-stripped state here.
     """
     payload = {
         "task": "Generate an RCA instruction prompt for a fixed RCA solver.",
-        "solver_output_contract": "The solver must output one service::fault_type line per root cause.",
-        "canonical_fault_types": [
-            "infra_failure", "auth_failure", "dependency_failure", "resource_exhaustion",
-            "latency_degradation", "network_failure", "config_error", "unknown",
-        ],
+        "solver_output_contract": "The solver must output one component::fault_mechanism line per root cause.",
         "iteration": iteration,
         "max_iterations": max_iterations,
         "redacted_state": compressed_state,
@@ -132,7 +124,7 @@ def build_rca_policy_prompt(
         "instruction_requirements": [
             "Use only redacted telemetry.",
             "Do not ask for ground truth.",
-            "Do not mention oracle labels.",
+            "Do not mention oracle labels, injected fault families, or candidate menus.",
             "Tell the solver how to distinguish root cause from downstream cascade.",
             "Keep the instruction concise.",
         ],
@@ -141,7 +133,6 @@ def build_rca_policy_prompt(
 
 
 def _safe_history_entry(attempt: RCAAttempt) -> dict[str, Any]:
-    """History shown to the policy. Must not contain GT labels or match internals."""
     c = attempt.reward_components
     return {
         "iteration": attempt.iteration,
@@ -201,12 +192,10 @@ def _apply_terminal_failure_penalty(
     grpo_samples: list[dict[str, Any]],
     terminal: dict[str, Any],
 ) -> None:
-    """Attach terminal failure penalty to the final failed decision point."""
     if not attempts:
         return
     final_iter = attempts[-1].iteration
     penalty = float(terminal.get("reward", 0.0) or 0.0)
-
     attempts[-1].reward = round(float(attempts[-1].reward) + penalty, 4)
     attempts[-1].reward_components = {
         **attempts[-1].reward_components,
@@ -243,17 +232,20 @@ def run_rca_grpo_episode(
     selection_strategy: str = "best",
     policy_model_name: str = "debug-heuristic-policy",
     policy_version: str = "v0",
+    agent_state: dict[str, Any] | None = None,
+    agent_input_mode: str = "legacy",
+    agent_input_safety: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one RCA episode and produce GRPO-ready samples.
 
-    At each iteration we generate `group_size` candidate instruction prompts for
-    the same observation/history. Each candidate is sent to the fixed RCA solver,
-    scored, and converted into a GRPO sample. Advantages are normalized within
-    that same group. For the next iteration we append only the selected attempt's
-    non-leaking feedback to history.
+    `agent_state` is what the policy and solver see. `compressed_state` remains
+    the private evaluator/twin state used for reward and diagnostics.  This split
+    prevents candidate/root-cause menus from leaking into trainable prompts while
+    preserving strict offline evaluation.
     """
     gt_labels = labels_from_full_state(full_state)
     scenario_id = full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown_scenario"
+    agent_state = agent_state if agent_state is not None else compressed_state
     attempts: list[RCAAttempt] = []
     grpo_samples: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
@@ -261,12 +253,12 @@ def run_rca_grpo_episode(
 
     for iteration in range(max_iterations):
         group_id = f"rca:{scenario_id}:iter{iteration}"
-        policy_prompt = build_rca_policy_prompt(compressed_state, history, iteration, max_iterations)
+        policy_prompt = build_rca_policy_prompt(agent_state, history, iteration, max_iterations)
         group_pairs: list[tuple[GRPORolloutSample, RCAAttempt]] = []
 
         for sample_index in range(max(1, group_size)):
             instruction = instruction_policy.generate_instruction(
-                compressed_state, history, iteration, sample_index=sample_index, group_id=group_id
+                agent_state, history, iteration, sample_index=sample_index, group_id=group_id
             )
             policy_info = _policy_info_from_policy(instruction_policy)
             old_logprob_sum = policy_info.get("old_logprob_sum")
@@ -279,7 +271,7 @@ def run_rca_grpo_episode(
             if not isinstance(old_logprobs, list):
                 old_logprobs = None
 
-            prediction_text = solver.solve(compressed_state, instruction)
+            prediction_text = solver.solve(agent_state, instruction)
             pred_labels = parse_fault_lines(prediction_text)
             pred_key = "\n".join(sorted(x.canonical_key() for x in pred_labels))
             repeated = bool(pred_key) and pred_key in seen
@@ -343,6 +335,9 @@ def run_rca_grpo_episode(
                 metadata={
                     "observation_hash": _stable_hash({"scenario_id": scenario_id, "iteration": iteration, "history": history}),
                     "redacted_state_hash": _stable_hash(compressed_state),
+                    "agent_state_hash": _stable_hash(agent_state),
+                    "agent_input_mode": agent_input_mode,
+                    "agent_input_safety": agent_input_safety,
                     "selection_strategy": selection_strategy,
                     "twin_enabled": twin_validator is not None,
                     "policy_info": policy_info,
@@ -379,6 +374,8 @@ def run_rca_grpo_episode(
         "ground_truth_summary": ground_truth_summary(full_state),
         "terminal": terminal,
         "grpo_samples": grpo_samples,
+        "agent_input_mode": agent_input_mode,
+        "agent_input_safety": agent_input_safety,
         "grpo_metadata": {
             "group_size": max(1, group_size),
             "max_iterations": max_iterations,
@@ -397,7 +394,6 @@ def run_rca_self_prompting_loop(
     twin_validator=None,
     max_iterations: int = 5,
 ) -> dict[str, Any]:
-    """Backward-compatible one-sample episode runner."""
     result = run_rca_grpo_episode(
         full_state,
         compressed_state,
