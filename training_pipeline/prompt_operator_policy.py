@@ -20,9 +20,9 @@ CANONICAL_FAULT_TYPES = [
 class RCAPromptPlan:
     """Structured prompt plan emitted by the non-LM controller.
 
-    This is the object we can later replace with a trainable MLP/GNN policy head.
-    For now, it is a deterministic operator controller that creates diverse
-    prompt plans from redacted telemetry and non-leaking retry history.
+    In legacy/audit mode this can include focus services and fault-type bias.  In
+    training-safe mode those fields are suppressed when rendered so the trainable
+    model is not handed a root-cause menu.
     """
 
     evidence_priority: list[str]
@@ -31,6 +31,7 @@ class RCAPromptPlan:
     fault_type_bias: list[str]
     operators: list[str]
     retry_strategy: str
+    safe_mode: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -39,20 +40,16 @@ class RCAPromptPlan:
 class OperatorRCAInstructionPolicy:
     """Structured verifier-guided prompt-operator controller for RCA.
 
-    It does not generate the final RCA. It emits a structured prompt strategy,
-    then renders that strategy into the instruction consumed by the fixed RCA
-    solver. The implementation intentionally uses only the redacted/compressed
-    state and previous non-leaking feedback history.
-
-    The controller exposes multiple deterministic sample-index variants so GRPO
-    groups can compare different strategies once the fixed solver is sensitive
-    to prompts. A future trainable implementation can replace `_build_plan` with
-    logits over these same operators.
+    The controller uses only redacted/compressed state and previous non-leaking
+    feedback.  With safe_mode=True, the rendered instruction hides focus-service
+    lists, root-cause-count hints, and canonical fault-type menus, making it more
+    appropriate for transportable training/evaluation.
     """
 
-    def __init__(self, profile: str = "auto", max_focus_services: int = 6):
+    def __init__(self, profile: str = "auto", max_focus_services: int = 6, safe_mode: bool = False):
         self.profile = profile
         self.max_focus_services = max(1, int(max_focus_services))
+        self.safe_mode = bool(safe_mode)
 
     def generate_instruction(
         self,
@@ -63,6 +60,7 @@ class OperatorRCAInstructionPolicy:
         group_id: str | None = None,
     ) -> str:
         plan = self._build_plan(compressed_state, history, iteration, sample_index)
+        self.last_policy_info = {"prompt_plan": plan.to_dict(), "safe_mode": self.safe_mode}
         return render_rca_prompt_plan(plan)
 
     def _build_plan(
@@ -78,8 +76,6 @@ class OperatorRCAInstructionPolicy:
         log_service_count = len(sig["top_error_services"])
         degraded_count = len(sig["degraded_services"])
 
-        # Conservative count hint: ask for two only when telemetry indicates
-        # multiple independent symptom clusters. Do not use scenario_id/fault names.
         count_hint = 1
         if (
             (degraded_count >= 2 and log_service_count >= 2)
@@ -95,57 +91,27 @@ class OperatorRCAInstructionPolicy:
 
         if profile == "system_first":
             evidence_priority = ["system_health", "service_health", "logs", "traces", "metrics"]
-            operators = [
-                "ENFORCE_OUTPUT_SCHEMA",
-                "PRIORITIZE_SYSTEM_HEALTH",
-                "FOCUS_ON_K8S_INFRA",
-                "USE_SMALLEST_EXPLANATORY_SET",
-                "AVOID_DOWNSTREAM_VICTIMS",
-            ]
+            operators = ["ENFORCE_OUTPUT_SCHEMA", "PRIORITIZE_SYSTEM_HEALTH", "USE_SMALLEST_EXPLANATORY_SET", "AVOID_DOWNSTREAM_VICTIMS"]
             fault_bias = _fault_bias_from_signature(sig, preferred=["infra_failure", "resource_exhaustion"])
         elif profile == "trace_first":
             evidence_priority = ["traces", "service_graph", "logs", "system_health", "metrics"]
-            operators = [
-                "ENFORCE_OUTPUT_SCHEMA",
-                "PRIORITIZE_TRACE_EDGES",
-                "FOCUS_ON_TRACE_TARGETS",
-                "AVOID_DOWNSTREAM_VICTIMS",
-                "USE_SMALLEST_EXPLANATORY_SET",
-            ]
+            operators = ["ENFORCE_OUTPUT_SCHEMA", "PRIORITIZE_TRACE_EDGES", "AVOID_DOWNSTREAM_VICTIMS", "USE_SMALLEST_EXPLANATORY_SET"]
             fault_bias = _fault_bias_from_signature(sig, preferred=["network_failure", "latency_degradation", "dependency_failure"])
         elif profile == "log_first":
             evidence_priority = ["logs", "database_dependency_logs", "traces", "system_health", "metrics"]
-            operators = [
-                "ENFORCE_OUTPUT_SCHEMA",
-                "PRIORITIZE_LOG_ERRORS",
-                "FOCUS_ON_DATABASE_DEPENDENCIES",
-                "AVOID_DOWNSTREAM_VICTIMS",
-                "USE_SMALLEST_EXPLANATORY_SET",
-            ]
+            operators = ["ENFORCE_OUTPUT_SCHEMA", "PRIORITIZE_LOG_ERRORS", "AVOID_DOWNSTREAM_VICTIMS", "USE_SMALLEST_EXPLANATORY_SET"]
             fault_bias = _fault_bias_from_signature(sig, preferred=["auth_failure", "dependency_failure", "config_error"])
         elif profile == "multifault_first":
             evidence_priority = ["system_health", "logs", "traces", "metrics", "service_graph"]
-            operators = [
-                "ENFORCE_OUTPUT_SCHEMA",
-                "ASK_FOR_MULTIFAULT",
-                "PRIORITIZE_LOG_ERRORS",
-                "PRIORITIZE_TRACE_EDGES",
-                "AVOID_REPEATED_GUESSES",
-                "AVOID_DOWNSTREAM_VICTIMS",
-            ]
+            operators = ["ENFORCE_OUTPUT_SCHEMA", "CHECK_FOR_INDEPENDENT_SYMPTOM_CLUSTERS", "PRIORITIZE_LOG_ERRORS", "PRIORITIZE_TRACE_EDGES", "AVOID_REPEATED_GUESSES", "AVOID_DOWNSTREAM_VICTIMS"]
             fault_bias = _fault_bias_from_signature(sig, preferred=["config_error", "auth_failure", "network_failure", "latency_degradation"])
             count_hint = max(count_hint, 2)
         else:
-            raise ValueError(
-                f"unknown operator profile {self.profile!r}; use auto, system_first, trace_first, log_first, or multifault_first"
-            )
+            raise ValueError(f"unknown operator profile {self.profile!r}")
 
         retry_strategy = "none"
         if history:
-            retry_strategy = (
-                "avoid repeating previous wrong services/fault types unless the current telemetry gives direct support; "
-                "use previous public reward feedback to shift evidence priority"
-            )
+            retry_strategy = "avoid repeating previous wrong services/fault mechanisms; use only public feedback to shift evidence priority"
             if "AVOID_REPEATED_GUESSES" not in operators:
                 operators.append("AVOID_REPEATED_GUESSES")
 
@@ -156,11 +122,25 @@ class OperatorRCAInstructionPolicy:
             fault_type_bias=fault_bias,
             operators=operators,
             retry_strategy=retry_strategy,
+            safe_mode=self.safe_mode,
         )
 
 
 def render_rca_prompt_plan(plan: RCAPromptPlan) -> str:
-    """Render a structured plan into the text consumed by the RCA solver."""
+    if plan.safe_mode:
+        lines = [
+            "Read only the redacted telemetry/state abstraction.",
+            "Do not assume a fixed candidate menu, injected fault family, or oracle root-cause count.",
+            "Infer abnormal components from telemetry evidence such as service health, logs, traces, metrics, and graph symptoms.",
+            "Separate upstream root causes from downstream cascade victims.",
+            "Use the smallest explanation supported by independent evidence; use multiple lines only when clearly necessary.",
+            "Evidence priority: " + ", ".join(plan.evidence_priority),
+            "Operators: " + ", ".join(plan.operators),
+            "Retry strategy: " + plan.retry_strategy,
+            "Output one root cause per line as component::fault_mechanism. No prose, JSON, markdown, or bullets.",
+        ]
+        return "\n".join(lines)
+
     lines = [
         "Read only the redacted telemetry. You are given a structured RCA prompt plan produced by a verifier-guided controller.",
         "Your job is to identify the root-cause service and canonical fault type, not downstream victims.",
@@ -204,19 +184,15 @@ def _observable_signature(state: dict[str, Any]) -> dict[str, Any]:
             or float(health.get("crashloop_count", 0) or 0) > 0
             or str(health.get("status", "")).lower() not in {"", "healthy", "unknown"}
         ):
-            degraded_services.add(str(svc))
-            independent_signal_services.add(str(svc))
+            degraded_services.add(str(svc)); independent_signal_services.add(str(svc))
 
     for svc, health in (state.get("service_health", {}) or {}).items():
         if isinstance(health, dict) and str(health.get("status", "healthy")).lower() not in {"healthy", "unknown", ""}:
-            degraded_services.add(str(svc))
-            independent_signal_services.add(str(svc))
+            degraded_services.add(str(svc)); independent_signal_services.add(str(svc))
 
     for item in (state.get("llm_view", {}) or {}).get("top_log_error_services", []) or []:
         if isinstance(item, dict) and item.get("service"):
-            svc = str(item["service"])
-            top_error_services.add(svc)
-            independent_signal_services.add(svc)
+            svc = str(item["service"]); top_error_services.add(svc); independent_signal_services.add(svc)
 
     traces = state.get("traces", {}) or {}
     per_edge = traces.get("per_edge", traces) if isinstance(traces, dict) else {}
@@ -225,24 +201,20 @@ def _observable_signature(state: dict[str, Any]) -> dict[str, Any]:
             continue
         error_ratio = _safe_float(feats.get("error_ratio"))
         if error_ratio > 0.2 or feats.get("is_suspicious"):
-            edge_s = str(edge)
-            failed_edges.add(edge_s)
-            src = feats.get("source")
-            dst = feats.get("target")
+            edge_s = str(edge); failed_edges.add(edge_s)
+            src = feats.get("source"); dst = feats.get("target")
             if (not src or not dst) and "->" in edge_s:
                 src, dst = edge_s.split("->", 1)
             if src:
                 trace_sources.add(str(src))
             if dst:
-                trace_targets.add(str(dst))
-                independent_signal_services.add(str(dst))
+                trace_targets.add(str(dst)); independent_signal_services.add(str(dst))
 
     for svc, item in (state.get("metrics", {}) or {}).items():
         if isinstance(item, dict):
             flat = item.get("flat_summary", item)
             if isinstance(flat, dict) and _safe_float(flat.get("latency_ms")) > 500:
-                metric_services.add(str(svc))
-                independent_signal_services.add(str(svc))
+                metric_services.add(str(svc)); independent_signal_services.add(str(svc))
 
     clusters = state.get("clusters", {}) or {}
     for key in ("infra_unhealthy", "log_error_or_dependency_failure"):
@@ -266,18 +238,15 @@ def _observable_signature(state: dict[str, Any]) -> dict[str, Any]:
 
 def _rank_focus_services(sig: dict[str, Any], limit: int) -> list[str]:
     scores: dict[str, float] = {}
-
     def add(items: list[str], weight: float) -> None:
         for svc in items:
             scores[svc] = scores.get(svc, 0.0) + weight
-
     add(sig["degraded_services"], 3.0)
     add(sig["top_error_services"], 2.2)
     add(sig["trace_targets"], 1.6)
     add(sig["trace_sources"], 0.9)
     add(sig["metric_services"], 0.7)
     add(sig["independent_signal_services"], 0.3)
-
     return [svc for svc, _ in sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]]
 
 
