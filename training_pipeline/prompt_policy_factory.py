@@ -60,9 +60,7 @@ def build_rca_solver(args: Any):
         return HeuristicRCASolver()
     if name in {"llm", "safe_llm"}:
         if _use_candidate_sweep(args):
-            return CandidateSweepRCASolver(
-                max_root_causes=getattr(args, "llm_max_root_causes", 1),
-            )
+            return CandidateSweepRCASolver(max_root_causes=getattr(args, "llm_max_root_causes", 1))
         if _use_training_safe_llm(args):
             return TrainingSafeLLMRCASolver(
                 provider=getattr(args, "llm_provider", "openai"),
@@ -107,7 +105,7 @@ def policy_metadata(args: Any) -> dict[str, Any]:
         "llm_cache_path": getattr(args, "llm_cache_path", None) if rca_solver in {"llm", "safe_llm"} and not use_sweep else None,
         "llm_solver_impl": (
             "CandidateSweepRCASolver:v6:mixed-root-sweep:audit-only" if use_sweep else
-            "TrainingSafeLLMRCASolver:v1:no-candidate-menu" if use_safe else
+            "TrainingSafeLLMRCASolver:v2:no-candidate-menu-default-single-root" if use_safe else
             ("LLMSelectorRCASolverV5:valid-candidate-selector" if rca_solver == "llm" else None)
         ),
         "candidate_sweep_audit_only": bool(use_sweep),
