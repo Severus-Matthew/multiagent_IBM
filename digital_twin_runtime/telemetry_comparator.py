@@ -94,7 +94,7 @@ def _norm_fault_type(text: str | None) -> str:
 
 def _fault_tokens(ft: str) -> tuple[str, ...]:
     return {
-        "infra_failure": ("pod", "pods_unready", "container", "crash", "oom", "endpoint", "replica", "schedule", "node", "unready", "killed", "pending", "no_ready"),
+        "infra_failure": ("pod", "container", "crash", "oom", "endpoint", "replica", "schedule", "node", "unready", "killed", "pending", "no_ready", "no ready"),
         "auth_failure": ("auth", "unauthorized", "forbidden", "permission", "credential", "login", "denied", "revoke"),
         "dependency_failure": ("dependency", "connection refused", "connection", "unavailable", "upstream", "downstream", "database", "mongodb", "redis", "mongo"),
         "latency_degradation": ("latency", "timeout", "timed out", "slow", "delay", "p95", "p99"),
@@ -239,9 +239,6 @@ def _health_signal(state: dict[str, Any], service: str, fields: tuple[str, ...])
                     return True
                 if _safe_float(value, 0.0) > 0:
                     return True
-            status = str(src.get("status", "")).lower()
-            if any(tok in status for tok in fields):
-                return True
     return False
 
 
@@ -279,93 +276,69 @@ def _service_trace_text(state: dict[str, Any], service: str) -> str:
     return " ".join(chunks).lower()
 
 
-def _iter_candidate_rows(obj: Any):
-    if isinstance(obj, dict):
-        if "service" in obj and ("fault_type" in obj or "fault_family" in obj):
-            yield obj
-        for value in obj.values():
-            yield from _iter_candidate_rows(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            yield from _iter_candidate_rows(item)
+def _trace_signal(state: dict[str, Any], service: str, tokens: tuple[str, ...]) -> bool:
+    txt = _service_trace_text(state, service)
+    if _has(txt, tokens):
+        return True
+    aliases = _service_aliases(service)
+    traces = state.get("traces", {}) or {}
+    per_edge = traces.get("per_edge", traces) if isinstance(traces, dict) else {}
+    for edge, feats in per_edge.items():
+        if not isinstance(feats, dict):
+            continue
+        src, dst = feats.get("source"), feats.get("target")
+        edge_s = str(edge)
+        if (not src or not dst) and "->" in edge_s:
+            src, dst = edge_s.split("->", 1)
+        if src not in aliases and dst not in aliases:
+            continue
+        if _safe_float(feats.get("error_ratio")) > 0.2 and _has(" ".join(tokens), ("network", "loss", "unreachable", "reset", "drop")):
+            return True
+        if _safe_float(feats.get("latency_ms")) > 500 and _has(" ".join(tokens), ("latency", "delay", "timeout")):
+            return True
+    return False
 
 
-def _candidate_evidence_roots(state: dict[str, Any]) -> list[Any]:
-    roots: list[Any] = []
-    for key in ("high_signal_evidence", "rca_agent_structured_evidence", "llm_view", "clusters", "service_health"):
-        if isinstance(state.get(key), (dict, list)):
-            roots.append(state[key])
-    try:
-        from training_pipeline.rca_candidate_generator_v4 import compact_state_for_llm_v4
-        compact = compact_state_for_llm_v4(state, char_budget=24000)
-        if isinstance(compact, dict) and isinstance(compact.get("high_signal_evidence"), dict):
-            roots.append(compact["high_signal_evidence"])
-    except Exception:
-        pass
-    return roots
-
-
-def _typed_candidate_support(state: dict[str, Any], service: str, fault_type: str) -> float:
+def _mechanism_compatibility(state: dict[str, Any], service: str, fault_type: str, sig: dict[str, Any]) -> float:
     ft = _norm_fault_type(fault_type)
+    logs = _service_log_text(state, service)
+    traces = _service_trace_text(state, service)
     tokens = _fault_tokens(ft)
-    best = 0.0
-    for root in _candidate_evidence_roots(state):
-        for row in _iter_candidate_rows(root):
-            if not isinstance(row, dict):
-                continue
-            row_service = str(row.get("service") or "")
-            row_ft = _norm_fault_type(str(row.get("fault_type") or row.get("fault_family") or "unknown"))
-            if not _same_service(row_service, service) or row_ft != ft:
-                continue
-            evidence = " ".join(str(row.get(k, "")) for k in (
-                "reason", "reasons", "evidence", "evidence_text", "template", "templates", "source", "feature"
-            )).lower()
-            # Critical: a candidate row is not mechanism evidence unless the row
-            # itself contains mechanism-specific terms. This prevents service-only
-            # candidates from validating same-service wrong-fault controls.
-            if not _has(evidence, tokens):
-                continue
-            raw_score = _safe_float(row.get("score"), 0.0)
-            support = 0.70 if raw_score <= 0 else min(0.95, 0.55 + raw_score / 30.0)
-            if _has(evidence, ("local", "explicit", "typed", "direct", "v4_local")):
-                support = max(support, 0.85)
-            best = max(best, support)
-    return best
 
-
-def _fault_type_compatibility(state: dict[str, Any], service: str, fault_type: str, sig: dict[str, Any]) -> float:
-    ft = _norm_fault_type(fault_type)
-    log_text = _service_log_text(state, service)
-    trace_text = _service_trace_text(state, service)
-    local_text = " ".join([log_text, trace_text])
-    typed_support = _typed_candidate_support(state, service, ft)
-
+    # Strict telemetry-only mechanism evidence.  Candidate/root-cause menus are
+    # intentionally ignored here because broad candidate rows were making same-
+    # service wrong-type controls pass.
     if ft == "infra_failure":
-        structured = _health_signal(state, service, ("infra_issue_flag", "pods_unready", "crashloop_count", "oomkilled_count", "restart_count", "pending", "no_ready", "unready", "crash"))
-        if structured:
-            return max(0.95, typed_support)
-        return max(typed_support, 0.04)
+        if _health_signal(state, service, ("infra_issue_flag", "pods_unready", "crashloop_count", "restart_count")):
+            return 0.95
+        if _health_signal(state, service, ("oomkilled_count",)):
+            return 0.55
+        return 0.03
     if ft == "auth_failure":
-        return max(typed_support, 1.0 if _has(log_text, _fault_tokens(ft)) else 0.03)
+        return 0.95 if _has(logs, tokens) else 0.03
     if ft == "dependency_failure":
-        if _has(log_text, _fault_tokens(ft)):
-            return max(0.90, typed_support)
-        return max(typed_support, 0.08 if _service_in(sig["trace_targets"], service) else 0.03)
+        if _has(logs, ("connection refused", "dependency", "unavailable", "upstream", "downstream")):
+            return 0.90
+        if _has(logs, ("mongodb", "mongo", "database", "redis")) and not _has(logs, _fault_tokens("auth_failure")):
+            return 0.60
+        return 0.03
     if ft == "latency_degradation":
-        if _has(local_text, _fault_tokens(ft)):
-            return max(0.95, typed_support)
-        return max(typed_support, 0.10 if _service_in(sig["metric_anomaly_services"], service) else 0.03)
+        if _has(logs + " " + traces, tokens) or _trace_signal(state, service, tokens):
+            return 0.90
+        if _service_in(sig["metric_anomaly_services"], service):
+            return 0.45
+        return 0.03
     if ft == "network_failure":
-        if _has(local_text, _fault_tokens(ft)):
-            return max(0.95, typed_support)
-        return max(typed_support, 0.08 if _service_in(sig["trace_sources"], service) or _service_in(sig["trace_targets"], service) else 0.03)
+        if _has(logs + " " + traces, tokens) or _trace_signal(state, service, tokens):
+            return 0.90
+        return 0.03
     if ft == "config_error":
-        return max(typed_support, 1.0 if _has(log_text, _fault_tokens(ft)) else 0.03)
+        return 0.95 if _has(logs, tokens) else 0.03
     if ft == "resource_exhaustion":
-        structured = _health_signal(state, service, ("oomkilled_count", "memory", "cpu", "throttle", "quota", "limit"))
-        return max(typed_support, 0.90 if structured or _has(log_text, _fault_tokens(ft)) else 0.03)
-    # unknown is accepted only for explicit wrong-binary/unknown mechanism evidence.
-    return max(typed_support, 0.75 if _has(log_text, _fault_tokens(ft)) else 0.02)
+        if _health_signal(state, service, ("oomkilled_count", "memory", "cpu", "throttle", "quota", "limit")) or _has(logs, tokens):
+            return 0.90
+        return 0.03
+    return 0.75 if _has(logs, tokens) else 0.02
 
 
 def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
@@ -386,9 +359,10 @@ def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
 def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[dict[str, Any]]) -> dict[str, Any]:
     """Verifier-side behavioral twin score for RCA predictions.
 
-    v6 requires mechanism-specific evidence. A noisy service is insufficient:
-    the predicted mechanism must be supported by local logs/traces/structured
-    health or by a typed evidence row whose text itself contains mechanism terms.
+    v7 uses strict telemetry-only mechanism evidence. Service overlap contributes
+    only after a mechanism gate succeeds; this is meant to eliminate the previous
+    plateau where same-service wrong-fault controls passed at almost every
+    threshold.
     """
     sig = symptom_signature(state)
     observed = set(sig["affected_services"])
@@ -397,7 +371,7 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     if not predicted_faults:
         return {
             "reproduction_score": 0.0,
-            "mode": "behavioral_offline_proxy_v6_mechanism_evidence_gate",
+            "mode": "behavioral_offline_proxy_v7_strict_telemetry_mechanism",
             "reason": "empty_prediction",
             "evidence_signature": sig,
             "predicted_signature": {"services": [], "neighborhood": []},
@@ -409,14 +383,14 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
         if not service:
             continue
         direct_score = _service_direct_score(service, sig)
-        compatibility = _fault_type_compatibility(state, service, fault_type, sig)
+        compatibility = _mechanism_compatibility(state, service, fault_type, sig)
         radius = 0 if fault_type in {"config_error", "auth_failure", "resource_exhaustion", "unknown", "infra_failure"} else 1
         neighborhood = graph_neighborhood(state, service, radius=radius) or {service}
         neighborhood_score = _coverage(neighborhood, observed)
         local_observed = 1.0 if _service_in(sig["affected_services"], service) else 0.0
-        mechanism_gate = compatibility ** 1.35
-        raw = (0.12 * direct_score + 0.82 * compatibility + 0.06 * neighborhood_score) * mechanism_gate
-        per_fault_score = raw * (0.15 + 0.85 * local_observed)
+        mechanism_gate = compatibility ** 1.75
+        raw = (0.08 * direct_score + 0.88 * compatibility + 0.04 * neighborhood_score) * mechanism_gate
+        per_fault_score = raw * (0.10 + 0.90 * local_observed)
         predicted_support |= neighborhood
         predicted_rows.append({
             "service": service,
@@ -424,7 +398,6 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
             "direct_evidence_score": round(direct_score, 4),
             "neighborhood_score": round(neighborhood_score, 4),
             "fault_type_compatibility": round(compatibility, 4),
-            "typed_candidate_support": round(_typed_candidate_support(state, service, fault_type), 4),
             "local_observed": bool(local_observed),
             "per_fault_score": round(max(0.0, min(1.0, per_fault_score)), 4),
             "neighborhood": sorted(neighborhood),
@@ -433,7 +406,7 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     if not predicted_rows:
         return {
             "reproduction_score": 0.0,
-            "mode": "behavioral_offline_proxy_v6_mechanism_evidence_gate",
+            "mode": "behavioral_offline_proxy_v7_strict_telemetry_mechanism",
             "reason": "no_valid_predicted_services",
             "evidence_signature": sig,
             "predicted_signature": {"services": [], "neighborhood": []},
@@ -442,15 +415,14 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     avg_pred = sum(r["per_fault_score"] for r in predicted_rows) / len(predicted_rows)
     coverage = _coverage(predicted_support, observed)
     overprediction_penalty = 0.08 * max(0, len(predicted_rows) - 2)
-    weak_type_penalty = 0.28 * sum(1 for r in predicted_rows if r["fault_type_compatibility"] < 0.25)
-    score = max(0.0, min(1.0, 0.96 * avg_pred + 0.04 * coverage - overprediction_penalty - weak_type_penalty))
+    weak_type_penalty = 0.35 * sum(1 for r in predicted_rows if r["fault_type_compatibility"] < 0.25)
+    score = max(0.0, min(1.0, 0.98 * avg_pred + 0.02 * coverage - overprediction_penalty - weak_type_penalty))
     return {
         "reproduction_score": round(score, 4),
-        "mode": "behavioral_offline_proxy_v6_mechanism_evidence_gate",
+        "mode": "behavioral_offline_proxy_v7_strict_telemetry_mechanism",
         "direct_evidence_score": round(sum(r["direct_evidence_score"] for r in predicted_rows) / len(predicted_rows), 4),
         "graph_neighborhood_score": round(sum(r["neighborhood_score"] for r in predicted_rows) / len(predicted_rows), 4),
         "fault_type_compatibility_score": round(sum(r["fault_type_compatibility"] for r in predicted_rows) / len(predicted_rows), 4),
-        "typed_candidate_support_score": round(sum(r["typed_candidate_support"] for r in predicted_rows) / len(predicted_rows), 4),
         "symptom_coverage_score": round(coverage, 4),
         "overprediction_penalty": round(overprediction_penalty, 4),
         "weak_type_penalty": round(weak_type_penalty, 4),
