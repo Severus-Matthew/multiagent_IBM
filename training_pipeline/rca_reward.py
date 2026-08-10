@@ -76,18 +76,7 @@ def rca_reward(
     invalid_format: bool = False,
     repeated_wrong_guess: bool = False,
 ) -> dict[str, Any]:
-    """Reward one RCA attempt.
-
-    Reward target:
-      - valid strict solver output: service::fault_type
-      - correct service/fault set, including multifault cases
-      - symptom reproduction in behavioral/digital twin
-      - concise non-repetitive instructions
-
-    The returned `components` are safe to feed back to the policy because they do
-    not include the ground-truth service names. The episode log separately keeps
-    `ground_truth_summary` for offline evaluation only.
-    """
+    """Reward one RCA attempt."""
     matches, pair_score = greedy_match(gt_labels, pred_labels, full_state)
     twin_score = float((twin_result or {}).get("reproduction_score", 0.0) or 0.0)
     twin_score = max(0.0, min(1.0, twin_score))
@@ -98,8 +87,8 @@ def rca_reward(
     format_reward = 0.20 if valid_format else -1.00
     pair_match_reward = 2.00 * pair_score
     exact_set_bonus = 1.00 if exact else 0.00
-    twin_reproduction_reward = 1.00 * twin_score
-    count_mismatch_penalty = 0.20 * count_mismatch
+    twin_reproduction_reward = 0.00
+    count_mismatch_penalty = 0.40 * count_mismatch
     repeated_wrong_guess_penalty = 0.25 if repeated_wrong_guess else 0.00
     iteration_penalty = 0.10 * iteration_index
     token_penalty = 0.001 * max(0, instruction_tokens - 120)
@@ -115,17 +104,19 @@ def rca_reward(
         - token_penalty
     )
 
-    soft_success = count_mismatch == 0 and pair_score >= 0.90 and twin_score >= 0.60
-    success = bool(exact or soft_success)
+    soft_success = False
+    success = bool(exact)
 
     components = {
         "format_reward": round(format_reward, 4),
         "pair_score": round(pair_score, 4),
         "pair_match_reward": round(pair_match_reward, 4),
         "exact_set_match": exact,
+        "exact_label_required_for_success": True,
         "exact_set_bonus": round(exact_set_bonus, 4),
         "twin_reproduction_score": round(twin_score, 4),
         "twin_reproduction_reward": round(twin_reproduction_reward, 4),
+        "twin_score_diagnostic_only": True,
         "count_mismatch": count_mismatch,
         "count_mismatch_penalty": round(count_mismatch_penalty, 4),
         "repeated_wrong_guess": repeated_wrong_guess,
@@ -151,7 +142,7 @@ def rca_reward(
 
 def non_leaking_feedback(c: dict[str, Any]) -> str:
     """Feedback visible to the trainable policy. Never reveal the true service/fault."""
-    if c.get("exact_set_match") or c.get("soft_success"):
+    if c.get("exact_set_match"):
         return "RCA prediction explains the observed incident pattern sufficiently."
 
     parts = []
