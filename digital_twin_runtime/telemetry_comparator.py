@@ -239,51 +239,42 @@ def _fault_type_compatibility(state: dict[str, Any], service: str, fault_type: s
         if service in sig["degraded_services"]:
             return 0.75
         return 0.05
-
     if ft == "auth_failure":
         if _has(local, ("auth", "unauthorized", "forbidden", "permission", "credential", "login", "denied")):
             return 1.0
         if service in sig["top_error_services"] and _has(local, ("mongo", "mongodb", "database")):
             return 0.45
         return 0.03
-
     if ft == "dependency_failure":
         if _has(local, ("dependency", "connection refused", "connection", "unavailable", "upstream", "downstream", "database", "mongodb", "redis")):
             return 0.9
         if service in sig["trace_targets"] or service in sig["top_error_services"]:
             return 0.25
         return 0.03
-
     if ft == "latency_degradation":
         if _has(local, ("latency", "timeout", "timed out", "slow", "delay", "p95", "p99")):
             return 1.0
         if service in sig["trace_sources"] or service in sig["trace_targets"] or service in sig["metric_anomaly_services"]:
             return 0.35
         return 0.03
-
     if ft == "network_failure":
         if _has(local, ("network", "packet", "loss", "unreachable", "reset", "dns", "no route", "drop")):
             return 1.0
         if service in sig["trace_sources"] or service in sig["trace_targets"]:
             return 0.25
         return 0.03
-
     if ft == "config_error":
         if _has(local, ("config", "misconfig", "target port", "port", "wrong", "binary", "bin", "env", "environment")):
             return 1.0
         if service in sig["degraded_services"] and service in sig["top_error_services"]:
             return 0.35
         return 0.03
-
     if ft == "resource_exhaustion":
         if _has(local, ("oom", "memory", "cpu", "resource", "throttle", "quota", "limit")):
             return 1.0
         if service in sig["metric_anomaly_services"]:
             return 0.55
         return 0.03
-
-    # Unknown is deliberately weak. It should not pass twin validation merely
-    # because a service is noisy; this avoids reward hacking via service::unknown.
     if _has(local, ("wrong binary", "wrong-bin", "wrong_bin", "unknown", "invalid executable")):
         return 0.75
     return 0.08 if service in sig["affected_services"] else 0.0
@@ -296,8 +287,6 @@ def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
         score += 0.35
     if service in sig["top_error_services"]:
         score += 0.25
-    if service in sig["trace_sourceṣ"] if False else []:
-        score += 0.0
     if service in sig["trace_sources"]:
         score += 0.18
     if service in sig["trace_targets"]:
@@ -308,15 +297,7 @@ def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
 
 
 def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[dict[str, Any]]) -> dict[str, Any]:
-    """Counterfactual behavioral-twin score for RCA predictions.
-
-    The score now emphasizes three things that the earlier loose proxy missed:
-    (1) local support on the predicted service, (2) fault-type-specific local
-    evidence, and (3) a predicted blast radius that overlaps observed symptoms
-    without granting broad credit to arbitrary noisy services. This is still an
-    offline proxy, but it is designed to separate oracle injections from wrong
-    service / wrong type negative controls before it is used as a reward gate.
-    """
+    """Counterfactual behavioral-twin score for RCA predictions."""
     sig = symptom_signature(state)
     observed = set(sig["affected_services"])
     predicted_rows = []
@@ -342,9 +323,6 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
         neighborhood = graph_neighborhood(state, service, radius=radius) or {service}
         neighborhood_score = _coverage(neighborhood, observed)
         local_observed = 1.0 if service in observed else 0.0
-        # Strict multiplicative gate: a visible service with the wrong mechanism
-        # should not pass, and a typed mechanism on an invisible service should
-        # not pass either. Add a small neighborhood term only after local support.
         per_fault_score = (0.45 * direct_score + 0.45 * compatibility + 0.10 * neighborhood_score) * (0.35 + 0.65 * local_observed)
         predicted_support |= neighborhood
         predicted_rows.append({
@@ -369,8 +347,6 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
 
     avg_pred = sum(r["per_fault_score"] for r in predicted_rows) / len(predicted_rows)
     coverage = _coverage(predicted_support, observed)
-    # Penalize broad or duplicated explanations. A single noisy service should
-    # not become a valid multifault explanation just by adding more noisy roots.
     overprediction_penalty = 0.08 * max(0, len(predicted_rows) - 2)
     weak_type_penalty = 0.12 * sum(1 for r in predicted_rows if r["fault_type_compatibility"] < 0.2)
     score = max(0.0, min(1.0, 0.88 * avg_pred + 0.12 * coverage - overprediction_penalty - weak_type_penalty))
