@@ -42,7 +42,7 @@ def _pair_score(gt: FaultLabel, pred: FaultLabel, full_state: dict[str, Any]) ->
 
 
 def greedy_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel], full_state: dict[str, Any]):
-    """Return one-to-one greedy match diagnostics without exposing GT names in components."""
+    """Return one-to-one greedy match diagnostics without exposing GT names in feedback."""
     remaining = set(range(len(pred_labels)))
     matches = []
     for gt in gt_labels:
@@ -76,7 +76,13 @@ def rca_reward(
     invalid_format: bool = False,
     repeated_wrong_guess: bool = False,
 ) -> dict[str, Any]:
-    """Reward one RCA attempt."""
+    """Reward one RCA attempt.
+
+    RCA learning gets both an oracle-label component and the digital-twin
+    reproduction component. Episode success remains exact-label based here, and
+    strict runs should additionally enable the final twin gate so a prediction is
+    counted as fully verified only when label match and twin reproduction both pass.
+    """
     matches, pair_score = greedy_match(gt_labels, pred_labels, full_state)
     twin_score = float((twin_result or {}).get("reproduction_score", 0.0) or 0.0)
     twin_score = max(0.0, min(1.0, twin_score))
@@ -87,7 +93,7 @@ def rca_reward(
     format_reward = 0.20 if valid_format else -1.00
     pair_match_reward = 2.00 * pair_score
     exact_set_bonus = 1.00 if exact else 0.00
-    twin_reproduction_reward = 0.00
+    twin_reproduction_reward = 1.00 * twin_score
     count_mismatch_penalty = 0.40 * count_mismatch
     repeated_wrong_guess_penalty = 0.25 if repeated_wrong_guess else 0.00
     iteration_penalty = 0.10 * iteration_index
@@ -104,6 +110,8 @@ def rca_reward(
         - token_penalty
     )
 
+    # No soft success: high twin score without hidden-label agreement is useful
+    # reward signal, but it is not counted as RCA success.
     soft_success = False
     success = bool(exact)
 
@@ -116,7 +124,7 @@ def rca_reward(
         "exact_set_bonus": round(exact_set_bonus, 4),
         "twin_reproduction_score": round(twin_score, 4),
         "twin_reproduction_reward": round(twin_reproduction_reward, 4),
-        "twin_score_diagnostic_only": True,
+        "twin_score_used_as_reward": True,
         "count_mismatch": count_mismatch,
         "count_mismatch_penalty": round(count_mismatch_penalty, 4),
         "repeated_wrong_guess": repeated_wrong_guess,
@@ -141,9 +149,9 @@ def rca_reward(
 
 
 def non_leaking_feedback(c: dict[str, Any]) -> str:
-    """Feedback visible to the trainable policy. Never reveal the true service/fault."""
+    """Feedback visible to the trainable policy. Never reveal true labels."""
     if c.get("exact_set_match"):
-        return "RCA prediction explains the observed incident pattern sufficiently."
+        return "RCA prediction matches the hidden label; final credit also depends on twin reproduction in strict-gate runs."
 
     parts = []
     if c.get("invalid_format"):
@@ -155,7 +163,7 @@ def non_leaking_feedback(c: dict[str, Any]) -> str:
     elif c.get("pair_score", 0.0) < 0.9:
         parts.append("Prediction is partially aligned but not specific enough.")
     if c.get("twin_reproduction_score", 0.0) < 0.5:
-        parts.append("Injected prediction does not reproduce the original symptom pattern well.")
+        parts.append("Twin reproduction score is low; predicted fault does not recreate the observed symptom signature well.")
     if c.get("repeated_wrong_guess"):
         parts.append("Avoid repeating the same unsuccessful guess.")
     return " ".join(parts or ["Prediction was close but did not satisfy the verifier."])
