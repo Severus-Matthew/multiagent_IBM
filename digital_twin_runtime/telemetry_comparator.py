@@ -13,10 +13,10 @@ def _jaccard(a, b) -> float:
 
 
 def _coverage(predicted, observed) -> float:
-    predicted_set, observed_set = set(predicted or []), set(observed or [])
-    if not observed_set or not predicted_set:
+    ps, os = set(predicted or []), set(observed or [])
+    if not ps or not os:
         return 0.0
-    return len(predicted_set & observed_set) / len(observed_set)
+    return len(ps & os) / len(os)
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -40,12 +40,10 @@ def _service_aliases(service: str | None) -> set[str]:
         out.add(low[len("hotel-reserv-"):])
     if low.endswith("-mongo"):
         base = low[:-len("-mongo")].split("-")[-1]
-        out.add("mongodb-" + base)
-        out.add(base)
+        out.update({base, "mongodb-" + base})
     if low.startswith("mongodb-"):
         base = low.replace("mongodb-", "")
-        out.add(base)
-        out.add("hotel-reserv-" + base + "-mongo")
+        out.update({base, "hotel-reserv-" + base + "-mongo"})
     return {x for x in out if x}
 
 
@@ -94,10 +92,26 @@ def _norm_fault_type(text: str | None) -> str:
     return "unknown"
 
 
+def _fault_tokens(ft: str) -> tuple[str, ...]:
+    return {
+        "infra_failure": ("pod", "pods_unready", "container", "crash", "oom", "endpoint", "replica", "schedule", "node", "unready", "killed", "pending", "no_ready"),
+        "auth_failure": ("auth", "unauthorized", "forbidden", "permission", "credential", "login", "denied", "revoke"),
+        "dependency_failure": ("dependency", "connection refused", "connection", "unavailable", "upstream", "downstream", "database", "mongodb", "redis", "mongo"),
+        "latency_degradation": ("latency", "timeout", "timed out", "slow", "delay", "p95", "p99"),
+        "network_failure": ("network", "packet", "loss", "unreachable", "reset", "dns", "no route", "drop"),
+        "config_error": ("config", "misconfig", "target port", "port", "wrong", "binary", "bin", "env", "environment"),
+        "resource_exhaustion": ("oom", "memory", "cpu", "resource", "throttle", "quota", "limit"),
+        "unknown": ("wrong binary", "wrong-bin", "wrong_bin", "invalid executable", "unknown"),
+    }.get(_norm_fault_type(ft), ("unknown",))
+
+
+def _has(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(tok in text for tok in tokens)
+
+
 def _graph_edges(state: dict[str, Any]) -> list[tuple[str, str]]:
     edges = []
-    graph_edges = (state.get("graph", {}) or {}).get("edges", []) or []
-    for e in graph_edges:
+    for e in (state.get("graph", {}) or {}).get("edges", []) or []:
         if isinstance(e, dict):
             src, dst = e.get("src"), e.get("dst")
         elif isinstance(e, (list, tuple)) and len(e) >= 2:
@@ -110,10 +124,9 @@ def _graph_edges(state: dict[str, Any]) -> list[tuple[str, str]]:
 
 
 def graph_neighborhood(state: dict[str, Any], service: str, radius: int = 1) -> set[str]:
-    service = _norm_service(service)
-    if not service:
-        return set()
     aliases = _service_aliases(service)
+    if not aliases:
+        return set()
     neighborhood = set(aliases)
     frontier = set(aliases)
     edges = _graph_edges(state)
@@ -137,14 +150,13 @@ def symptom_signature(state: dict[str, Any]) -> dict[str, Any]:
     for svc, info in (state.get("system", {}) or {}).items():
         health = info.get("health", info) if isinstance(info, dict) else {}
         if (
-            health.get("infra_issue_flag")
+            bool(health.get("infra_issue_flag"))
             or _safe_float(health.get("pods_unready")) > 0
             or _safe_float(health.get("crashloop_count")) > 0
             or _safe_float(health.get("oomkilled_count")) > 0
             or _safe_float(health.get("restart_count")) > 0
         ):
             degraded.append(str(svc))
-
     for svc, h in (state.get("service_health", {}) or {}).items():
         if isinstance(h, dict) and str(h.get("status", "healthy")).lower() not in {"healthy", "unknown", ""}:
             degraded.append(str(svc))
@@ -157,8 +169,7 @@ def symptom_signature(state: dict[str, Any]) -> dict[str, Any]:
     for edge, feats in per_edge.items():
         if not isinstance(feats, dict):
             continue
-        error_ratio = _safe_float(feats.get("error_ratio"))
-        if error_ratio > 0.2 or feats.get("is_suspicious"):
+        if _safe_float(feats.get("error_ratio")) > 0.2 or feats.get("is_suspicious"):
             edge_s = str(edge)
             failed_edges.append(edge_s)
             src = feats.get("source")
@@ -205,6 +216,35 @@ def _service_in(values: list[str], service: str) -> bool:
     return any(_same_service(service, v) for v in values or [])
 
 
+def _service_dicts(state: dict[str, Any], service: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for alias in _service_aliases(service):
+        for root_key in ("system", "service_health", "metrics", "logs"):
+            item = (state.get(root_key, {}) or {}).get(alias)
+            if isinstance(item, dict):
+                out.append(item)
+    return out
+
+
+def _health_signal(state: dict[str, Any], service: str, fields: tuple[str, ...]) -> bool:
+    for item in _service_dicts(state, service):
+        h = item.get("health", item) if isinstance(item, dict) else {}
+        flat = item.get("flat_summary", item) if isinstance(item, dict) else {}
+        for src in (h, flat, item):
+            if not isinstance(src, dict):
+                continue
+            for field in fields:
+                value = src.get(field)
+                if isinstance(value, bool) and value:
+                    return True
+                if _safe_float(value, 0.0) > 0:
+                    return True
+            status = str(src.get("status", "")).lower()
+            if any(tok in status for tok in fields):
+                return True
+    return False
+
+
 def _service_log_text(state: dict[str, Any], service: str) -> str:
     chunks = []
     for alias in _service_aliases(service):
@@ -218,16 +258,6 @@ def _service_log_text(state: dict[str, Any], service: str) -> str:
         for item in (state.get("llm_view", {}) or {}).get("top_log_error_services", []) or []:
             if isinstance(item, dict) and _same_service(item.get("service"), alias):
                 chunks.append(str(item))
-    return " ".join(chunks).lower()
-
-
-def _service_health_text(state: dict[str, Any], service: str) -> str:
-    chunks = []
-    for alias in _service_aliases(service):
-        system = (state.get("system", {}) or {}).get(alias, {}) or {}
-        health = system.get("health", system) if isinstance(system, dict) else {}
-        svc_health = (state.get("service_health", {}) or {}).get(alias, {}) or {}
-        chunks.extend([str(system), str(health), str(svc_health)])
     return " ".join(chunks).lower()
 
 
@@ -249,10 +279,6 @@ def _service_trace_text(state: dict[str, Any], service: str) -> str:
     return " ".join(chunks).lower()
 
 
-def _has(text: str, tokens: tuple[str, ...]) -> bool:
-    return any(tok in text for tok in tokens)
-
-
 def _iter_candidate_rows(obj: Any):
     if isinstance(obj, dict):
         if "service" in obj and ("fault_type" in obj or "fault_family" in obj):
@@ -272,43 +298,16 @@ def _candidate_evidence_roots(state: dict[str, Any]) -> list[Any]:
     try:
         from training_pipeline.rca_candidate_generator_v4 import compact_state_for_llm_v4
         compact = compact_state_for_llm_v4(state, char_budget=24000)
-        if isinstance(compact, dict):
-            ev = compact.get("high_signal_evidence")
-            if isinstance(ev, dict):
-                roots.append(ev)
+        if isinstance(compact, dict) and isinstance(compact.get("high_signal_evidence"), dict):
+            roots.append(compact["high_signal_evidence"])
     except Exception:
         pass
     return roots
 
 
-def _fault_evidence_tokens(fault_type: str) -> tuple[str, ...]:
-    ft = _norm_fault_type(fault_type)
-    if ft == "infra_failure":
-        return ("pod", "container", "crash", "oom", "endpoint", "replica", "schedule", "node", "unready", "killed", "pending")
-    if ft == "auth_failure":
-        return ("auth", "unauthorized", "forbidden", "permission", "credential", "login", "denied")
-    if ft == "dependency_failure":
-        return ("dependency", "connection refused", "upstream", "downstream", "database", "mongodb", "redis", "unavailable")
-    if ft == "latency_degradation":
-        return ("latency", "timeout", "timed out", "slow", "delay", "p95", "p99")
-    if ft == "network_failure":
-        return ("network", "packet", "loss", "unreachable", "reset", "dns", "no route", "drop")
-    if ft == "config_error":
-        return ("config", "misconfig", "target port", "wrong port", "wrong binary", "wrong-bin", "env", "environment")
-    if ft == "resource_exhaustion":
-        return ("oom", "memory", "cpu", "resource", "throttle", "quota", "limit")
-    return ("wrong binary", "wrong-bin", "wrong_bin", "unknown", "invalid executable")
-
-
 def _typed_candidate_support(state: dict[str, Any], service: str, fault_type: str) -> float:
-    """Use verifier-side candidate evidence only when it contains typed evidence.
-
-    Broad candidate rows alone are not evidence. They made the previous scorer
-    pass same-service wrong-type controls. This function requires the candidate
-    row's reasons/evidence to contain tokens specific to the requested mechanism.
-    """
     ft = _norm_fault_type(fault_type)
-    tokens = _fault_evidence_tokens(ft)
+    tokens = _fault_tokens(ft)
     best = 0.0
     for root in _candidate_evidence_roots(state):
         for row in _iter_candidate_rows(root):
@@ -318,73 +317,55 @@ def _typed_candidate_support(state: dict[str, Any], service: str, fault_type: st
             row_ft = _norm_fault_type(str(row.get("fault_type") or row.get("fault_family") or "unknown"))
             if not _same_service(row_service, service) or row_ft != ft:
                 continue
-            evidence_text = " ".join([
-                " ".join(str(x) for x in (row.get("reasons", []) or [])),
-                " ".join(str(x) for x in (row.get("evidence_excerpt", []) or [])),
-                str(row.get("source", "")),
-                str(row.get("evidence", "")),
-            ]).lower()
-            if not _has(evidence_text, tokens):
+            evidence = " ".join(str(row.get(k, "")) for k in (
+                "reason", "reasons", "evidence", "evidence_text", "template", "templates", "source", "feature"
+            )).lower()
+            # Critical: a candidate row is not mechanism evidence unless the row
+            # itself contains mechanism-specific terms. This prevents service-only
+            # candidates from validating same-service wrong-fault controls.
+            if not _has(evidence, tokens):
                 continue
             raw_score = _safe_float(row.get("score"), 0.0)
-            support = 0.55 if raw_score <= 0 else min(0.90, max(0.55, raw_score / 16.0))
+            support = 0.70 if raw_score <= 0 else min(0.95, 0.55 + raw_score / 30.0)
+            if _has(evidence, ("local", "explicit", "typed", "direct", "v4_local")):
+                support = max(support, 0.85)
             best = max(best, support)
     return best
 
 
 def _fault_type_compatibility(state: dict[str, Any], service: str, fault_type: str, sig: dict[str, Any]) -> float:
     ft = _norm_fault_type(fault_type)
-    service = _norm_service(service)
     log_text = _service_log_text(state, service)
     trace_text = _service_trace_text(state, service)
-    health_text = _service_health_text(state, service)
-    local = " ".join([log_text, trace_text, health_text])
+    local_text = " ".join([log_text, trace_text])
     typed_support = _typed_candidate_support(state, service, ft)
-    tokens = _fault_evidence_tokens(ft)
 
     if ft == "infra_failure":
-        if _service_in(sig["degraded_services"], service) and _has(local, tokens):
-            return max(1.0, typed_support)
-        return max(typed_support, 0.10 if _service_in(sig["degraded_services"], service) else 0.03)
+        structured = _health_signal(state, service, ("infra_issue_flag", "pods_unready", "crashloop_count", "oomkilled_count", "restart_count", "pending", "no_ready", "unready", "crash"))
+        if structured:
+            return max(0.95, typed_support)
+        return max(typed_support, 0.04)
     if ft == "auth_failure":
-        if _has(local, tokens):
-            return max(1.0, typed_support)
-        if _service_in(sig["top_error_services"], service) and _has(local, ("mongo", "mongodb", "database")):
-            return max(typed_support, 0.18)
-        return max(typed_support, 0.03)
+        return max(typed_support, 1.0 if _has(log_text, _fault_tokens(ft)) else 0.03)
     if ft == "dependency_failure":
-        if _has(local, tokens):
-            return max(0.9, typed_support)
-        if _service_in(sig["trace_targets"], service) or _service_in(sig["top_error_services"], service):
-            return max(typed_support, 0.12)
-        return max(typed_support, 0.03)
+        if _has(log_text, _fault_tokens(ft)):
+            return max(0.90, typed_support)
+        return max(typed_support, 0.08 if _service_in(sig["trace_targets"], service) else 0.03)
     if ft == "latency_degradation":
-        if _has(local, tokens):
-            return max(1.0, typed_support)
-        if _service_in(sig["trace_sources"], service) or _service_in(sig["trace_targets"], service) or _service_in(sig["metric_anomaly_services"], service):
-            return max(typed_support, 0.14)
-        return max(typed_support, 0.03)
+        if _has(local_text, _fault_tokens(ft)):
+            return max(0.95, typed_support)
+        return max(typed_support, 0.10 if _service_in(sig["metric_anomaly_services"], service) else 0.03)
     if ft == "network_failure":
-        if _has(local, tokens):
-            return max(1.0, typed_support)
-        if _service_in(sig["trace_sources"], service) or _service_in(sig["trace_targets"], service):
-            return max(typed_support, 0.12)
-        return max(typed_support, 0.03)
+        if _has(local_text, _fault_tokens(ft)):
+            return max(0.95, typed_support)
+        return max(typed_support, 0.08 if _service_in(sig["trace_sources"], service) or _service_in(sig["trace_targets"], service) else 0.03)
     if ft == "config_error":
-        if _has(local, tokens):
-            return max(1.0, typed_support)
-        if _service_in(sig["degraded_services"], service) and _service_in(sig["top_error_services"], service):
-            return max(typed_support, 0.12)
-        return max(typed_support, 0.03)
+        return max(typed_support, 1.0 if _has(log_text, _fault_tokens(ft)) else 0.03)
     if ft == "resource_exhaustion":
-        if _has(local, tokens):
-            return max(1.0, typed_support)
-        if _service_in(sig["metric_anomaly_services"], service):
-            return max(typed_support, 0.24)
-        return max(typed_support, 0.03)
-    if _has(local, tokens):
-        return max(0.75, typed_support)
-    return max(typed_support, 0.04 if _service_in(sig["affected_services"], service) else 0.0)
+        structured = _health_signal(state, service, ("oomkilled_count", "memory", "cpu", "throttle", "quota", "limit"))
+        return max(typed_support, 0.90 if structured or _has(log_text, _fault_tokens(ft)) else 0.03)
+    # unknown is accepted only for explicit wrong-binary/unknown mechanism evidence.
+    return max(typed_support, 0.75 if _has(log_text, _fault_tokens(ft)) else 0.02)
 
 
 def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
@@ -403,21 +384,20 @@ def _service_direct_score(service: str, sig: dict[str, Any]) -> float:
 
 
 def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[dict[str, Any]]) -> dict[str, Any]:
-    """Counterfactual behavioral-twin score for RCA predictions.
+    """Verifier-side behavioral twin score for RCA predictions.
 
-    v5 is verifier-side only: it uses typed evidence mined from the redacted
-    state abstraction, but a broad candidate menu is not enough. A label must
-    have both local service support and fault-specific evidence.
+    v6 requires mechanism-specific evidence. A noisy service is insufficient:
+    the predicted mechanism must be supported by local logs/traces/structured
+    health or by a typed evidence row whose text itself contains mechanism terms.
     """
     sig = symptom_signature(state)
     observed = set(sig["affected_services"])
     predicted_rows = []
     predicted_support: set[str] = set()
-
     if not predicted_faults:
         return {
             "reproduction_score": 0.0,
-            "mode": "behavioral_offline_proxy_v5_fault_specific_evidence",
+            "mode": "behavioral_offline_proxy_v6_mechanism_evidence_gate",
             "reason": "empty_prediction",
             "evidence_signature": sig,
             "predicted_signature": {"services": [], "neighborhood": []},
@@ -430,13 +410,13 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
             continue
         direct_score = _service_direct_score(service, sig)
         compatibility = _fault_type_compatibility(state, service, fault_type, sig)
-        radius = 0 if fault_type in {"config_error", "auth_failure", "resource_exhaustion", "unknown"} else 1
+        radius = 0 if fault_type in {"config_error", "auth_failure", "resource_exhaustion", "unknown", "infra_failure"} else 1
         neighborhood = graph_neighborhood(state, service, radius=radius) or {service}
         neighborhood_score = _coverage(neighborhood, observed)
         local_observed = 1.0 if _service_in(sig["affected_services"], service) else 0.0
-        type_gate = 0.05 + 0.95 * compatibility
-        raw = (0.18 * direct_score + 0.74 * compatibility + 0.08 * neighborhood_score) * type_gate
-        per_fault_score = raw * (0.20 + 0.80 * local_observed)
+        mechanism_gate = compatibility ** 1.35
+        raw = (0.12 * direct_score + 0.82 * compatibility + 0.06 * neighborhood_score) * mechanism_gate
+        per_fault_score = raw * (0.15 + 0.85 * local_observed)
         predicted_support |= neighborhood
         predicted_rows.append({
             "service": service,
@@ -453,7 +433,7 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     if not predicted_rows:
         return {
             "reproduction_score": 0.0,
-            "mode": "behavioral_offline_proxy_v5_fault_specific_evidence",
+            "mode": "behavioral_offline_proxy_v6_mechanism_evidence_gate",
             "reason": "no_valid_predicted_services",
             "evidence_signature": sig,
             "predicted_signature": {"services": [], "neighborhood": []},
@@ -462,12 +442,11 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     avg_pred = sum(r["per_fault_score"] for r in predicted_rows) / len(predicted_rows)
     coverage = _coverage(predicted_support, observed)
     overprediction_penalty = 0.08 * max(0, len(predicted_rows) - 2)
-    weak_type_penalty = 0.22 * sum(1 for r in predicted_rows if r["fault_type_compatibility"] < 0.25)
-    score = max(0.0, min(1.0, 0.94 * avg_pred + 0.06 * coverage - overprediction_penalty - weak_type_penalty))
-
+    weak_type_penalty = 0.28 * sum(1 for r in predicted_rows if r["fault_type_compatibility"] < 0.25)
+    score = max(0.0, min(1.0, 0.96 * avg_pred + 0.04 * coverage - overprediction_penalty - weak_type_penalty))
     return {
         "reproduction_score": round(score, 4),
-        "mode": "behavioral_offline_proxy_v5_fault_specific_evidence",
+        "mode": "behavioral_offline_proxy_v6_mechanism_evidence_gate",
         "direct_evidence_score": round(sum(r["direct_evidence_score"] for r in predicted_rows) / len(predicted_rows), 4),
         "graph_neighborhood_score": round(sum(r["neighborhood_score"] for r in predicted_rows) / len(predicted_rows), 4),
         "fault_type_compatibility_score": round(sum(r["fault_type_compatibility"] for r in predicted_rows) / len(predicted_rows), 4),
