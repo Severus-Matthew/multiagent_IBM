@@ -20,7 +20,7 @@ CANONICAL_FAULT_TYPES = [
 class RCAPromptPlan:
     """Structured prompt plan emitted by the non-LM controller.
 
-    In legacy/audit mode this can include focus services and fault-type bias.  In
+    In legacy/audit mode this can include focus services and fault-type bias. In
     training-safe mode those fields are suppressed when rendered so the trainable
     model is not handed a root-cause menu.
     """
@@ -40,10 +40,9 @@ class RCAPromptPlan:
 class OperatorRCAInstructionPolicy:
     """Structured verifier-guided prompt-operator controller for RCA.
 
-    The controller uses only redacted/compressed state and previous non-leaking
-    feedback.  With safe_mode=True, the rendered instruction hides focus-service
-    lists, root-cause-count hints, and canonical fault-type menus, making it more
-    appropriate for transportable training/evaluation.
+    With safe_mode=True, the rendered instruction hides focus-service lists,
+    root-cause-count hints, and canonical fault-type menus, making it appropriate
+    for transportable training/evaluation.
     """
 
     def __init__(self, profile: str = "auto", max_focus_services: int = 6, safe_mode: bool = False):
@@ -130,10 +129,11 @@ def render_rca_prompt_plan(plan: RCAPromptPlan) -> str:
     if plan.safe_mode:
         lines = [
             "Read only the redacted telemetry/state abstraction.",
-            "Do not assume a fixed candidate menu, injected fault family, or oracle root-cause count.",
-            "Infer abnormal components from telemetry evidence such as service health, logs, traces, metrics, and graph symptoms.",
-            "Separate upstream root causes from downstream cascade victims.",
-            "Use the smallest explanation supported by independent evidence; use multiple lines only when clearly necessary.",
+            "Do not assume a fixed candidate menu, injected fault family, scenario ID, or oracle root-cause count.",
+            "Default to exactly one root cause unless the telemetry shows two independent symptom clusters that cannot be explained by one upstream cause.",
+            "Infer abnormal components from service health, logs, traces, metrics, and graph symptoms.",
+            "Separate upstream root causes from downstream cascade victims and generic observability/helper services.",
+            "Use a specific fault mechanism when supported; use unknown only when the component is clear but the mechanism is not inferable.",
             "Evidence priority: " + ", ".join(plan.evidence_priority),
             "Operators: " + ", ".join(plan.operators),
             "Retry strategy: " + plan.retry_strategy,
