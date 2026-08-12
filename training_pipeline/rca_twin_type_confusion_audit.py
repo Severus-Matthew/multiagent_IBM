@@ -28,7 +28,7 @@ FAULT_TYPES = [
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Audit which same-service wrong RCA mechanisms the behavioral twin over-accepts."
+        description="Audit which same-service wrong RCA mechanisms the counterfactual twin over-accepts."
     )
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--scenario_ids", default=None)
@@ -47,6 +47,7 @@ def main() -> None:
 
     total_labels = 0
     total_wrong_type_trials = 0
+    skipped_true_alternate_type_trials = 0
     wrong_type_fp = 0
     oracle_pass = 0
     oracle_scores: list[float] = []
@@ -68,6 +69,10 @@ def main() -> None:
                 break
             scenario_count += 1
 
+            true_types_by_service: dict[str, set[str]] = defaultdict(set)
+            for gt_label in gt:
+                true_types_by_service[str(gt_label.service)].add(normalize_fault_type(gt_label.fault_type))
+
             for label in gt:
                 total_labels += 1
                 gt_type = normalize_fault_type(label.fault_type)
@@ -87,9 +92,22 @@ def main() -> None:
                     "wrong_type_trials": [],
                 }
 
+                true_types_here = true_types_by_service.get(str(label.service), set())
                 for wrong_type in FAULT_TYPES:
                     if wrong_type == gt_type:
                         continue
+                    # In a multifault incident the same service may genuinely have
+                    # multiple injected mechanisms. Such a type is not a negative
+                    # control and must not be counted as a false positive.
+                    if wrong_type in true_types_here:
+                        skipped_true_alternate_type_trials += 1
+                        row["wrong_type_trials"].append({
+                            "wrong_fault_type": wrong_type,
+                            "skipped": True,
+                            "skip_reason": "fault_type_is_also_ground_truth_for_same_service",
+                        })
+                        continue
+
                     total_wrong_type_trials += 1
                     pred = [FaultLabel(service=label.service, fault_type=wrong_type)]
                     result = twin.validate_rca_prediction(rec.full_state, rec.compressed_state, pred)
@@ -112,10 +130,11 @@ def main() -> None:
                 f.write(json.dumps(row, sort_keys=True, default=str) + "\n")
 
     summary = {
-        "mode": "behavioral_offline_proxy_type_confusion_audit",
+        "mode": "counterfactual_offline_twin_type_confusion_audit",
         "threshold": args.threshold,
         "total_gt_labels": total_labels,
         "total_wrong_type_trials": total_wrong_type_trials,
+        "skipped_true_alternate_type_trials": skipped_true_alternate_type_trials,
         "oracle_pass": oracle_pass,
         "oracle_pass_rate_per_label": oracle_pass / max(total_labels, 1),
         "wrong_type_false_positive": wrong_type_fp,
@@ -127,8 +146,8 @@ def main() -> None:
             for k, v in confusion.most_common(30)
         ],
         "by_gt_type": {
-            gt: {wrong: count for wrong, count in counter.most_common()}
-            for gt, counter in sorted(by_gt_type.items())
+            gt_type: {wrong: count for wrong, count in counter.most_common()}
+            for gt_type, counter in sorted(by_gt_type.items())
         },
         "by_wrong_type": {wrong: count for wrong, count in by_wrong_type.most_common()},
         "top_services_with_wrong_type_fp": [
@@ -137,9 +156,8 @@ def main() -> None:
         ],
         "rows_jsonl": str(rows_path),
         "interpretation": (
-            "Use this audit to identify mechanism pairs the twin over-accepts. "
-            "If wrong-type false positives cluster in a few pairs, patch those mechanism predicates. "
-            "If they are broad across types, the state abstraction lacks mechanism-specific evidence."
+            "Negative controls exclude any fault type that is also a true injected mechanism on the same service. "
+            "The counterfactual twin score itself does not use those hidden labels; they are used here only to construct a valid evaluation set."
         ),
     }
     with summary_path.open("w", encoding="utf-8") as f:
@@ -161,9 +179,11 @@ def _score_summary(values: list[float]) -> dict[str, float]:
         return {"min": 0.0, "p25": 0.0, "median": 0.0, "p75": 0.0, "max": 0.0, "mean": 0.0}
     xs = sorted(values)
     n = len(xs)
+
     def q(p: float) -> float:
         idx = min(n - 1, max(0, int(round(p * (n - 1)))))
         return xs[idx]
+
     return {
         "min": round(xs[0], 4),
         "p25": round(q(0.25), 4),
@@ -179,32 +199,16 @@ def _compact_components(result: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     out = {}
     for key in (
-        "direct_evidence_score",
-        "graph_neighborhood_score",
-        "fault_type_compatibility_score",
-        "typed_candidate_support_score",
-        "symptom_coverage_score",
-        "weak_type_penalty",
-        "overprediction_penalty",
+        "counterfactual_overlap_score",
+        "mechanism_channel_presence_score",
+        "predicted_service_support",
+        "channel_scores",
+        "channel_presence",
+        "uses_oracle_labels_for_score",
+        "uses_full_state_for_score",
     ):
         if key in result:
             out[key] = result[key]
-    per_fault = result.get("per_fault") or []
-    if per_fault:
-        first = per_fault[0]
-        out["first_per_fault"] = {
-            k: first.get(k)
-            for k in (
-                "service",
-                "fault_type",
-                "direct_evidence_score",
-                "fault_type_compatibility",
-                "typed_candidate_support",
-                "local_observed",
-                "per_fault_score",
-            )
-            if k in first
-        }
     return out
 
 
