@@ -123,7 +123,16 @@ def _service_rows(root: dict[str, Any], service: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _flatten_text(obj: Any, max_chars: int = 12000) -> str:
+def _flatten_value_text(obj: Any, max_chars: int = 12000) -> str:
+    """Flatten only observed values, never schema/key names.
+
+    This distinction is critical for mechanism verification. Compressed telemetry
+    contains keys such as ``pods_unready``, ``oomkilled_count``, ``cpu_usage_delta``
+    and ``memory_usage_last`` for every service, including healthy services. Treating
+    key names as evidence makes infra/resource mechanisms appear present even when
+    the corresponding numeric values are zero. Only actual non-empty/non-zero values
+    are textual evidence here; typed numeric fields are handled structurally below.
+    """
     chunks: list[str] = []
     total = 0
 
@@ -132,10 +141,7 @@ def _flatten_text(obj: Any, max_chars: int = 12000) -> str:
         if total >= max_chars:
             return
         if isinstance(value, dict):
-            for k, v in value.items():
-                ks = str(k)
-                chunks.append(ks)
-                total += len(ks) + 1
+            for v in value.values():
                 walk(v)
                 if total >= max_chars:
                     break
@@ -144,8 +150,18 @@ def _flatten_text(obj: Any, max_chars: int = 12000) -> str:
                 walk(item)
                 if total >= max_chars:
                     break
+        elif isinstance(value, bool):
+            if value:
+                chunks.append("true")
+                total += 5
+        elif isinstance(value, (int, float)):
+            # Numeric mechanism evidence is interpreted structurally in the
+            # mechanism-specific blocks; raw numbers have no semantic token value.
+            return
         elif value is not None:
-            text = str(value)
+            text = str(value).strip()
+            if not text or text.lower() in {"none", "null", "false", "0", "0.0"}:
+                return
             chunks.append(text)
             total += len(text) + 1
 
@@ -192,10 +208,9 @@ def _observed_mechanism_profile(state: dict[str, Any], service: str) -> dict[str
     log_rows = _service_rows(state.get("logs", {}) or {}, service)
     trace_rows = _trace_rows_for_service(state, service)
 
-    system_text = _flatten_text(system_rows)
-    metric_text = _flatten_text(metric_rows)
-    log_text = _flatten_text(log_rows)
-    trace_text = _flatten_text(trace_rows)
+    system_text = _flatten_value_text(system_rows)
+    log_text = _flatten_value_text(log_rows)
+    trace_text = _flatten_value_text(trace_rows)
 
     infra = 0.0
     for row in system_rows:
@@ -212,7 +227,10 @@ def _observed_mechanism_profile(state: dict[str, Any], service: str) -> dict[str
             infra = max(infra, min(1.0, 0.75 + 0.08 * crashloop_count))
         if restart_count > 0:
             infra = max(infra, min(0.85, 0.45 + 0.08 * restart_count))
-    if _contains(system_text, ("unschedul", "pending", "no ready", "unready", "crashloop", "container killed", "pod killed")):
+    if _contains(system_text, (
+        "unschedulable", "unscheduled", "pending", "no ready replicas",
+        "crashloopbackoff", "container killed", "pod killed",
+    )):
         infra = max(infra, 0.90)
     supports["infra_failure"] = infra
 
@@ -280,12 +298,12 @@ def _observed_mechanism_profile(state: dict[str, Any], service: str) -> dict[str
 
     config = 0.0
     if _contains(log_text + " " + system_text, (
-        "misconfig", "configuration error", "invalid configuration", "invalid config",
-        "targetport", "target port", "wrong port", "port mismatch",
-        "invalid environment", "missing environment", "configmap",
+        "misconfigured", "misconfiguration", "configuration error",
+        "invalid configuration", "invalid config", "wrong port", "port mismatch",
+        "invalid environment", "missing environment", "failed to load config",
     )):
         config = max(config, 0.98)
-    if _contains(log_text, ("invalid option", "unknown option", "bad configuration", "failed to load config")):
+    if _contains(log_text, ("invalid option", "unknown option", "bad configuration")):
         config = max(config, 0.90)
     supports["config_error"] = config
 
@@ -298,9 +316,11 @@ def _observed_mechanism_profile(state: dict[str, Any], service: str) -> dict[str
     for row in log_rows:
         if _family_count(row, "resource") > 0:
             resource = max(resource, 0.90)
-    if _contains(log_text + " " + metric_text + " " + system_text, (
-        "out of memory", "oomkilled", "oom killed", "cpu thrott",
-        "memory limit", "resource exhausted", "quota exceeded",
+    # Do not inspect metric/system schema keys such as cpu_usage_delta,
+    # memory_usage_last, or oomkilled_count as text. They exist for all services.
+    if _contains(log_text + " " + system_text, (
+        "out of memory", "oom killed", "cpu throttled", "cpu throttling",
+        "memory limit exceeded", "resource exhausted", "quota exceeded",
         "cannot allocate memory",
     )):
         resource = max(resource, 0.98)
@@ -308,9 +328,8 @@ def _observed_mechanism_profile(state: dict[str, Any], service: str) -> dict[str
 
     unknown = 0.0
     if _contains(log_text + " " + system_text, (
-        "wrong binary", "wrong-bin", "wrong_bin", "exec format",
-        "invalid executable", "command not found", "no such file or directory",
-        "cannot execute binary",
+        "wrong binary", "wrong-bin", "wrong_bin", "exec format error",
+        "invalid executable", "command not found", "cannot execute binary",
     )):
         unknown = 0.98
     supports["unknown"] = unknown
@@ -405,16 +424,17 @@ def _service_supported(service: str, observed_services: list[str]) -> bool:
 
 
 def score_counterfactual_reproduction(state: dict[str, Any], predicted_faults: list[dict[str, Any]]) -> dict[str, Any]:
-    """Score prediction using a mechanism-gated counterfactual replay model.
+    """Score prediction using a value-grounded mechanism-gated replay model.
 
     Generic symptom overlap cannot make a wrong mechanism pass. The score uses
     only redacted telemetry + the prediction; hidden labels are never consulted.
+    Schema/key names are explicitly excluded from mechanism evidence.
     """
     observed = symptom_signature(state)
     predicted = predict_fault_signature(state, predicted_faults)
     if not predicted_faults:
         return {
-            "mode": "counterfactual_offline_twin_v2_mechanism_gated",
+            "mode": "counterfactual_offline_twin_v3_value_grounded",
             "reproduction_score": 0.0,
             "predicted_signature": predicted,
             "observed_signature": observed,
@@ -477,7 +497,7 @@ def score_counterfactual_reproduction(state: dict[str, Any], predicted_faults: l
     score = ungated * (0.05 + 0.95 * mechanism_gate)
 
     return {
-        "mode": "counterfactual_offline_twin_v2_mechanism_gated",
+        "mode": "counterfactual_offline_twin_v3_value_grounded",
         "reproduction_score": round(max(0.0, min(1.0, score)), 4),
         "mechanism_support_score": round(mechanism_support, 4),
         "mechanism_gate": round(mechanism_gate, 4),
@@ -489,4 +509,5 @@ def score_counterfactual_reproduction(state: dict[str, Any], predicted_faults: l
         "observed_signature": observed,
         "uses_oracle_labels_for_score": False,
         "uses_full_state_for_score": False,
+        "uses_schema_keys_as_mechanism_evidence": False,
     }
