@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from training_pipeline.schemas import FaultLabel
+from training_pipeline.ground_truth import labels_from_full_state
+from training_pipeline.schemas import FaultLabel, normalize_fault_type
 
 from .sla_verifier import signature_summary, sla_verdict_from_signature, symptom_reduction
 from .telemetry_comparator import graph_neighborhood, score_prediction_reproduction, symptom_signature
@@ -11,10 +12,15 @@ from .telemetry_comparator import graph_neighborhood, score_prediction_reproduct
 class BehavioralTwinVerifier:
     """Offline Stage-2 verifier.
 
-    RCA validation uses a prediction-sensitive behavioral proxy over the redacted
-    compressed state. It scores whether the predicted RCA service/fault type is
-    supported by observed degraded services, log-error services, trace-edge
-    anomalies, metric anomalies, and graph-neighborhood coverage.
+    RCA validation has two layers:
+      1. a prediction-sensitive behavioral proxy over redacted compressed telemetry;
+      2. an evaluator-only hidden injection anchor when full_state contains the
+         injected fault manifest.
+
+    The hidden anchor is never shown to the RCA agent. It prevents the offline
+    proxy from accepting same-service wrong mechanisms just because the service
+    is noisy. The live K8s twin should replace this anchor by actually applying
+    the predicted mechanism and recollecting telemetry.
 
     Action validation simulates the predicted remediation on the same observable
     symptom abstraction and computes before/after SLA-style violation counts. The
@@ -28,17 +34,41 @@ class BehavioralTwinVerifier:
         compressed_state: dict[str, Any],
         predicted_faults: list[FaultLabel],
     ) -> dict[str, Any]:
-        # Use only agent-visible evidence plus the predicted RCA labels for the
-        # reproduction score. The previous version simulated on top of the
-        # already-faulted full state, which made overlap almost constant.
-        result = score_prediction_reproduction(
+        behavioral = score_prediction_reproduction(
             compressed_state,
             [f.to_dict() for f in predicted_faults],
         )
+        behavioral_score = _safe_float(behavioral.get("reproduction_score"), 0.0)
+        anchor = _hidden_injection_anchor(full_state, predicted_faults)
+
+        result = dict(behavioral)
+        result["behavioral_reproduction_score"] = round(behavioral_score, 4)
+        result["offline_injection_anchor"] = anchor
+        result["predicted_fault_injection_checked"] = True
+
+        if anchor.get("available"):
+            anchor_score = _safe_float(anchor.get("anchor_score"), 0.0)
+            if anchor.get("all_predicted_faults_match_hidden_injection"):
+                score = max(behavioral_score, anchor_score)
+                reason = "hidden_injection_manifest_matches_prediction"
+            elif anchor.get("same_service_wrong_type"):
+                score = min(behavioral_score, anchor_score)
+                reason = "hidden_injection_manifest_rejects_same_service_wrong_type"
+            else:
+                score = min(behavioral_score, anchor_score)
+                reason = "hidden_injection_manifest_rejects_prediction"
+            result["reproduction_score"] = round(score, 4)
+            result["mode"] = "behavioral_offline_proxy_with_hidden_injection_anchor"
+            result["reason"] = reason
+            result["uses_full_state_for_rca_score"] = True
+            result["uses_oracle_labels"] = True
+            result["uses_hidden_injection_manifest"] = True
+            return result
+
         result["mode"] = "behavioral_offline_proxy"
         result["uses_full_state_for_rca_score"] = False
         result["uses_oracle_labels"] = False
-        result["predicted_fault_injection_checked"] = True
+        result["uses_hidden_injection_manifest"] = False
         return result
 
     def apply_action_and_score(
@@ -126,6 +156,110 @@ class BehavioralTwinVerifier:
             "after_signature_summary": signature_summary(after_signature),
             "after_sla_object": {"violated": not sla_restored, "offline_behavioral": True},
         }
+
+
+def _hidden_injection_anchor(full_state: dict[str, Any], predicted_faults: list[FaultLabel]) -> dict[str, Any]:
+    """Evaluator-only injection-manifest check for offline RCA twin mode.
+
+    This is not agent-visible evidence. It exists because the cheap behavioral
+    proxy can over-accept same-service wrong mechanisms when only compressed
+    telemetry is available. In the live twin this check should be replaced by
+    applying the predicted mechanism in a fresh twin and comparing the recollected
+    telemetry with the observed incident.
+    """
+    hidden = labels_from_full_state(full_state or {})
+    if not hidden:
+        return {"available": False, "reason": "no_hidden_injection_manifest"}
+    if not predicted_faults:
+        return {
+            "available": True,
+            "anchor_score": 0.0,
+            "all_predicted_faults_match_hidden_injection": False,
+            "same_service_wrong_type": False,
+            "reason": "empty_prediction",
+            "hidden_fault_count": len(hidden),
+        }
+
+    exact = 0
+    same_service_wrong_type = 0
+    service_only = 0
+    unmatched = 0
+    per_fault = []
+    for pred in predicted_faults:
+        pred_type = normalize_fault_type(pred.fault_type or pred.fault_family)
+        same_service = [gt for gt in hidden if _same_service(pred.service, gt.service)]
+        exact_match = next((gt for gt in same_service if normalize_fault_type(gt.fault_type or gt.fault_family) == pred_type), None)
+        if exact_match:
+            exact += 1
+            status = "exact_hidden_injection_match"
+        elif same_service:
+            same_service_wrong_type += 1
+            status = "same_service_wrong_type"
+        else:
+            service_only_match = next((gt for gt in hidden if _same_service(pred.service, gt.service)), None)
+            if service_only_match:
+                service_only += 1
+                status = "service_only_match"
+            else:
+                unmatched += 1
+                status = "no_hidden_injection_match"
+        per_fault.append({
+            "service": pred.service,
+            "fault_type": pred_type,
+            "status": status,
+        })
+
+    all_match = exact == len(predicted_faults)
+    if all_match:
+        anchor_score = 0.98
+    elif same_service_wrong_type:
+        anchor_score = 0.0
+    elif service_only:
+        anchor_score = 0.10
+    else:
+        anchor_score = 0.05
+
+    return {
+        "available": True,
+        "anchor_score": round(anchor_score, 4),
+        "all_predicted_faults_match_hidden_injection": all_match,
+        "same_service_wrong_type": bool(same_service_wrong_type),
+        "exact_predicted_fault_matches": exact,
+        "same_service_wrong_type_count": same_service_wrong_type,
+        "service_only_match_count": service_only,
+        "unmatched_prediction_count": unmatched,
+        "hidden_fault_count": len(hidden),
+        "predicted_fault_count": len(predicted_faults),
+        "per_fault": per_fault,
+    }
+
+
+def _service_aliases(service: str | None) -> set[str]:
+    s = str(service or "").strip()
+    if not s:
+        return set()
+    low = s.lower()
+    out = {s, low}
+    if low.startswith("hotel-reserv-"):
+        out.add(low[len("hotel-reserv-"):])
+    if low.endswith("-mongo"):
+        base = low[:-len("-mongo")].split("-")[-1]
+        out.update({base, "mongodb-" + base})
+    if low.startswith("mongodb-"):
+        base = low.replace("mongodb-", "")
+        out.update({base, "hotel-reserv-" + base + "-mongo"})
+    return {x for x in out if x}
+
+
+def _same_service(a: str | None, b: str | None) -> bool:
+    return bool(_service_aliases(a) & _service_aliases(b))
+
+
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
 
 def _select_matched_fault(action: str | None, target: str | None, faults: list[FaultLabel]) -> tuple[FaultLabel | None, str | None]:
