@@ -20,6 +20,10 @@ from .split_utils import read_scenario_ids
 from .training_safe_llm_rca_solver import TrainingSafeLLMRCASolver
 
 
+REWARD_MODE = "factorized_joint_pipeline_v2_no_double_count"
+CREDIT_ASSIGNMENT_MODE = "joint_rollout_factorized_policy_returns_v2"
+
+
 def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -106,7 +110,7 @@ def main() -> None:
     ap.add_argument("--trajectory_group_size", type=int, default=4)
     ap.add_argument("--rca_max_iterations", type=int, default=3)
     ap.add_argument("--action_max_iterations", type=int, default=3)
-    ap.add_argument("--policy_version", default="factorized-joint-v1")
+    ap.add_argument("--policy_version", default="factorized-joint-v2")
     ap.add_argument(
         "--update_batch_scenarios",
         type=int,
@@ -154,6 +158,12 @@ def main() -> None:
 
     if args.update_batch_scenarios < 1:
         raise ValueError("--update_batch_scenarios must be >= 1")
+    if args.trajectory_group_size < 2:
+        raise ValueError("--trajectory_group_size must be >= 2 for group-relative policy optimization")
+    if not (0.0 <= args.rca_downstream_credit_weight <= 1.0):
+        raise ValueError("--rca_downstream_credit_weight must be in [0, 1]")
+    if not (0.0 <= args.action_system_credit_weight <= 1.0):
+        raise ValueError("--action_system_credit_weight must be in [0, 1]")
 
     out_dir = Path(args.output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -186,6 +196,8 @@ def main() -> None:
     rca_sample_count = 0
     action_sample_count = 0
     unsafe_agent_inputs = 0
+    rca_zero_variance_groups = 0
+    action_zero_variance_groups = 0
     batch_stats: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "scenario_count": 0,
@@ -225,7 +237,7 @@ def main() -> None:
             action_policy_model_name=f"structured-action-policy:{args.action_strategy}",
             policy_version=args.policy_version,
             agent_input_mode="training_safe",
-            reward_mode="factorized_joint_pipeline_v1",
+            reward_mode=REWARD_MODE,
             min_twin_reproduction_score=args.min_twin_reproduction_score,
             rca_downstream_credit_weight=args.rca_downstream_credit_weight,
             action_system_credit_weight=args.action_system_credit_weight,
@@ -233,6 +245,8 @@ def main() -> None:
 
         scenario_count += 1
         unsafe_agent_inputs += int(not bool((result.get("agent_input_safety") or {}).get("safe_for_training_agent")))
+        rca_zero_variance_groups += int(bool(result.get("rca_group_zero_variance")))
+        action_zero_variance_groups += int(bool(result.get("action_group_zero_variance")))
         trajectories = result.get("trajectories", []) or []
         rca_samples = result.get("rca_grpo_samples", []) or []
         action_samples = result.get("action_grpo_samples", []) or []
@@ -255,6 +269,8 @@ def main() -> None:
             "rca_group_return_std": result.get("rca_group_return_std"),
             "action_group_return_mean": result.get("action_group_return_mean"),
             "action_group_return_std": result.get("action_group_return_std"),
+            "rca_group_zero_variance": result.get("rca_group_zero_variance"),
+            "action_group_zero_variance": result.get("action_group_zero_variance"),
             "trajectories": trajectories,
             "agent_input_safety": result.get("agent_input_safety"),
             "policy_credit_contract": result.get("policy_credit_contract"),
@@ -302,11 +318,13 @@ def main() -> None:
             "shared_base_model": args.qwen_model,
             "update_contract": (
                 "Freeze rollout policy versions for this batch; update RCA and Action adapters with their "
-                "own policy_advantage fields; publish both new adapter versions together before the next batch."
+                "own precomputed policy_advantage fields; aggregate token-mean decision losses within each "
+                "trajectory, then average trajectories; publish both new adapter versions together."
             ),
             "rca_optimizer_advantage_field": "policy_advantage",
             "action_optimizer_advantage_field": "policy_advantage",
             "system_advantage_is_optimizer_signal": False,
+            "recompute_advantages_inside_optimizer": False,
         })
 
     summary = {
@@ -319,11 +337,14 @@ def main() -> None:
         "action_policy_samples": action_sample_count,
         "unsafe_agent_inputs": unsafe_agent_inputs,
         "trajectory_group_size": args.trajectory_group_size,
+        "rca_zero_variance_groups": rca_zero_variance_groups,
+        "action_zero_variance_groups": action_zero_variance_groups,
         "rca_max_iterations": args.rca_max_iterations,
         "action_max_iterations": args.action_max_iterations,
         "agent_input_mode": "training_safe",
-        "reward_mode": "factorized_joint_pipeline_v1",
-        "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v1",
+        "reward_mode": REWARD_MODE,
+        "credit_assignment_mode": CREDIT_ASSIGNMENT_MODE,
+        "advantage_normalization": "per_incident_complete_trajectory_group_population_std",
         "update_schedule": "batch_synchronized_separate_policy_updates",
         "update_batch_scenarios": args.update_batch_scenarios,
         "num_sync_batches": len(batch_stats),
@@ -341,14 +362,18 @@ def main() -> None:
         "shared_base_model_contract": args.qwen_model,
         "rca_adapter_contract": "shared_frozen_base+lora_rca+separate_optimizer",
         "action_adapter_contract": "shared_frozen_base+lora_action+separate_optimizer",
+        "optimizer_must_use_precomputed_policy_advantage": True,
+        "optimizer_must_use_exact_completion_token_ids": True,
+        "optimizer_must_use_per_token_old_logprobs": True,
         "joint_trajectories_jsonl": str(trajectories_path),
         "rca_policy_samples_jsonl": str(rca_samples_path),
         "action_policy_samples_jsonl": str(action_samples_path),
         "all_policy_samples_diagnostic_jsonl": str(combined_samples_path),
         "policy_update_batches_jsonl": str(update_manifest_path),
         "next_training_backend_requirement": (
-            "Enable trainable Qwen sampling with old logprobs for both adapters, then consume RCA and Action "
-            "buffers with separate GRPO optimizers at synchronized batch boundaries."
+            "Enable trainable Qwen sampling for both adapters and record exact completion token IDs plus "
+            "per-token old-policy logprobs. The learner must consume the stored policy_advantage directly "
+            "with token-level importance ratios; it must not renormalize duplicated decision rows."
         ),
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
