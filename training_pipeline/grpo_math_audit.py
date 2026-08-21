@@ -98,24 +98,41 @@ def _action_result(
 def run_audit() -> dict[str, Any]:
     checks: list[str] = []
 
-    # 1) Standard group-relative normalization invariants.
+    # 1) Standard group-relative normalization invariants. Current common TRL
+    # implementations use torch.std with correction=1 plus ~1e-4 in denominator.
     vals = [1.0, 2.0, 4.0, 8.0]
     g = group_relative_advantages(vals)
+    assert g.std_correction == 1
+    _assert_close(g.normalization_epsilon, 1e-4, 1e-15)
     _assert_close(sum(g.advantages) / len(g.advantages), 0.0, 1e-12)
-    _assert_close(sum(a * a for a in g.advantages) / len(g.advantages), 1.0, 1e-10)
-    checks.append("group_advantage_zero_mean_unit_population_variance")
 
-    # Positive affine transforms must not change standardized advantages.
-    g2 = group_relative_advantages([7.0 * x + 13.0 for x in vals])
-    for a, b in zip(g.advantages, g2.advantages):
+    mu = sum(vals) / len(vals)
+    expected_std = math.sqrt(sum((x - mu) ** 2 for x in vals) / (len(vals) - 1))
+    _assert_close(g.std, expected_std, 1e-12)
+    for value, advantage in zip(vals, g.advantages):
+        _assert_close(advantage, (value - mu) / (expected_std + 1e-4), 1e-12)
+    checks.append("group_advantage_matches_sample_std_plus_epsilon")
+
+    # With epsilon disabled, positive affine transforms preserve standardized
+    # advantages exactly. This isolates the normalization math from the deliberate
+    # numerical epsilon used by the production path.
+    g_noeps = group_relative_advantages(vals, normalization_epsilon=0.0)
+    g2_noeps = group_relative_advantages([7.0 * x + 13.0 for x in vals], normalization_epsilon=0.0)
+    for a, b in zip(g_noeps.advantages, g2_noeps.advantages):
         _assert_close(a, b, 1e-10)
-    checks.append("group_advantage_positive_affine_invariance")
+    checks.append("group_advantage_affine_invariance_without_numerical_epsilon")
 
     # Constant groups carry no relative signal.
     gz = group_relative_advantages([3.0, 3.0, 3.0, 3.0])
     assert gz.zero_variance
     assert all(a == 0.0 for a in gz.advantages)
     checks.append("zero_variance_group_yields_zero_advantage")
+
+    # Singleton groups are not valid relative-comparison groups and also carry no
+    # relative signal.
+    gs = group_relative_advantages([3.0])
+    assert gs.zero_variance and gs.advantages == (0.0,)
+    checks.append("singleton_group_yields_zero_advantage")
 
     # 2) PPO/GRPO clip sign behavior.
     pos = clipped_grpo_surrogate(math.log(1.5), 0.0, 1.0, epsilon_low=0.2, epsilon_high=0.2)
@@ -212,6 +229,8 @@ def run_audit() -> dict[str, Any]:
         "checks": checks,
         "reward_mode": a["reward_mode"],
         "credit_assignment_mode": a["credit_assignment_mode"],
+        "grpo_std_correction": g.std_correction,
+        "grpo_normalization_epsilon": g.normalization_epsilon,
     }
 
 
