@@ -4,6 +4,10 @@ import json
 import math
 from typing import Any
 
+from digital_twin_runtime.twin_verifier import _action_repairs_fault
+
+from .command_normalizer import normalize_command
+from .command_safety import check_command_safety
 from .end_to_end_reward import end_to_end_reward
 from .grpo_math import (
     clipped_grpo_surrogate,
@@ -98,8 +102,7 @@ def _action_result(
 def run_audit() -> dict[str, Any]:
     checks: list[str] = []
 
-    # 1) Standard group-relative normalization invariants. Current common TRL
-    # implementations use torch.std with correction=1 plus ~1e-4 in denominator.
+    # 1) Group-relative advantage convention.
     vals = [1.0, 2.0, 4.0, 8.0]
     g = group_relative_advantages(vals)
     assert g.std_correction == 1
@@ -113,28 +116,22 @@ def run_audit() -> dict[str, Any]:
         _assert_close(advantage, (value - mu) / (expected_std + 1e-4), 1e-12)
     checks.append("group_advantage_matches_sample_std_plus_epsilon")
 
-    # With epsilon disabled, positive affine transforms preserve standardized
-    # advantages exactly. This isolates the normalization math from the deliberate
-    # numerical epsilon used by the production path.
     g_noeps = group_relative_advantages(vals, normalization_epsilon=0.0)
     g2_noeps = group_relative_advantages([7.0 * x + 13.0 for x in vals], normalization_epsilon=0.0)
     for a, b in zip(g_noeps.advantages, g2_noeps.advantages):
         _assert_close(a, b, 1e-10)
     checks.append("group_advantage_affine_invariance_without_numerical_epsilon")
 
-    # Constant groups carry no relative signal.
     gz = group_relative_advantages([3.0, 3.0, 3.0, 3.0])
     assert gz.zero_variance
     assert all(a == 0.0 for a in gz.advantages)
     checks.append("zero_variance_group_yields_zero_advantage")
 
-    # Singleton groups are not valid relative-comparison groups and also carry no
-    # relative signal.
     gs = group_relative_advantages([3.0])
     assert gs.zero_variance and gs.advantages == (0.0,)
     checks.append("singleton_group_yields_zero_advantage")
 
-    # 2) PPO/GRPO clip sign behavior.
+    # 2) PPO/GRPO clipping signs and KL estimator.
     pos = clipped_grpo_surrogate(math.log(1.5), 0.0, 1.0, epsilon_low=0.2, epsilon_high=0.2)
     _assert_close(float(pos["clipped_ratio"]), 1.2, 1e-10)
     _assert_close(float(pos["loss"]), -1.2, 1e-10)
@@ -144,12 +141,12 @@ def run_audit() -> dict[str, Any]:
     _assert_close(float(neg["loss"]), 0.8, 1e-10)
     checks.append("clipped_surrogate_positive_and_negative_advantage_signs")
 
-    # 3) Sampled KL estimator must be non-negative and zero at equal policies.
     _assert_close(schulman_reverse_kl_estimate(-2.0, -2.0), 0.0, 1e-12)
     assert schulman_reverse_kl_estimate(-1.0, -2.0) >= 0.0
     assert schulman_reverse_kl_estimate(-2.0, -1.0) >= 0.0
     checks.append("schulman_kl_estimator_nonnegative")
 
+    # 3) Factorized reward behavior.
     good_rca = _rca_result(pair=1.0, exact=True, twin=0.9, raw_reward=100.0)
     bad_rca = _rca_result(pair=0.1, exact=False, twin=0.1, raw_reward=-100.0)
     bad_action = _action_result(
@@ -167,8 +164,6 @@ def run_audit() -> dict[str, Any]:
     assert b["action_policy_return"] > b["rca_policy_return"]
     checks.append("factorized_credit_separates_rca_and_action_quality")
 
-    # Raw local scalar rewards are diagnostic only. Altering them with all causal
-    # reward components held fixed must not change policy returns.
     good_rca_low_raw = _rca_result(pair=1.0, exact=True, twin=0.9, raw_reward=-999.0)
     bad_action_high_raw = _action_result(
         safe=True, repairs=False, target_reduction=0.0, global_reduction=0.0,
@@ -179,28 +174,33 @@ def run_audit() -> dict[str, Any]:
     _assert_close(a["action_policy_return"], a2["action_policy_return"], 1e-12)
     checks.append("no_duplicate_raw_local_reward_shaping")
 
-    # Better RCA evidence must monotonically improve RCA return when downstream
-    # recovery is held fixed.
     rca_low = end_to_end_reward(_rca_result(pair=0.2, exact=False, twin=0.2), bad_action)
     rca_high = end_to_end_reward(_rca_result(pair=0.8, exact=False, twin=0.8), bad_action)
     assert rca_high["rca_policy_return"] > rca_low["rca_policy_return"]
     checks.append("rca_return_monotone_in_match_and_twin_quality")
 
-    # Better recovery must improve Action return and system quality.
     action_low = end_to_end_reward(good_rca, bad_action)
     action_high = end_to_end_reward(good_rca, good_action)
     assert action_high["action_policy_return"] > action_low["action_policy_return"]
     assert action_high["system_quality"] > action_low["system_quality"]
     checks.append("action_and_system_returns_monotone_in_recovery")
 
-    # System reward must not depend on private RCA exact correctness when the
-    # observable recovery trajectory is unchanged.
     same_action_1 = end_to_end_reward(good_rca, good_action)
     same_action_2 = end_to_end_reward(bad_rca, good_action)
     _assert_close(same_action_1["system_reward"], same_action_2["system_reward"], 1e-12)
     checks.append("system_reward_independent_of_private_rca_exact_match")
 
-    # 4) Multifault matching must be order-invariant and exact for reversed lists.
+    safe_noop = _action_result(
+        safe=True, repairs=False, target_reduction=0.0, global_reduction=0.0,
+        target_sla=False, sla=False, resolved=False, has_verify=True,
+        has_mutation=False, twin_score=0.9,
+    )
+    noop_reward = end_to_end_reward(good_rca, safe_noop)
+    _assert_close(noop_reward["system_quality"], 0.0, 1e-12)
+    assert not noop_reward["success"]
+    checks.append("safe_noop_gets_no_system_recovery_credit")
+
+    # 4) Multifault matching must be exact and order-invariant.
     full_state = {
         "graph": {
             "edges": [
@@ -222,6 +222,20 @@ def run_audit() -> dict[str, Any]:
     _assert_close(score1, 1.0, 1e-12)
     _assert_close(score2, 1.0, 1e-12)
     checks.append("multifault_matching_exact_and_order_invariant")
+
+    # 5) Action contract must distinguish real rollback from generic restart.
+    rollback_cmd = "kubectl rollout undo deployment/frontend -n test-social-network"
+    normalized = normalize_command(rollback_cmd)
+    assert normalized["valid"] and normalized["action"] == "rollback_config"
+    assert normalized["service"] == "frontend"
+    assert check_command_safety([rollback_cmd])["safe"]
+    checks.append("rollout_undo_is_safe_and_normalized_as_config_rollback")
+
+    assert _action_repairs_fault("rollback_config", "config_error")
+    assert not _action_repairs_fault("restart_service", "config_error")
+    assert not _action_repairs_fault("restart_service", "auth_failure")
+    assert not _action_repairs_fault("restart_service", "network_failure")
+    checks.append("offline_action_mapping_rejects_restart_everything_reward_hack")
 
     return {
         "ok": True,
