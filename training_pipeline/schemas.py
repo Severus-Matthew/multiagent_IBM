@@ -32,6 +32,7 @@ CANONICAL_FAULT_TYPES = {
     "config_error", "network_failure", "resource_exhaustion", "multifault", "unknown",
 }
 
+
 @dataclass(frozen=True)
 class FaultLabel:
     service: str
@@ -45,6 +46,7 @@ class FaultLabel:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
 
 @dataclass
 class RCAAttempt:
@@ -65,6 +67,7 @@ class RCAAttempt:
         out["predicted_faults"] = [f.to_dict() for f in self.predicted_faults]
         return out
 
+
 @dataclass
 class ActionAttempt:
     iteration: int
@@ -81,13 +84,17 @@ class ActionAttempt:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
 @dataclass
 class GRPORolloutSample:
-    """One trainable-policy sample for GRPO-style optimization.
+    """One trainable-policy decision sample for trajectory-level GRPO.
 
-    In this project the trainable RCA policy produces the *instruction*.
-    The fixed RCA solver later consumes that instruction and emits service::fault_type.
-    Therefore `completion` is the policy-produced instruction, not the RCA answer.
+    `completion` is the trainable policy output (the prompt/instruction), not the
+    fixed downstream agent's answer. For real GRPO updates the rollout policy must
+    additionally record the *exact generated completion token IDs* and matching
+    per-token old-policy log probabilities. Retokenizing completion text later is
+    not an acceptable substitute because tokenizer/chat-template boundaries can
+    change the token sequence and invalidate the importance ratio.
     """
     stage: str
     scenario_id: str
@@ -113,6 +120,8 @@ class GRPORolloutSample:
     model_name: str
     policy_version: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    completion_token_ids: list[int] | None = None
+    ref_logprobs: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
