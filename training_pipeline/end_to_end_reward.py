@@ -13,7 +13,7 @@ def _clamp01(value: Any) -> float:
 
 
 def _bounded_local_reward(value: Any, scale: float) -> float:
-    """Map an unbounded/debug local reward to approximately [-1, 1]."""
+    """Map an unbounded local reward to approximately [-1, 1]."""
     try:
         x = float(value)
     except Exception:
@@ -35,19 +35,24 @@ def end_to_end_reward(
     rca_result: dict[str, Any],
     action_result: dict[str, Any],
     *,
-    reward_mode: str = "offline_diagnostic_joint_v1",
+    reward_mode: str = "factorized_joint_pipeline_v1",
+    rca_downstream_credit_weight: float = 0.15,
+    action_system_credit_weight: float = 0.25,
 ) -> dict[str, Any]:
-    """Score one complete RCA -> twin -> action -> recovery trajectory.
+    """Score one complete RCA -> twin -> Action -> recovery trajectory.
 
-    The scalar return is shared by every trainable policy decision in the same
-    trajectory. Local RCA/action rewards remain available only as shaping and
-    diagnostics. Final success is recovery-centric: a trajectory succeeds when a
-    safe action resolves the verifier environment and restores the target/global
-    SLA. It does not require the private RCA exact-label flag.
+    The pipeline executes jointly, but credit is factorized by trainable policy:
 
-    `offline_diagnostic_joint_v1` is for plumbing/smoke tests only because the
-    current action verifier is still an offline behavioral simulator. A live-twin
-    implementation can use the same contract without changing the joint trainer.
+      * RCA policy return is dominated by RCA-local correctness/evidence quality
+        and counterfactual-twin reproduction, with only a small downstream recovery
+        term.
+      * Action policy return is dominated by action-local/safety/recovery quality,
+        with a moderate system-level recovery term.
+      * A separate system reward is logged for end-to-end evaluation and model
+        selection; it is not blindly reused as the optimizer return for both agents.
+
+    This avoids the high-variance credit assignment of a single terminal reward
+    while preserving downstream coupling between the two agents.
     """
     rca_attempt = _final_rca_attempt(rca_result)
     action_attempt = _final_action_attempt(action_result)
@@ -59,34 +64,85 @@ def end_to_end_reward(
 
     rca_local_raw = float(rca_attempt.get("reward", 0.0) or 0.0)
     action_local_raw = float(action_attempt.get("reward", 0.0) or 0.0)
-    rca_local = _bounded_local_reward(rca_local_raw, 4.0)
-    action_local = _bounded_local_reward(action_local_raw, 6.0)
+    rca_local_bounded = _bounded_local_reward(rca_local_raw, 4.0)
+    action_local_bounded = _bounded_local_reward(action_local_raw, 6.0)
 
+    pair_score = _clamp01(rca_components.get("pair_score", 0.0))
+    exact_set_match = bool(rca_components.get("exact_set_match", False))
     twin_score = _clamp01(gate.get("reproduction_score", rca_components.get("twin_reproduction_score", 0.0)))
+
     safe = bool(action_components.get("safe", False))
-    target_reduction = _clamp01(verifier.get("target_symptom_reduction", action_components.get("target_symptom_reduction", 0.0)))
-    global_reduction = _clamp01(verifier.get("global_symptom_reduction", action_components.get("global_symptom_reduction", 0.0)))
-    target_sla_restored = bool(verifier.get("target_sla_restored", action_components.get("target_sla_restored", False)))
+    action_repairs = bool(action_components.get("action_repairs_fault_type", False))
+    target_reduction = _clamp01(
+        verifier.get("target_symptom_reduction", action_components.get("target_symptom_reduction", 0.0))
+    )
+    global_reduction = _clamp01(
+        verifier.get("global_symptom_reduction", action_components.get("global_symptom_reduction", 0.0))
+    )
+    target_sla_restored = bool(
+        verifier.get("target_sla_restored", action_components.get("target_sla_restored", False))
+    )
     sla_restored = bool(verifier.get("sla_restored", action_components.get("sla_restored", False)))
     resolved = bool(verifier.get("resolved", action_components.get("resolved", False)))
     skipped_action = bool(action_result.get("skipped_action", False))
     has_rca_prediction = bool(str(rca_result.get("final_prediction") or "").strip())
 
+    # Observable end-to-end recovery quality in [0, 1]. This is shared context,
+    # not the sole training return.
+    system_quality = (
+        0.10 * float(safe)
+        + 0.20 * target_reduction
+        + 0.20 * global_reduction
+        + 0.15 * float(target_sla_restored)
+        + 0.15 * float(sla_restored)
+        + 0.20 * float(resolved)
+    )
+    system_quality = _clamp01(system_quality)
+
+    # Private/evaluator-only RCA intrinsic score. Exact-label information is used
+    # only for reward computation and never passed into RCA history or Action input.
+    rca_intrinsic = (
+        0.40 * pair_score
+        + 0.20 * float(exact_set_match)
+        + 0.40 * twin_score
+    )
+    rca_intrinsic = _clamp01(rca_intrinsic)
+
+    action_intrinsic = (
+        0.10 * float(safe)
+        + 0.15 * float(action_repairs)
+        + 0.25 * target_reduction
+        + 0.15 * global_reduction
+        + 0.15 * float(target_sla_restored)
+        + 0.10 * float(sla_restored)
+        + 0.10 * float(resolved)
+    )
+    action_intrinsic = _clamp01(action_intrinsic)
+
+    rca_downstream_weight = _clamp01(rca_downstream_credit_weight)
+    action_system_weight = _clamp01(action_system_credit_weight)
+
+    rca_local_mix = 0.70 * rca_intrinsic + 0.30 * rca_local_bounded
+    action_local_mix = 0.70 * action_intrinsic + 0.30 * action_local_bounded
+
+    rca_policy_return = (
+        (1.0 - rca_downstream_weight) * rca_local_mix
+        + rca_downstream_weight * system_quality
+    )
+    action_policy_return = (
+        (1.0 - action_system_weight) * action_local_mix
+        + action_system_weight * system_quality
+    )
+
+    # System reward is retained for end-to-end evaluation. Recovery dominates and
+    # unsafe/skipped/empty trajectories are explicitly penalized.
     unsafe_penalty = 0.0 if safe or skipped_action else 1.50
     skipped_penalty = 0.75 if skipped_action else 0.0
     empty_rca_penalty = 0.75 if not has_rca_prediction else 0.0
-
-    # Recovery dominates the return. RCA/twin and local action terms provide
-    # denser credit before the live environment is consistently solved.
-    reward = (
-        0.30 * rca_local
-        + 0.75 * twin_score
-        + 0.30 * action_local
-        + 0.75 * target_reduction
-        + 0.75 * global_reduction
-        + (1.00 if target_sla_restored else 0.0)
-        + (1.50 if sla_restored else 0.0)
-        + (1.25 if resolved else 0.0)
+    system_reward = (
+        4.0 * system_quality
+        + 0.50 * twin_score
+        + 0.25 * rca_intrinsic
         - unsafe_penalty
         - skipped_penalty
         - empty_rca_penalty
@@ -94,17 +150,29 @@ def end_to_end_reward(
 
     success = bool(safe and resolved and (target_sla_restored or sla_restored))
     return {
-        "reward": round(float(reward), 6),
+        # `reward` is kept as a compatibility alias for system-level evaluation.
+        "reward": round(float(system_reward), 6),
+        "system_reward": round(float(system_reward), 6),
+        "system_quality": round(float(system_quality), 6),
+        "rca_policy_return": round(float(rca_policy_return), 6),
+        "action_policy_return": round(float(action_policy_return), 6),
         "success": success,
         "reward_mode": reward_mode,
+        "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v1",
         "components": {
             "rca_local_reward_raw": round(rca_local_raw, 6),
-            "rca_local_reward_bounded": round(rca_local, 6),
-            "private_rca_exact_set_match": bool(rca_components.get("exact_set_match", False)),
+            "rca_local_reward_bounded": round(rca_local_bounded, 6),
+            "rca_intrinsic": round(rca_intrinsic, 6),
+            "pair_score": round(pair_score, 6),
+            "private_rca_exact_set_match": exact_set_match,
             "counterfactual_twin_reproduction_score": round(twin_score, 6),
+            "rca_downstream_credit_weight": round(rca_downstream_weight, 6),
             "action_local_reward_raw": round(action_local_raw, 6),
-            "action_local_reward_bounded": round(action_local, 6),
+            "action_local_reward_bounded": round(action_local_bounded, 6),
+            "action_intrinsic": round(action_intrinsic, 6),
+            "action_system_credit_weight": round(action_system_weight, 6),
             "safe": safe,
+            "action_repairs_fault_type": action_repairs,
             "target_symptom_reduction": round(target_reduction, 6),
             "global_symptom_reduction": round(global_reduction, 6),
             "target_sla_restored": target_sla_restored,
@@ -117,7 +185,7 @@ def end_to_end_reward(
             "empty_rca_penalty": empty_rca_penalty,
         },
         "note": (
-            "Private RCA exact-match is logged only as evaluator diagnostics and is never exposed to downstream agents. "
-            "Final trajectory success is defined by safe recovery/SLA restoration."
+            "The incident executes end-to-end, but RCA and Action receive separate returns. "
+            "Private RCA exact-match is evaluator-only and never exposed to downstream agents."
         ),
     }
