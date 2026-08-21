@@ -17,15 +17,14 @@ CANONICAL_ACTION_STRATEGIES = [
 class StructuredActionPromptPolicy:
     """Structured prompt optimizer for the fixed ActionAgent.
 
-    This is the active non-debug action prompt policy. It does not execute
-    commands and does not see oracle labels. It turns a verified RCA result,
-    redacted state abstraction, current SLA summary, and public attempt history
-    into a concrete instruction prompt plus a machine-readable action plan.
+    It does not execute commands and does not see oracle labels. It turns the
+    upstream RCA *prediction*, prediction-derived twin feedback, redacted state,
+    current SLA summary, and public action-attempt history into a concrete
+    instruction prompt plus a machine-readable action plan.
 
     For GRPO rollouts, context["sample_index"] selects a different safe action
-    family variant for the same verified RCA state. A trainable Qwen/LoRA policy
-    can later replace `generate()` while keeping the same ActionAgent contract and
-    reward/verifier path.
+    family variant. A trainable Qwen/LoRA policy can later replace `generate()`
+    while keeping the same ActionAgent contract and verifier path.
     """
 
     def __init__(self, strategy: str = "auto", max_root_causes: int = 2):
@@ -43,6 +42,7 @@ class StructuredActionPromptPolicy:
         previous_attempts = context.get("previous_attempts", []) or []
         iteration = int(context.get("iteration", 0) or 0)
         sample_index = int(context.get("sample_index", 0) or 0)
+        twin_feedback = context.get("rca_twin_gate", {}) or {}
 
         plans = []
         for root in root_causes:
@@ -63,7 +63,9 @@ class StructuredActionPromptPolicy:
             "strategy": self.strategy,
             "iteration": iteration,
             "sample_index": sample_index,
-            "rca_twin_verified": bool((context.get("rca_twin_gate", {}) or {}).get("rca_twin_verified")),
+            "rca_counterfactual_reproduction_score": twin_feedback.get("reproduction_score"),
+            "counterfactual_replay_checked": twin_feedback.get("counterfactual_replay_checked"),
+            "live_fault_injection_checked": twin_feedback.get("predicted_fault_injection_checked"),
             "current_sla": {
                 "sla_restored": current_sla.get("sla_restored"),
                 "hard_violations": current_sla.get("hard_violations"),
@@ -82,11 +84,12 @@ class StructuredActionPromptPolicy:
 
         human = [
             "You are the action prompt optimizer for a fixed Kubernetes ActionAgent.",
-            "The RCA has already passed the RCA twin gate. Generate remediation instructions only for the verified RCA target(s).",
+            "Use the upstream RCA prediction and its counterfactual-twin feedback; do not assume the RCA is ground-truth correct.",
+            "Generate remediation instructions only for the predicted RCA target(s).",
             "The ActionAgent must output executable commands only; no prose, markdown, comments, or code fences.",
             "Use the namespace exactly as given in the action plan.",
-            "Prefer the smallest safe action that matches the RCA fault type and can be verified by rollout/status/get commands.",
-            "Do not repair downstream victims unless they are explicitly listed as RCA root causes.",
+            "Prefer the smallest safe action that matches the predicted fault mechanism and can be verified by rollout/status/get commands.",
+            "Do not repair downstream victims unless they are explicitly listed as predicted RCA root causes.",
             "",
             "Allowed action families:",
             "- infra_patch_first: patch invalid pod scheduling fields, restart deployment, verify rollout.",
