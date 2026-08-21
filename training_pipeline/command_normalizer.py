@@ -19,6 +19,10 @@ def normalize_command(cmd: str) -> dict[str, Any]:
         svc = _deployment(parts[3:])
         return {"action": "restart_service", "service": svc, "raw": raw, "valid": bool(svc)}
 
+    if parts[:3] == ["kubectl", "rollout", "undo"]:
+        svc = _deployment(parts[3:])
+        return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
+
     if parts[:3] == ["kubectl", "rollout", "status"]:
         svc = _deployment(parts[3:])
         return {"action": "verify", "service": svc, "raw": raw, "valid": True}
