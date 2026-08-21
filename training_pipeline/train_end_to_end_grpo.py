@@ -317,9 +317,10 @@ def main() -> None:
             "action_adapter_id": "lora_action",
             "shared_base_model": args.qwen_model,
             "update_contract": (
-                "Freeze rollout policy versions for this batch; update RCA and Action adapters with their "
-                "own precomputed policy_advantage fields; aggregate token-mean decision losses within each "
-                "trajectory, then average trajectories; publish both new adapter versions together."
+                "Freeze rollout policy versions for this batch; update RCA and Action adapters separately using "
+                "their precomputed policy_advantage fields. The future learner uses token-level clipped ratios "
+                "and DAPO-style normalization by total active completion tokens within each role update, then "
+                "publishes both adapter versions together."
             ),
             "rca_optimizer_advantage_field": "policy_advantage",
             "action_optimizer_advantage_field": "policy_advantage",
@@ -344,8 +345,10 @@ def main() -> None:
         "agent_input_mode": "training_safe",
         "reward_mode": REWARD_MODE,
         "credit_assignment_mode": CREDIT_ASSIGNMENT_MODE,
-        "advantage_normalization": "per_incident_complete_trajectory_group_population_std",
+        "advantage_normalization": "per_incident_complete_trajectory_group_sample_std_plus_1e-4",
+        "advantage_std_correction": 1,
         "update_schedule": "batch_synchronized_separate_policy_updates",
+        "future_loss_aggregation": "DAPO-style total-active-token normalization per role optimizer update",
         "update_batch_scenarios": args.update_batch_scenarios,
         "num_sync_batches": len(batch_stats),
         "rca_downstream_credit_weight": args.rca_downstream_credit_weight,
@@ -372,8 +375,8 @@ def main() -> None:
         "policy_update_batches_jsonl": str(update_manifest_path),
         "next_training_backend_requirement": (
             "Enable trainable Qwen sampling for both adapters and record exact completion token IDs plus "
-            "per-token old-policy logprobs. The learner must consume the stored policy_advantage directly "
-            "with token-level importance ratios; it must not renormalize duplicated decision rows."
+            "per-token old-policy logprobs. The learner consumes stored policy_advantage directly with "
+            "token-level importance ratios and must not renormalize duplicated decision rows."
         ),
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
