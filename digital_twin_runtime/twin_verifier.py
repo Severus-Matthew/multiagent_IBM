@@ -13,14 +13,11 @@ from .telemetry_comparator import graph_neighborhood, symptom_signature
 class BehavioralTwinVerifier:
     """Offline Stage-2 verifier.
 
-    RCA validation uses an independent counterfactual replay score:
-      prediction -> mechanism-specific synthetic symptom footprint -> comparison
-      against the observed redacted incident state.
-
-    The hidden injection manifest is logged only as an evaluator-side audit label.
-    It never changes the reproduction score. Action validation still uses an
-    offline symptom simulator. A live K8s twin can replace both replay functions
-    behind the same interface later.
+    RCA validation uses an independent counterfactual replay score. Action
+    validation uses a deliberately conservative offline symptom simulator. It must
+    not claim that generic restart commands repair mechanism-specific faults such
+    as auth/config/network failures. A live K8s twin replaces this simulator in
+    final training/evaluation.
     """
 
     def validate_rca_prediction(
@@ -59,7 +56,7 @@ class BehavioralTwinVerifier:
 
         if not matched_fault:
             return {
-                "mode": "behavioral_offline",
+                "mode": "behavioral_offline_conservative_action_v2",
                 "resolved": False,
                 "twin_resolved": False,
                 "sla_restored": False,
@@ -96,7 +93,7 @@ class BehavioralTwinVerifier:
         resolved = bool(twin_resolved and (sla_restored or target_reduction >= 0.95))
 
         return {
-            "mode": "behavioral_offline",
+            "mode": "behavioral_offline_conservative_action_v2",
             "resolved": resolved,
             "twin_resolved": twin_resolved,
             "sla_restored": sla_restored,
@@ -108,6 +105,7 @@ class BehavioralTwinVerifier:
             "target_fault_type": matched_fault.fault_type,
             "mitigation_action": mitigation_action,
             "action_repairs_fault_type": repaired,
+            "repair_mapping": "offline_conservative_action_v2",
             "reason": _action_reason(repaired, resolved, target_sla_restored, sla_restored),
             "before_sla": before_sla,
             "after_sla": after_sla,
@@ -225,17 +223,30 @@ def _select_matched_fault(action: str | None, target: str | None, faults: list[F
 
 
 def _action_repairs_fault(action: str | None, fault_type: str | None) -> bool:
+    """Conservative offline compatibility check.
+
+    A generic restart is *not* treated as a repair for auth/config/network faults.
+    Doing so would reward a trivial restart-everything policy even though the live
+    injected mechanism remains present. Unsupported mechanism-specific repairs are
+    allowed to fail in the offline proxy rather than fabricating successful
+    recovery.
+    """
     action = action or ""
     fault_type = normalize_fault_type(fault_type or "unknown")
     if fault_type == "infra_failure":
         return action in {"fix_infra_scheduling", "recreate_pod", "restart_service"}
-    if fault_type in {"config_error", "auth_failure", "dependency_failure"}:
-        return action in {"rollback_config", "restart_service"}
+    if fault_type == "config_error":
+        return action == "rollback_config"
+    if fault_type == "auth_failure":
+        return action in {"restore_auth", "rollback_config"}
+    if fault_type == "dependency_failure":
+        return action in {"restart_service", "rollback_config"}
     if fault_type in {"latency_degradation", "resource_exhaustion"}:
         return action in {"scale_service", "restart_service"}
     if fault_type == "network_failure":
-        return action in {"restart_service", "recreate_pod"}
-    return action in {"restart_service", "rollback_config", "scale_service"}
+        return action in {"restore_network", "rollback_config"}
+    # Unknown mechanism has no trustworthy offline repair mapping.
+    return False
 
 
 def _simulate_after_signature(
@@ -251,7 +262,7 @@ def _simulate_after_signature(
 
     target = matched_fault.service
     radius = 1
-    if mitigation_action.get("action") in {"scale_service", "rollback_config", "fix_infra_scheduling"}:
+    if mitigation_action.get("action") in {"scale_service", "rollback_config", "fix_infra_scheduling", "restore_auth", "restore_network"}:
         radius = 0
     affected_scope = set(graph_neighborhood(state, target, radius=radius)) | {target}
 
@@ -303,7 +314,7 @@ def _target_sla(signature: dict[str, Any], service: str) -> dict[str, Any]:
 
 def _action_reason(repaired: bool, resolved: bool, target_sla_restored: bool, sla_restored: bool) -> str:
     if not repaired:
-        return "action_does_not_repair_target_fault_type"
+        return "action_does_not_repair_target_fault_type_in_conservative_offline_proxy"
     if resolved:
         return "target_fault_repaired_and_sla_improved"
     if target_sla_restored and not sla_restored:
