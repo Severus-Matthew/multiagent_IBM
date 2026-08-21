@@ -9,15 +9,12 @@ _ACTION_PLAN_RE = re.compile(r"ACTION_PLAN_JSON:\s*(\{[\s\S]*\})\s*$", re.MULTIL
 
 
 class FixedActionAgent:
-    """Fixed command generator for offline action-policy training.
+    """Fixed command generator for offline action-policy plumbing.
 
-    This is a real ActionAgent interface, not a debug test class: it consumes the
-    structured action prompt contract emitted by StructuredActionPromptPolicy and
-    deterministically emits scoped kubectl/helm/mongosh commands. Its weights and
-    behavior are fixed; only the prompt policy is meant to be trained/optimized.
-
-    A live LLM ActionAgent can be selected by the training script later, but this
-    fixed agent is the safe default for reward development and offline rollouts.
+    This deterministic agent exists to exercise the action-policy/safety/verifier
+    interfaces without model noise. It must not fabricate a mechanism-specific
+    repair using a generic restart. The final scientific action outcome comes from
+    the live Kubernetes twin, not this offline helper.
     """
 
     def __init__(self, max_commands: int = 15):
@@ -108,8 +105,6 @@ def _commands_for_action_family(service: str, namespace: str, action_family: str
         ]
 
     if action_family == "recreate_pod":
-        # Delete only pods selected by the target app label in the target namespace.
-        # The safety gate will reject broad/cluster-wide deletes.
         return [
             f"kubectl delete pod -n {ns} -l app={service}",
             verify,
@@ -124,15 +119,14 @@ def _commands_for_action_family(service: str, namespace: str, action_family: str
         ]
 
     if action_family == "rollback_config":
-        # Prefer a deployment-scoped restart as the safe offline proxy for config,
-        # auth, or dependency repairs when no release/configmap name is known.
+        # A rollout undo is an actual deployment revision rollback, unlike the old
+        # placeholder that merely restarted the same configuration.
         return [
-            f"kubectl rollout restart deployment/{service} -n {ns}",
+            f"kubectl rollout undo deployment/{service} -n {ns}",
             verify,
             get_deploy,
         ]
 
-    # restart_service and unknown safe default.
     return [
         f"kubectl rollout restart deployment/{service} -n {ns}",
         verify,
