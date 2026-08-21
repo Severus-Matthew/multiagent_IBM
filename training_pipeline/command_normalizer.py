@@ -37,8 +37,8 @@ def normalize_command(cmd: str) -> dict[str, Any]:
         return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
 
     if parts[:2] == ["kubectl", "delete"]:
-        svc = _pod_owner_hint(parts) or _deployment(parts[2:])
-        return {"action": "recreate_pod", "service": svc, "raw": raw, "valid": True}
+        svc = _pod_owner_hint(parts) or _selector_service_hint(parts) or _deployment(parts[2:])
+        return {"action": "recreate_pod", "service": svc, "raw": raw, "valid": bool(svc)}
 
     if parts[:2] == ["kubectl", "get"]:
         return {"action": "verify", "raw": raw, "valid": True}
@@ -76,7 +76,36 @@ def _pod_owner_hint(parts: list[str]) -> str | None:
             name = p.split("/", 1)[1]
             return _service_from_pod_name(name)
     if len(parts) > 2 and parts[2] in ("pod", "pods", "po") and len(parts) > 3:
-        return _service_from_pod_name(parts[3])
+        candidate = parts[3]
+        if not candidate.startswith("-"):
+            return _service_from_pod_name(candidate)
+    return None
+
+
+def _selector_service_hint(parts: list[str]) -> str | None:
+    """Recover a target from selector-scoped pod deletes such as -l app=svc."""
+    selector = None
+    for i, p in enumerate(parts):
+        if p in {"-l", "--selector"} and i + 1 < len(parts):
+            selector = parts[i + 1]
+            break
+        if p.startswith("--selector="):
+            selector = p.split("=", 1)[1]
+            break
+        if p.startswith("-l="):
+            selector = p.split("=", 1)[1]
+            break
+        if p.startswith("-l") and len(p) > 2:
+            selector = p[2:].lstrip("=")
+            break
+    if not selector:
+        return None
+    for clause in str(selector).split(","):
+        if "=" not in clause:
+            continue
+        key, value = clause.split("=", 1)
+        if key.strip().lower() in {"app", "app.kubernetes.io/name", "service"} and value.strip():
+            return value.strip()
     return None
 
 
