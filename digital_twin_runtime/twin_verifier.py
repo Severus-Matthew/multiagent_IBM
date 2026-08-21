@@ -18,12 +18,9 @@ class BehavioralTwinVerifier:
       against the observed redacted incident state.
 
     The hidden injection manifest is logged only as an evaluator-side audit label.
-    It never changes the reproduction score. This is important because directly
-    matching the prediction against the injected label would make the verifier
-    tautological rather than an independent digital-twin check.
-
-    Action validation still uses an offline symptom simulator. A live K8s twin can
-    replace both replay functions behind the same interface later.
+    It never changes the reproduction score. Action validation still uses an
+    offline symptom simulator. A live K8s twin can replace both replay functions
+    behind the same interface later.
     """
 
     def validate_rca_prediction(
@@ -123,11 +120,7 @@ class BehavioralTwinVerifier:
 
 
 def _hidden_injection_anchor(full_state: dict[str, Any], predicted_faults: list[FaultLabel]) -> dict[str, Any]:
-    """Evaluator-only audit of prediction vs hidden injected fault manifest.
-
-    This function is intentionally excluded from the twin reproduction score.
-    It is useful for debugging/verifier evaluation only.
-    """
+    """Evaluator-only audit of prediction vs hidden injected fault manifest."""
     hidden = labels_from_full_state(full_state or {})
     if not hidden:
         return {"available": False, "reason": "no_hidden_injection_manifest"}
@@ -206,11 +199,19 @@ def _same_service(a: str | None, b: str | None) -> bool:
     return bool(_service_aliases(a) & _service_aliases(b))
 
 
+def _edge_touches_service(edge: Any, service: str) -> bool:
+    text = str(edge or "")
+    if "->" not in text:
+        return _same_service(text, service)
+    parts = [p.strip() for p in text.split("->") if p.strip()]
+    return any(_same_service(part, service) for part in parts)
+
+
 def _select_matched_fault(action: str | None, target: str | None, faults: list[FaultLabel]) -> tuple[FaultLabel | None, str | None]:
     if not faults:
         return None, "no_rca_faults_available"
     if target:
-        match = next((f for f in faults if f.service == target), None)
+        match = next((f for f in faults if _same_service(f.service, str(target))), None)
         return match, None if match else "action_target_does_not_match_rca_fault"
 
     repairable = [f for f in faults if _action_repairs_fault(action, f.fault_type)]
@@ -225,14 +226,14 @@ def _select_matched_fault(action: str | None, target: str | None, faults: list[F
 
 def _action_repairs_fault(action: str | None, fault_type: str | None) -> bool:
     action = action or ""
-    fault_type = fault_type or "unknown"
+    fault_type = normalize_fault_type(fault_type or "unknown")
     if fault_type == "infra_failure":
         return action in {"fix_infra_scheduling", "recreate_pod", "restart_service"}
     if fault_type in {"config_error", "auth_failure", "dependency_failure"}:
         return action in {"rollback_config", "restart_service"}
     if fault_type in {"latency_degradation", "resource_exhaustion"}:
         return action in {"scale_service", "restart_service"}
-    if fault_type in {"pod_failure", "network_failure"}:
+    if fault_type == "network_failure":
         return action in {"restart_service", "recreate_pod"}
     return action in {"restart_service", "rollback_config", "scale_service"}
 
@@ -264,21 +265,17 @@ def _simulate_after_signature(
     ]:
         values = after.get(field, []) or []
         if isinstance(values, list):
-            after[field] = [v for v in values if str(v) not in affected_scope]
+            after[field] = [
+                value for value in values
+                if not any(_same_service(str(value), str(scope_service)) for scope_service in affected_scope)
+            ]
 
     failed_edges = after.get("failed_edges", []) or []
     if isinstance(failed_edges, list):
-        cleaned = []
-        for edge in failed_edges:
-            e = str(edge)
-            touched = False
-            for svc in affected_scope:
-                if e == svc or e.startswith(svc + "->") or e.endswith("->" + svc) or ("->" + svc + "->") in e:
-                    touched = True
-                    break
-            if not touched:
-                cleaned.append(edge)
-        after["failed_edges"] = cleaned
+        after["failed_edges"] = [
+            edge for edge in failed_edges
+            if not any(_edge_touches_service(edge, str(scope_service)) for scope_service in affected_scope)
+        ]
 
     return after
 
@@ -294,15 +291,13 @@ def _target_sla(signature: dict[str, Any], service: str) -> dict[str, Any]:
         "affected_services",
     ]:
         values = signature.get(field, []) or []
-        target_sig[field] = [v for v in values if str(v) == service] if isinstance(values, list) else []
+        target_sig[field] = [
+            value for value in values if _same_service(str(value), service)
+        ] if isinstance(values, list) else []
     failed_edges = signature.get("failed_edges", []) or []
-    if isinstance(failed_edges, list):
-        target_sig["failed_edges"] = [
-            e for e in failed_edges
-            if str(e).startswith(service + "->") or str(e).endswith("->" + service)
-        ]
-    else:
-        target_sig["failed_edges"] = []
+    target_sig["failed_edges"] = [
+        edge for edge in failed_edges if _edge_touches_service(edge, service)
+    ] if isinstance(failed_edges, list) else []
     return sla_verdict_from_signature(target_sig)
 
 
