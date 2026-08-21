@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from statistics import mean, pstdev
 from typing import Any, Protocol
 
@@ -103,6 +104,56 @@ def _policy_info_from_policy(policy: RCAInstructionPolicy) -> dict[str, Any]:
     return _json_safe(info) if isinstance(info, dict) else {}
 
 
+def _finite_float_list(value: Any) -> list[float] | None:
+    if not isinstance(value, list):
+        return None
+    out: list[float] = []
+    for x in value:
+        try:
+            f = float(x)
+        except Exception:
+            return None
+        if not math.isfinite(f):
+            return None
+        out.append(f)
+    return out
+
+
+def _int_list(value: Any) -> list[int] | None:
+    if not isinstance(value, list):
+        return None
+    out: list[int] = []
+    for x in value:
+        try:
+            i = int(x)
+        except Exception:
+            return None
+        if i < 0:
+            return None
+        out.append(i)
+    return out
+
+
+def _rollout_token_info(policy_info: dict[str, Any]) -> tuple[float | None, list[float] | None, list[int] | None, list[float] | None]:
+    old_logprobs = _finite_float_list(policy_info.get("old_logprobs"))
+    completion_token_ids = _int_list(policy_info.get("completion_token_ids"))
+    ref_logprobs = _finite_float_list(policy_info.get("ref_logprobs"))
+
+    old_logprob_sum = policy_info.get("old_logprob_sum")
+    try:
+        old_logprob_sum = float(old_logprob_sum) if old_logprob_sum is not None else None
+    except Exception:
+        old_logprob_sum = None
+    if old_logprob_sum is not None and not math.isfinite(old_logprob_sum):
+        old_logprob_sum = None
+    if old_logprob_sum is None and old_logprobs is not None:
+        old_logprob_sum = float(sum(old_logprobs))
+
+    # Exact token/log-prob alignment is validated later by grpo_dataset.py. Do not
+    # silently truncate one list to fit the other here.
+    return old_logprob_sum, old_logprobs, completion_token_ids, ref_logprobs
+
+
 def build_rca_policy_prompt(
     compressed_state: dict[str, Any],
     history: list[dict[str, Any]],
@@ -133,12 +184,7 @@ def build_rca_policy_prompt(
 
 
 def _safe_history_entry(attempt: RCAAttempt) -> dict[str, Any]:
-    """Return retry history containing no oracle-derived correctness hints.
-
-    The scalar reward, local exact-label success, pair score, and hidden fault-count
-    mismatch are evaluator-only. Exposing any of them would let later RCA attempts
-    infer private labels from the reward channel.
-    """
+    """Return retry history containing no oracle-derived correctness hints."""
     c = attempt.reward_components
     return {
         "iteration": attempt.iteration,
@@ -240,18 +286,7 @@ def run_rca_grpo_episode(
     sample_index_offset: int = 0,
     stop_on_local_success: bool = True,
 ) -> dict[str, Any]:
-    """Run one RCA episode and produce GRPO-ready samples.
-
-    `agent_state` is what the policy and solver see. `compressed_state` remains
-    the private evaluator/twin state used for reward and diagnostics. This split
-    prevents candidate/root-cause menus from leaking into trainable prompts while
-    preserving private evaluation.
-
-    `sample_index_offset` lets an outer end-to-end trajectory group request
-    different policy samples even when this local loop uses group_size=1.
-    `stop_on_local_success=False` prevents hidden exact-label success from changing
-    the trajectory length in joint training.
-    """
+    """Run one RCA episode and produce GRPO-ready samples."""
     gt_labels = labels_from_full_state(full_state)
     scenario_id = full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown_scenario"
     agent_state = agent_state if agent_state is not None else compressed_state
@@ -271,15 +306,7 @@ def run_rca_grpo_episode(
                 agent_state, history, iteration, sample_index=sample_index, group_id=group_id
             )
             policy_info = _policy_info_from_policy(instruction_policy)
-            old_logprob_sum = policy_info.get("old_logprob_sum")
-            old_logprobs = policy_info.get("old_logprobs")
-            if old_logprob_sum is not None:
-                try:
-                    old_logprob_sum = float(old_logprob_sum)
-                except Exception:
-                    old_logprob_sum = None
-            if not isinstance(old_logprobs, list):
-                old_logprobs = None
+            old_logprob_sum, old_logprobs, completion_token_ids, ref_logprobs = _rollout_token_info(policy_info)
 
             prediction_text = solver.solve(agent_state, instruction)
             pred_labels = parse_fault_lines(prediction_text)
@@ -352,7 +379,10 @@ def run_rca_grpo_episode(
                     "twin_enabled": twin_validator is not None,
                     "policy_info": policy_info,
                     "sample_index_offset": int(sample_index_offset),
+                    "old_logprobs_contract": "per_generated_completion_token_sum_matches_old_logprob_sum",
                 },
+                completion_token_ids=completion_token_ids,
+                ref_logprobs=ref_logprobs,
             )
             group_pairs.append((sample, attempt))
 
