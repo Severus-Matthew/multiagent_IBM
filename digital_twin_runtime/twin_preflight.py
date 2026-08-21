@@ -15,8 +15,9 @@ class TwinPreflightResult:
     """Preflight diagnostics for the RCA-verification twin path.
 
     In behavioral mode this does not create a live Kubernetes namespace. It checks
-    that the state has enough observable structure for the behavioral twin and
-    that the verifier can produce a prediction-sensitive RCA validation object.
+    that the state has enough observable structure for the counterfactual replay
+    twin and that the verifier can produce a prediction-sensitive RCA validation
+    object without using oracle labels for the score.
     """
 
     ok: bool
@@ -92,7 +93,7 @@ def preflight_behavioral_twin(
 
     result = TwinPreflightResult(
         ok=not errors,
-        mode="behavioral_offline_proxy",
+        mode="counterfactual_offline_twin",
         scenario_id=scenario_id,
         namespace=str(namespace) if namespace else None,
         state_hash=_stable_hash(compressed_state),
@@ -124,13 +125,16 @@ def rca_twin_gate(
 ) -> dict[str, Any]:
     """Turn a per-attempt RCA twin result into an explicit gate object.
 
-    This gate is intentionally stricter than a raw reproduction score. A predicted
-    RCA is considered pipeline-verified only when:
-      1. the RCA attempt itself succeeded, when rca_success is provided;
-      2. the predicted fault was injected/evaluated by the behavioral twin proxy;
-      3. the injected prediction reproduces the same observable error pattern in
-         the input state abstraction above min_reproduction_score;
-      4. the score path did not use oracle labels or full-state RCA scoring.
+    A prediction can be verified by either the current offline counterfactual
+    replay path or a future live reinjection path. The gate requires:
+      1. RCA success when `rca_success` is explicitly provided;
+      2. a prediction-derived signature and an observed/evidence signature;
+      3. reproduction score >= `min_reproduction_score`;
+      4. no oracle/full-state information used to compute that score.
+
+    `predicted_fault_injection_checked` is reserved for true live reinjection.
+    Offline counterfactual replay is exposed separately as
+    `counterfactual_replay_checked` so the two modes cannot be confused.
     """
     if not twin_result:
         return {
@@ -140,6 +144,7 @@ def rca_twin_gate(
             "reproduction_score": 0.0,
             "same_error_pattern_score": 0.0,
             "predicted_fault_injection_checked": False,
+            "counterfactual_replay_checked": False,
             "same_error_pattern_verified": False,
             "rca_success_required": rca_success is not None,
             "rca_success": bool(rca_success) if rca_success is not None else None,
@@ -147,10 +152,14 @@ def rca_twin_gate(
 
     score = float(twin_result.get("reproduction_score", 0.0) or 0.0)
     mode = twin_result.get("mode", "unknown")
-    uses_oracle = bool(twin_result.get("uses_oracle_labels", False))
-    uses_full_state = bool(twin_result.get("uses_full_state_for_rca_score", False))
-    injection_checked = bool(twin_result.get("predicted_signature")) and bool(twin_result.get("evidence_signature"))
-    same_error_pattern_verified = injection_checked and score >= float(min_reproduction_score)
+    uses_oracle = bool(twin_result.get("uses_oracle_labels", False) or twin_result.get("uses_oracle_labels_for_score", False))
+    uses_full_state = bool(twin_result.get("uses_full_state_for_rca_score", False) or twin_result.get("uses_full_state_for_score", False))
+
+    predicted_signature = twin_result.get("predicted_signature")
+    observed_signature = twin_result.get("observed_signature") or twin_result.get("evidence_signature")
+    replay_checked = bool(predicted_signature) and bool(observed_signature)
+    live_injection_checked = bool(twin_result.get("predicted_fault_injection_checked", False))
+    same_error_pattern_verified = replay_checked and score >= float(min_reproduction_score)
     rca_ok = True if rca_success is None else bool(rca_success)
     ok = rca_ok and same_error_pattern_verified and not uses_oracle and not uses_full_state
 
@@ -160,12 +169,12 @@ def rca_twin_gate(
         reason = "twin_score_used_oracle_labels"
     elif uses_full_state:
         reason = "twin_score_used_full_state_rca_scoring"
-    elif not injection_checked:
-        reason = "missing_predicted_or_evidence_signature"
+    elif not replay_checked:
+        reason = "missing_predicted_or_observed_signature"
     elif not same_error_pattern_verified:
         reason = "score_below_threshold"
     else:
-        reason = "rca_success_and_same_error_pattern_reproduced"
+        reason = "rca_success_and_counterfactual_pattern_reproduced"
 
     return {
         "rca_twin_verified": ok,
@@ -174,14 +183,17 @@ def rca_twin_gate(
         "min_reproduction_score": float(min_reproduction_score),
         "reproduction_score": round(score, 6),
         "same_error_pattern_score": round(score, 6),
-        "predicted_fault_injection_checked": injection_checked,
+        "predicted_fault_injection_checked": live_injection_checked,
+        "counterfactual_replay_checked": replay_checked,
         "same_error_pattern_verified": same_error_pattern_verified,
         "rca_success_required": rca_success is not None,
         "rca_success": bool(rca_success) if rca_success is not None else None,
         "uses_oracle_labels": uses_oracle,
         "uses_full_state_for_rca_score": uses_full_state,
-        "predicted_signature": twin_result.get("predicted_signature"),
-        "evidence_signature_summary": _signature_summary(twin_result.get("evidence_signature", {})),
+        "predicted_signature": predicted_signature,
+        "observed_signature_summary": _signature_summary(observed_signature or {}),
+        # Backward-compatible key used by some older logs/readers.
+        "evidence_signature_summary": _signature_summary(observed_signature or {}),
         "per_fault": twin_result.get("per_fault", []),
     }
 
