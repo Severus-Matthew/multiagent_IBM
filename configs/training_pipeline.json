@@ -16,11 +16,12 @@
     "update_batch_scenarios": 32,
     "rca_downstream_credit_weight": 0.15,
     "action_system_credit_weight": 0.25,
-    "advantage_normalization": "per_incident_complete_trajectory_group_population_std",
+    "advantage_normalization": "per_incident_complete_trajectory_group_sample_std_plus_1e-4",
+    "advantage_std_correction": 1,
     "optimizer_advantage_field": "policy_advantage",
     "system_advantage_is_optimizer_signal": false,
     "recompute_advantages_inside_optimizer": false,
-    "loss_aggregation": "mean_completion_tokens_per_decision_then_sum_decisions_per_trajectory_then_mean_trajectories"
+    "loss_aggregation": "DAPO_style_total_active_completion_token_normalization_per_role_update"
   },
   "real_grpo_contract": {
     "exact_completion_token_ids_required": true,
@@ -29,7 +30,8 @@
     "token_level_importance_ratio": "exp(new_token_logprob-old_token_logprob)",
     "clip_epsilon_low": 0.2,
     "clip_epsilon_high": 0.2,
-    "reference_kl_estimator": "exp(log_pi_ref-log_pi)- (log_pi_ref-log_pi) - 1",
+    "reference_kl_estimator": "exp(log_pi_ref-log_pi) - (log_pi_ref-log_pi) - 1",
+    "loss_type_target": "dapo_token_normalization_with_grpo_clipped_surrogate",
     "legacy_training_grpo_trainer_enabled": false
   },
   "factorized_return": {
@@ -61,14 +63,14 @@
       "bounded_command_excess": 0.02,
       "bounded_iteration": 0.03
     },
-    "system_quality_weights": {
-      "safe": 0.1,
-      "target_symptom_reduction": 0.2,
-      "global_symptom_reduction": 0.2,
+    "system_recovery_quality_weights": {
+      "target_symptom_reduction": 0.25,
+      "global_symptom_reduction": 0.25,
       "target_sla_restored": 0.15,
       "sla_restored": 0.15,
       "resolved": 0.2
     },
+    "system_quality_requires_safe_mutation": true,
     "raw_local_rewards_reused_in_factorized_return": false
   },
   "max_rca_iterations": 5,
@@ -110,6 +112,7 @@
   "digital_twin": {
     "default_mode": "counterfactual_offline_diagnostic",
     "offline_proxy_version": "counterfactual_offline_twin_v3_value_grounded",
+    "offline_action_proxy_version": "behavioral_offline_conservative_action_v2",
     "real_k8s_twin_enabled": false,
     "strict_offline_gate_enabled": false
   }
