@@ -39,20 +39,9 @@ def end_to_end_reward(
 ) -> dict[str, Any]:
     """Score one complete RCA -> twin -> Action -> recovery trajectory.
 
-    Execution is joint, but the two trainable policies receive different returns.
-    The return construction is intentionally *not* based on reusing the raw local
-    RCA/action rewards, because those raw rewards already contain the same signals
-    (exact match, twin score, recovery, SLA, iteration penalties, etc.). Reusing
-    them here would double-count shaping terms and can distort GRPO credit.
-
-    Instead, this function builds three explicit quantities:
-
-      system_quality       observable end-to-end recovery quality in [0, 1]
-      rca_policy_return    RCA intrinsic quality + small downstream credit
-      action_policy_return action intrinsic quality + moderate system credit
-
-    Raw local rewards are logged for diagnostics only and are not part of either
-    factorized optimizer return.
+    Execution is joint, but RCA and Action receive separate returns. Raw local
+    scalar rewards are diagnostics only; they are not reused here, which avoids
+    double-counting the same RCA/twin/recovery components.
     """
     rca_attempt = _final_rca_attempt(rca_result)
     action_attempt = _final_action_attempt(action_result)
@@ -62,10 +51,7 @@ def end_to_end_reward(
     verifier = action_attempt.get("verifier_result", {}) or {}
     gate = action_result.get("public_rca_twin_gate") or action_result.get("rca_twin_gate") or {}
 
-    # ------------------------------------------------------------------
-    # RCA intrinsic signal: dense oracle-side match + independent twin.
-    # The three positive weights sum exactly to 1.0.
-    # ------------------------------------------------------------------
+    # RCA intrinsic signal. Positive weights sum to one.
     pair_score = _clamp01(rca_components.get("pair_score", 0.0))
     exact_set_match = bool(rca_components.get("exact_set_match", False))
     twin_score = _clamp01(
@@ -77,9 +63,6 @@ def end_to_end_reward(
         + 0.40 * twin_score
     )
 
-    # Small bounded penalties cover properties not represented by the positive
-    # intrinsic terms. They are normalized so incident/root-count scale cannot
-    # explode the return.
     invalid_format = bool(rca_components.get("invalid_format", False))
     count_mismatch = max(0.0, float(rca_components.get("count_mismatch", 0.0) or 0.0))
     num_gt = max(1.0, float(rca_components.get("num_gt", 1.0) or 1.0))
@@ -97,9 +80,7 @@ def end_to_end_reward(
     )
     rca_local_score = _clamp_signed(rca_intrinsic - rca_penalty)
 
-    # ------------------------------------------------------------------
     # Action/recovery observables.
-    # ------------------------------------------------------------------
     safe = bool(action_components.get("safe", False))
     action_repairs = bool(action_components.get("action_repairs_fault_type", False))
     target_reduction = _clamp01(
@@ -115,19 +96,25 @@ def end_to_end_reward(
     resolved = bool(verifier.get("resolved", action_components.get("resolved", False)))
     skipped_action = bool(action_result.get("skipped_action", False))
     has_rca_prediction = bool(str(rca_result.get("final_prediction") or "").strip())
+    has_verify = bool(action_components.get("has_verification_command", False))
+    has_mutation = bool(action_components.get("has_mutating_command", False))
+    num_commands = max(0.0, float(action_components.get("num_commands", 0.0) or 0.0))
+    action_iteration = max(0.0, float(action_components.get("iteration_index", 0.0) or 0.0))
 
-    # Observable system quality. These positive weights also sum exactly to 1.0.
-    system_quality = _clamp01(
-        0.10 * float(safe)
-        + 0.20 * target_reduction
-        + 0.20 * global_reduction
+    # Recovery quality contains no free reward for merely being safe. Safety and
+    # an actual mutation are gates. Thus a safe no-op cannot receive positive
+    # system credit simply because it avoided damage.
+    recovery_quality = _clamp01(
+        0.25 * target_reduction
+        + 0.25 * global_reduction
         + 0.15 * float(target_sla_restored)
         + 0.15 * float(sla_restored)
         + 0.20 * float(resolved)
     )
+    system_quality = recovery_quality if (safe and has_mutation) else 0.0
 
-    # Action intrinsic quality emphasizes direct action/recovery evidence. Positive
-    # weights sum exactly to 1.0 before the bounded efficiency/safety penalties.
+    # Action intrinsic quality keeps safety and repair compatibility as dense
+    # shaping. Positive weights sum to one before penalties.
     action_intrinsic = _clamp01(
         0.10 * float(safe)
         + 0.15 * float(action_repairs)
@@ -138,11 +125,6 @@ def end_to_end_reward(
         + 0.10 * float(resolved)
     )
 
-    has_verify = bool(action_components.get("has_verification_command", False))
-    has_mutation = bool(action_components.get("has_mutating_command", False))
-    num_commands = max(0.0, float(action_components.get("num_commands", 0.0) or 0.0))
-    action_iteration = max(0.0, float(action_components.get("iteration_index", 0.0) or 0.0))
-
     action_penalty = (
         0.35 * float(not safe)
         + 0.05 * float(not has_verify)
@@ -152,11 +134,8 @@ def end_to_end_reward(
     )
     action_local_score = _clamp_signed(action_intrinsic - action_penalty)
 
-    # ------------------------------------------------------------------
-    # Factorized policy returns. These are convex mixtures with an explicit,
-    # bounded cross-stage credit term. They are the quantities normalized into
-    # GRPO advantages later.
-    # ------------------------------------------------------------------
+    # Factorized policy returns: bounded convex mixtures with explicit cross-stage
+    # coupling. These are the values normalized into policy advantages.
     rca_downstream_weight = _clamp01(rca_downstream_credit_weight)
     action_system_weight = _clamp01(action_system_credit_weight)
 
@@ -169,9 +148,8 @@ def end_to_end_reward(
         + action_system_weight * system_quality
     )
 
-    # System reward is diagnostic/model-selection only. It is deliberately based
-    # on end-to-end observable recovery rather than private RCA exact-match. The
-    # penalties are bounded, so this scalar remains well behaved.
+    # System reward is diagnostic/model-selection only and does not contain the
+    # private RCA exact-match signal.
     unsafe_system_penalty = 0.50 if (not safe and not skipped_action) else 0.0
     skipped_system_penalty = 0.25 if skipped_action else 0.0
     empty_rca_system_penalty = 0.25 if not has_rca_prediction else 0.0
@@ -182,13 +160,17 @@ def end_to_end_reward(
         - empty_rca_system_penalty
     )
 
-    success = bool(safe and resolved and (target_sla_restored or sla_restored))
+    success = bool(
+        safe
+        and has_mutation
+        and resolved
+        and (target_sla_restored or sla_restored)
+    )
 
     rca_local_raw = float(rca_attempt.get("reward", 0.0) or 0.0)
     action_local_raw = float(action_attempt.get("reward", 0.0) or 0.0)
 
     return {
-        # Compatibility alias: reward == system-level evaluation reward only.
         "reward": round(float(system_reward), 6),
         "system_reward": round(float(system_reward), 6),
         "system_quality": round(float(system_quality), 6),
@@ -219,6 +201,8 @@ def end_to_end_reward(
             "target_sla_restored": target_sla_restored,
             "sla_restored": sla_restored,
             "resolved": resolved,
+            "recovery_quality": round(recovery_quality, 6),
+            "system_quality_requires_safe_mutation": True,
             "skipped_action": skipped_action,
             "has_rca_prediction": has_rca_prediction,
             "has_verification_command": has_verify,
@@ -228,7 +212,7 @@ def end_to_end_reward(
             "empty_rca_system_penalty": empty_rca_system_penalty,
         },
         "note": (
-            "The incident executes end-to-end, but RCA and Action receive separate, non-duplicated returns. "
-            "Private RCA exact-match is evaluator-only and never exposed to downstream agents."
+            "Joint execution with separate, non-duplicated RCA/Action returns. "
+            "System credit requires observable recovery from a safe mutating action."
         ),
     }
