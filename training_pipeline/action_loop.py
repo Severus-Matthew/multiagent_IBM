@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from statistics import mean, pstdev
 from typing import Any, Protocol
 
@@ -21,6 +22,72 @@ class ActionPromptPolicy(Protocol):
 
 class ActionAgentLike(Protocol):
     def get_commands(self, instruction_prompt: str, context: dict[str, Any]) -> list[str]: ...
+
+
+def _json_safe(obj: Any) -> Any:
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_safe(v) for v in obj]
+    try:
+        return float(obj)
+    except Exception:
+        return str(obj)
+
+
+def _policy_info_from_policy(policy: ActionPromptPolicy) -> dict[str, Any]:
+    info = getattr(policy, "last_policy_info", None)
+    return _json_safe(info) if isinstance(info, dict) else {}
+
+
+def _finite_float_list(value: Any) -> list[float] | None:
+    if not isinstance(value, list):
+        return None
+    out: list[float] = []
+    for x in value:
+        try:
+            f = float(x)
+        except Exception:
+            return None
+        if not math.isfinite(f):
+            return None
+        out.append(f)
+    return out
+
+
+def _int_list(value: Any) -> list[int] | None:
+    if not isinstance(value, list):
+        return None
+    out: list[int] = []
+    for x in value:
+        try:
+            i = int(x)
+        except Exception:
+            return None
+        if i < 0:
+            return None
+        out.append(i)
+    return out
+
+
+def _rollout_token_info(policy_info: dict[str, Any]) -> tuple[float | None, list[float] | None, list[int] | None, list[float] | None]:
+    old_logprobs = _finite_float_list(policy_info.get("old_logprobs"))
+    completion_token_ids = _int_list(policy_info.get("completion_token_ids"))
+    ref_logprobs = _finite_float_list(policy_info.get("ref_logprobs"))
+
+    old_logprob_sum = policy_info.get("old_logprob_sum")
+    try:
+        old_logprob_sum = float(old_logprob_sum) if old_logprob_sum is not None else None
+    except Exception:
+        old_logprob_sum = None
+    if old_logprob_sum is not None and not math.isfinite(old_logprob_sum):
+        old_logprob_sum = None
+    if old_logprob_sum is None and old_logprobs is not None:
+        old_logprob_sum = float(sum(old_logprobs))
+
+    return old_logprob_sum, old_logprobs, completion_token_ids, ref_logprobs
 
 
 def _namespace(full_state: dict[str, Any], compressed_state: dict[str, Any]) -> str:
@@ -70,11 +137,7 @@ def _public_rca_result(rca_result: dict[str, Any], rca_faults: list[FaultLabel])
 
 
 def _public_rca_gate(gate: dict[str, Any]) -> dict[str, Any]:
-    """Expose only prediction-derived twin feedback to the Action policy.
-
-    Do not expose `rca_success`, exact-label gate status, or reasons that encode
-    private evaluator correctness.
-    """
+    """Expose only prediction-derived twin feedback to the Action policy."""
     return {
         "mode": gate.get("mode"),
         "reproduction_score": gate.get("reproduction_score"),
@@ -95,8 +158,6 @@ def _derive_rca_twin_gate(
     upstream_rca_success: bool | None = None,
     require_upstream_label_success: bool = True,
 ) -> dict[str, Any]:
-    # Joint training must not use hidden exact-label success as the transition
-    # condition into the action stage. Recompute a prediction-only gate instead.
     if not require_upstream_label_success:
         provided_gate = None
         upstream_rca_success = None
@@ -192,19 +253,7 @@ def run_action_prompt_optimizer_loop(
     sample_index_offset: int = 0,
     require_upstream_label_success_for_gate: bool = True,
 ) -> dict[str, Any]:
-    """Run the action-prompt loop and emit GRPO-ready samples.
-
-    The Action policy sees only:
-      - sanitized telemetry;
-      - the upstream *predicted* RCA service/fault mechanism;
-      - prediction-derived twin feedback;
-      - its own prior action outcomes.
-
-    It never sees upstream exact-label success, oracle fault metadata, scenario IDs,
-    candidate menus, or private reward diagnostics. In joint training set
-    `require_upstream_label_success_for_gate=False` so hidden RCA correctness does
-    not control whether the action stage is reached.
-    """
+    """Run the action-prompt loop and emit GRPO-ready samples."""
     if agent_state is None:
         agent_state = sanitize_agent_state(compressed_state, mode=agent_input_mode) if agent_input_mode == "training_safe" else compressed_state
     if agent_input_safety is None:
@@ -238,7 +287,6 @@ def run_action_prompt_optimizer_loop(
     scenario_id = _scenario_id(full_state, compressed_state)
 
     for iteration in range(max_iterations):
-        # Internal/logging identifier only; it is never placed in the policy input.
         group_id = f"action:{scenario_id}:iter{iteration}"
         policy_prompt = _build_action_policy_prompt(
             agent_state=agent_state,
@@ -274,6 +322,9 @@ def run_action_prompt_optimizer_loop(
                 ],
             }
             instruction = prompt_policy.generate(context)
+            policy_info = _policy_info_from_policy(prompt_policy)
+            old_logprob_sum, old_logprobs, completion_token_ids, ref_logprobs = _rollout_token_info(policy_info)
+
             commands = action_agent.get_commands(instruction, context)
             safety = check_command_safety(commands)
             normalized = normalize_commands(commands)
@@ -323,8 +374,8 @@ def run_action_prompt_optimizer_loop(
                 policy_prompt=policy_prompt,
                 completion=instruction,
                 completion_tokens=approx_token_count(instruction),
-                old_logprob_sum=None,
-                old_logprobs=None,
+                old_logprob_sum=old_logprob_sum,
+                old_logprobs=old_logprobs,
                 reward=reward_obj["reward"],
                 reward_components=reward_obj["components"],
                 advantage=None,
@@ -348,7 +399,11 @@ def run_action_prompt_optimizer_loop(
                     "safety": safety,
                     "verifier_result": verifier,
                     "sample_index_offset": int(sample_index_offset),
+                    "policy_info": policy_info,
+                    "old_logprobs_contract": "per_generated_completion_token_sum_matches_old_logprob_sum",
                 },
+                completion_token_ids=completion_token_ids,
+                ref_logprobs=ref_logprobs,
             )
             group_pairs.append((sample, attempt))
 
