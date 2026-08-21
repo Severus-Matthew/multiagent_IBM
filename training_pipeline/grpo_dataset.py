@@ -17,6 +17,7 @@ REQUIRED_FIELDS = [
 FACTORIZED_REQUIRED_FIELDS = [
     "policy_reward",
     "policy_advantage",
+    "optimizer_sample_weight",
     "optimizer_group_id",
     "trajectory_group_id",
     "trajectory_id",
@@ -81,6 +82,12 @@ def validate_grpo_sample(
             errors.append("invalid:policy_reward")
         if not _is_finite_number(row.get("policy_advantage")):
             errors.append("invalid:policy_advantage")
+        if not _is_finite_number(row.get("optimizer_sample_weight")):
+            errors.append("invalid:optimizer_sample_weight")
+        else:
+            w = float(row.get("optimizer_sample_weight"))
+            if not (0.0 < w <= 1.0):
+                errors.append("range:optimizer_sample_weight")
 
         metadata = row.get("metadata", {}) or {}
         stage = str(row.get("stage") or "")
@@ -92,6 +99,8 @@ def validate_grpo_sample(
             errors.append("invalid:metadata.optimizer_role")
         if metadata.get("optimizer_advantage_field") != "policy_advantage":
             errors.append("invalid:metadata.optimizer_advantage_field")
+        if metadata.get("optimizer_sample_weight_field") != "optimizer_sample_weight":
+            errors.append("invalid:metadata.optimizer_sample_weight_field")
         if row.get("adapter_id") is not None and expected_adapter and row.get("adapter_id") != expected_adapter:
             errors.append("invalid:adapter_id")
 
@@ -124,11 +133,13 @@ def validate_grpo_sample(
 
 
 def _validate_factorized_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Recompute expected trajectory-level advantages and compare exactly.
+    """Recompute trajectory advantages and verify equal-trajectory loss weighting.
 
-    Individual decision rows from the same trajectory intentionally share one
-    policy reward/advantage. The group baseline must therefore be computed over
-    unique trajectories, never over duplicated decision rows.
+    Decision rows from one trajectory intentionally share one trajectory-level
+    policy return/advantage. Advantage normalization is over unique trajectories,
+    never duplicated decision rows. Within each trajectory and role, decision
+    sample weights must sum to one so longer trajectories do not receive more
+    optimizer weight merely because they contain more decisions.
     """
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for row in rows:
@@ -174,6 +185,27 @@ def _validate_factorized_groups(rows: list[dict[str, Any]]) -> list[dict[str, An
                 })
                 consistent = False
                 continue
+
+            weights = [float(r.get("optimizer_sample_weight", 0.0) or 0.0) for r in trows]
+            expected_weight = 1.0 / float(len(trows))
+            if any(abs(w - expected_weight) > 1e-10 for w in weights):
+                errors.append({
+                    "optimizer_group_id": optimizer_group_id,
+                    "trajectory_id": trajectory_id,
+                    "error": "incorrect_per_decision_trajectory_weight",
+                    "stored_weights": weights,
+                    "expected_each": expected_weight,
+                })
+                consistent = False
+            if abs(sum(weights) - 1.0) > 1e-10:
+                errors.append({
+                    "optimizer_group_id": optimizer_group_id,
+                    "trajectory_id": trajectory_id,
+                    "error": "trajectory_decision_weights_do_not_sum_to_one",
+                    "weight_sum": sum(weights),
+                })
+                consistent = False
+
             rewards.append(next(iter(t_rewards)))
             stored_advantages[trajectory_id] = next(iter(t_advantages))
 
@@ -271,7 +303,7 @@ def main() -> None:
     ap.add_argument(
         "--require_policy_credit",
         action="store_true",
-        help="Require and mathematically verify factorized trajectory-level policy credit.",
+        help="Require and mathematically verify factorized trajectory-level policy credit and equal-trajectory weighting.",
     )
     args = ap.parse_args()
     rows = load_grpo_dataset(
