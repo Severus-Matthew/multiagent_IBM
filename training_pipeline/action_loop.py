@@ -9,9 +9,10 @@ from digital_twin_runtime.sla_verifier import sla_verdict_from_state
 from digital_twin_runtime.twin_preflight import rca_twin_gate as build_rca_twin_gate
 
 from .action_reward import action_reward, terminal_action_failure_penalty
+from .agent_input_safety import agent_input_safety_report, sanitize_agent_state
 from .command_normalizer import normalize_commands
 from .command_safety import check_command_safety
-from .schemas import ActionAttempt, FaultLabel, GRPORolloutSample, approx_token_count
+from .schemas import ActionAttempt, FaultLabel, GRPORolloutSample, approx_token_count, normalize_fault_type
 
 
 class ActionPromptPolicy(Protocol):
@@ -46,6 +47,44 @@ def _scenario_id(full_state: dict[str, Any], compressed_state: dict[str, Any]) -
     return str(full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown")
 
 
+def _public_faults(faults: list[FaultLabel]) -> list[dict[str, str]]:
+    """Expose only the RCA prediction itself, never oracle variant metadata."""
+    return [
+        {
+            "service": str(f.service),
+            "fault_type": normalize_fault_type(f.fault_type or f.fault_family),
+        }
+        for f in faults
+        if str(f.service or "").strip()
+    ]
+
+
+def _public_rca_result(rca_result: dict[str, Any], rca_faults: list[FaultLabel]) -> dict[str, Any]:
+    """Action-agent view of RCA output with private evaluator fields removed."""
+    return {
+        "root_causes": _public_faults(rca_faults),
+        "num_root_causes": len(rca_faults),
+        "final_prediction": str(rca_result.get("final_prediction") or ""),
+        "source": "upstream_rca_prediction",
+    }
+
+
+def _public_rca_gate(gate: dict[str, Any]) -> dict[str, Any]:
+    """Expose only prediction-derived twin feedback to the Action policy.
+
+    Do not expose `rca_success`, exact-label gate status, or reasons that encode
+    private evaluator correctness.
+    """
+    return {
+        "mode": gate.get("mode"),
+        "reproduction_score": gate.get("reproduction_score"),
+        "same_error_pattern_score": gate.get("same_error_pattern_score"),
+        "counterfactual_replay_checked": gate.get("counterfactual_replay_checked"),
+        "predicted_fault_injection_checked": gate.get("predicted_fault_injection_checked"),
+        "same_error_pattern_verified": gate.get("same_error_pattern_verified"),
+    }
+
+
 def _derive_rca_twin_gate(
     full_state: dict[str, Any],
     compressed_state: dict[str, Any],
@@ -54,7 +93,14 @@ def _derive_rca_twin_gate(
     provided_gate: dict[str, Any] | None,
     min_reproduction_score: float,
     upstream_rca_success: bool | None = None,
+    require_upstream_label_success: bool = True,
 ) -> dict[str, Any]:
+    # Joint training must not use hidden exact-label success as the transition
+    # condition into the action stage. Recompute a prediction-only gate instead.
+    if not require_upstream_label_success:
+        provided_gate = None
+        upstream_rca_success = None
+
     if isinstance(provided_gate, dict) and provided_gate:
         gate = dict(provided_gate)
         if upstream_rca_success is not None:
@@ -80,9 +126,14 @@ def _derive_rca_twin_gate(
             "upstream_rca_success": upstream_rca_success,
         }
     twin_result = twin_verifier.validate_rca_prediction(full_state, compressed_state, rca_faults)
-    gate = build_rca_twin_gate(twin_result, min_reproduction_score, rca_success=upstream_rca_success)
+    gate = build_rca_twin_gate(
+        twin_result,
+        min_reproduction_score,
+        rca_success=upstream_rca_success if require_upstream_label_success else None,
+    )
     gate["computed_inside_action_loop"] = True
-    gate["upstream_rca_success"] = upstream_rca_success
+    gate["upstream_rca_success"] = upstream_rca_success if require_upstream_label_success else None
+    gate["requires_upstream_label_success"] = bool(require_upstream_label_success)
     return gate
 
 
@@ -106,12 +157,13 @@ def _blocked_by_rca_gate_result(
                 "skip_reason": "rca_not_twin_verified",
                 "num_iterations": max_iterations,
             },
-            "feedback": "Action stage skipped because RCA failed the twin-verification gate.",
+            "feedback": "Action stage skipped because RCA failed the configured twin-verification gate.",
         },
         "skipped_action": True,
         "skip_reason": "rca_not_twin_verified",
         "rca_result": rca_result,
-        "rca_faults": [f.to_dict() for f in rca_faults],
+        "public_rca_result": _public_rca_result(rca_result, rca_faults),
+        "rca_faults": _public_faults(rca_faults),
         "rca_twin_gate": gate,
         "grpo_samples": [],
     }
@@ -134,19 +186,34 @@ def run_action_prompt_optimizer_loop(
     selection_strategy: str = "best",
     policy_model_name: str = "structured-action-policy",
     policy_version: str = "v0",
+    agent_state: dict[str, Any] | None = None,
+    agent_input_mode: str = "training_safe",
+    agent_input_safety: dict[str, Any] | None = None,
+    sample_index_offset: int = 0,
+    require_upstream_label_success_for_gate: bool = True,
 ) -> dict[str, Any]:
-    """Run the action-prompt loop after RCA and emit GRPO-ready samples.
+    """Run the action-prompt loop and emit GRPO-ready samples.
 
-    At each action iteration, the prompt policy emits `group_size` candidate
-    instruction prompts for the same verified RCA and public history. The fixed
-    ActionAgent converts each instruction into commands, then the safety checker,
-    command normalizer, behavioral twin, and SLA verifier score each candidate.
-    Rewards are normalized within the group to produce GRPO advantages. Only the
-    selected candidate is appended to episode history.
+    The Action policy sees only:
+      - sanitized telemetry;
+      - the upstream *predicted* RCA service/fault mechanism;
+      - prediction-derived twin feedback;
+      - its own prior action outcomes.
+
+    It never sees upstream exact-label success, oracle fault metadata, scenario IDs,
+    candidate menus, or private reward diagnostics. In joint training set
+    `require_upstream_label_success_for_gate=False` so hidden RCA correctness does
+    not control whether the action stage is reached.
     """
-    upstream_success = rca_result.get("upstream_success")
+    if agent_state is None:
+        agent_state = sanitize_agent_state(compressed_state, mode=agent_input_mode) if agent_input_mode == "training_safe" else compressed_state
+    if agent_input_safety is None:
+        agent_input_safety = agent_input_safety_report(agent_state) if agent_input_mode == "training_safe" else {"safe_for_training_agent": None}
+
+    upstream_success = rca_result.get("upstream_success") if require_upstream_label_success_for_gate else None
     if upstream_success is not None:
         upstream_success = bool(upstream_success)
+
     gate = _derive_rca_twin_gate(
         full_state,
         compressed_state,
@@ -155,7 +222,11 @@ def run_action_prompt_optimizer_loop(
         provided_gate=rca_twin_gate or rca_result.get("rca_twin_gate"),
         min_reproduction_score=min_twin_reproduction_score,
         upstream_rca_success=upstream_success,
+        require_upstream_label_success=require_upstream_label_success_for_gate,
     )
+    public_rca = _public_rca_result(rca_result, rca_faults)
+    public_gate = _public_rca_gate(gate)
+
     if require_rca_twin_verification and skip_action_if_rca_unverified and not gate.get("rca_twin_verified"):
         return _blocked_by_rca_gate_result(full_state, compressed_state, rca_result, rca_faults, gate, max_iterations)
 
@@ -167,12 +238,12 @@ def run_action_prompt_optimizer_loop(
     scenario_id = _scenario_id(full_state, compressed_state)
 
     for iteration in range(max_iterations):
+        # Internal/logging identifier only; it is never placed in the policy input.
         group_id = f"action:{scenario_id}:iter{iteration}"
         policy_prompt = _build_action_policy_prompt(
-            compressed_state=compressed_state,
-            rca_result=rca_result,
-            rca_faults=rca_faults,
-            rca_twin_gate=gate,
+            agent_state=agent_state,
+            public_rca_result=public_rca,
+            public_rca_twin_gate=public_gate,
             current_sla=current_sla,
             history=history,
             iteration=iteration,
@@ -180,25 +251,24 @@ def run_action_prompt_optimizer_loop(
         )
         group_pairs: list[tuple[GRPORolloutSample, ActionAttempt]] = []
 
-        for sample_index in range(max(1, int(group_size))):
+        for local_sample_index in range(max(1, int(group_size))):
+            sample_index = int(sample_index_offset) + local_sample_index
             context = {
-                "scenario_id": scenario_id,
                 "namespace": namespace,
                 "iteration": iteration,
                 "sample_index": sample_index,
-                "group_id": group_id,
                 "max_iterations": max_iterations,
-                "rca_result": rca_result,
-                "rca_faults": [f.to_dict() for f in rca_faults],
-                "rca_twin_gate": gate,
+                "rca_result": public_rca,
+                "rca_faults": public_rca["root_causes"],
+                "rca_twin_gate": public_gate,
                 "require_rca_twin_verification": require_rca_twin_verification,
                 "current_sla": current_sla,
-                "redacted_state": compressed_state,
+                "redacted_state": agent_state,
                 "previous_attempts": history,
                 "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm/mongosh commands.",
                 "action_requirements": [
                     "Use only scoped namespace commands.",
-                    "Prefer the minimal remediation matching the RCA fault type.",
+                    "Prefer the minimal remediation matching the predicted RCA fault type.",
                     "Include at least one verification command such as kubectl rollout status, kubectl get, or helm status.",
                     "Do not use exec, apply, replace, shell pipelines, broad deletes, or cluster-wide flags.",
                 ],
@@ -268,14 +338,16 @@ def run_action_prompt_optimizer_loop(
                 policy_version=policy_version,
                 metadata={
                     "observation_hash": _stable_hash({"scenario_id": scenario_id, "iteration": iteration, "history": history}),
-                    "redacted_state_hash": _stable_hash(compressed_state),
+                    "agent_state_hash": _stable_hash(agent_state),
+                    "agent_input_mode": agent_input_mode,
+                    "agent_input_safety": agent_input_safety,
                     "selection_strategy": selection_strategy,
-                    "rca_twin_verified": bool(gate.get("rca_twin_verified")),
-                    "rca_twin_gate_reason": gate.get("reason"),
+                    "rca_counterfactual_reproduction_score": public_gate.get("reproduction_score"),
                     "action_family": _action_family_from_instruction(instruction),
                     "normalized_commands": normalized,
                     "safety": safety,
                     "verifier_result": verifier,
+                    "sample_index_offset": int(sample_index_offset),
                 },
             )
             group_pairs.append((sample, attempt))
@@ -303,25 +375,30 @@ def run_action_prompt_optimizer_loop(
         "terminal": terminal,
         "skipped_action": False,
         "rca_result": rca_result,
-        "rca_faults": [f.to_dict() for f in rca_faults],
+        "public_rca_result": public_rca,
+        "rca_faults": _public_faults(rca_faults),
         "rca_twin_gate": gate,
+        "public_rca_twin_gate": public_gate,
         "initial_sla": current_sla,
         "grpo_samples": grpo_samples,
+        "agent_input_mode": agent_input_mode,
+        "agent_input_safety": agent_input_safety,
         "grpo_metadata": {
             "group_size": max(1, int(group_size)),
             "max_iterations": max_iterations,
             "selection_strategy": selection_strategy,
             "policy_model_name": policy_model_name,
             "policy_version": policy_version,
+            "sample_index_offset": int(sample_index_offset),
+            "require_upstream_label_success_for_gate": bool(require_upstream_label_success_for_gate),
         },
     }
 
 
 def _build_action_policy_prompt(
-    compressed_state: dict[str, Any],
-    rca_result: dict[str, Any],
-    rca_faults: list[FaultLabel],
-    rca_twin_gate: dict[str, Any],
+    agent_state: dict[str, Any],
+    public_rca_result: dict[str, Any],
+    public_rca_twin_gate: dict[str, Any],
     current_sla: dict[str, Any],
     history: list[dict[str, Any]],
     iteration: int,
@@ -332,21 +409,14 @@ def _build_action_policy_prompt(
         "agent_output_contract": "ActionAgent must output kubectl/helm/mongosh commands only, one per line.",
         "iteration": iteration,
         "max_iterations": max_iterations,
-        "verified_rca": {
-            "rca_result": rca_result,
-            "rca_faults": [f.to_dict() for f in rca_faults],
-            "rca_twin_gate": {
-                "rca_twin_verified": rca_twin_gate.get("rca_twin_verified"),
-                "reason": rca_twin_gate.get("reason"),
-                "same_error_pattern_score": rca_twin_gate.get("same_error_pattern_score"),
-            },
-        },
+        "predicted_rca": public_rca_result,
+        "counterfactual_twin_feedback": public_rca_twin_gate,
         "current_sla": current_sla,
-        "redacted_state_hash": _stable_hash(compressed_state),
+        "redacted_state": agent_state,
         "previous_attempts_non_leaking": history,
         "instruction_requirements": [
-            "Use only the verified RCA targets, not downstream victims.",
-            "Choose a safe minimal remediation family that matches the RCA fault type.",
+            "Use only the predicted RCA targets, not downstream victims.",
+            "Choose a safe minimal remediation family that matches the predicted RCA fault type.",
             "Include verification commands.",
             "Avoid unsafe, broad, cluster-wide, or shell-executing commands.",
         ],
