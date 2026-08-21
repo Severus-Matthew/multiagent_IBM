@@ -112,7 +112,7 @@ def build_rca_policy_prompt(
     """Prompt text for the trainable instruction policy.
 
     `compressed_state` must be the agent-facing state, not the evaluator/private
-    state.  The training-safe runner passes a candidate/oracle-stripped state here.
+    state. The training-safe runner passes a candidate/oracle-stripped state here.
     """
     payload = {
         "task": "Generate an RCA instruction prompt for a fixed RCA solver.",
@@ -133,18 +133,20 @@ def build_rca_policy_prompt(
 
 
 def _safe_history_entry(attempt: RCAAttempt) -> dict[str, Any]:
+    """Return retry history containing no oracle-derived correctness hints.
+
+    The scalar reward, local exact-label success, pair score, and hidden fault-count
+    mismatch are evaluator-only. Exposing any of them would let later RCA attempts
+    infer private labels from the reward channel.
+    """
     c = attempt.reward_components
     return {
         "iteration": attempt.iteration,
         "prediction": attempt.prediction_text,
         "parsed_prediction": [x.to_dict() for x in attempt.predicted_faults],
-        "reward": attempt.reward,
-        "success": attempt.success,
         "feedback": attempt.feedback,
-        "public_reward_summary": {
-            "pair_score": c.get("pair_score"),
+        "public_verifier_summary": {
             "twin_reproduction_score": c.get("twin_reproduction_score"),
-            "count_mismatch": c.get("count_mismatch"),
             "invalid_format": c.get("invalid_format"),
             "repeated_wrong_guess": c.get("repeated_wrong_guess"),
             "terminal_failure": c.get("terminal_failure", False),
@@ -235,13 +237,20 @@ def run_rca_grpo_episode(
     agent_state: dict[str, Any] | None = None,
     agent_input_mode: str = "legacy",
     agent_input_safety: dict[str, Any] | None = None,
+    sample_index_offset: int = 0,
+    stop_on_local_success: bool = True,
 ) -> dict[str, Any]:
     """Run one RCA episode and produce GRPO-ready samples.
 
     `agent_state` is what the policy and solver see. `compressed_state` remains
-    the private evaluator/twin state used for reward and diagnostics.  This split
+    the private evaluator/twin state used for reward and diagnostics. This split
     prevents candidate/root-cause menus from leaking into trainable prompts while
-    preserving strict offline evaluation.
+    preserving private evaluation.
+
+    `sample_index_offset` lets an outer end-to-end trajectory group request
+    different policy samples even when this local loop uses group_size=1.
+    `stop_on_local_success=False` prevents hidden exact-label success from changing
+    the trajectory length in joint training.
     """
     gt_labels = labels_from_full_state(full_state)
     scenario_id = full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown_scenario"
@@ -256,7 +265,8 @@ def run_rca_grpo_episode(
         policy_prompt = build_rca_policy_prompt(agent_state, history, iteration, max_iterations)
         group_pairs: list[tuple[GRPORolloutSample, RCAAttempt]] = []
 
-        for sample_index in range(max(1, group_size)):
+        for local_sample_index in range(max(1, group_size)):
+            sample_index = int(sample_index_offset) + local_sample_index
             instruction = instruction_policy.generate_instruction(
                 agent_state, history, iteration, sample_index=sample_index, group_id=group_id
             )
@@ -341,6 +351,7 @@ def run_rca_grpo_episode(
                     "selection_strategy": selection_strategy,
                     "twin_enabled": twin_validator is not None,
                     "policy_info": policy_info,
+                    "sample_index_offset": int(sample_index_offset),
                 },
             )
             group_pairs.append((sample, attempt))
@@ -359,16 +370,17 @@ def run_rca_grpo_episode(
         selected_key = "\n".join(sorted(x.canonical_key() for x in selected_attempt.predicted_faults))
         if selected_key:
             seen.add(selected_key)
-        if selected_attempt.success:
+        if stop_on_local_success and selected_attempt.success:
             break
 
-    terminal = None if attempts and attempts[-1].success else terminal_rca_failure_penalty(max_iterations)
+    local_success = bool(attempts and attempts[-1].success)
+    terminal = None if local_success else terminal_rca_failure_penalty(max_iterations)
     if terminal is not None:
         _apply_terminal_failure_penalty(attempts, grpo_samples, terminal)
 
     return {
         "scenario_id": scenario_id,
-        "success": bool(attempts and attempts[-1].success),
+        "success": local_success,
         "attempts": [a.to_dict() for a in attempts],
         "final_prediction": attempts[-1].prediction_text if attempts else "",
         "ground_truth_summary": ground_truth_summary(full_state),
@@ -382,6 +394,8 @@ def run_rca_grpo_episode(
             "selection_strategy": selection_strategy,
             "policy_model_name": policy_model_name,
             "policy_version": policy_version,
+            "sample_index_offset": int(sample_index_offset),
+            "stop_on_local_success": bool(stop_on_local_success),
         },
     }
 
