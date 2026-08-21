@@ -1,6 +1,6 @@
 # IBM AIOpsLab Joint Training Pipeline
 
-The canonical training unit is one complete incident-resolution trajectory. RCA and Action are not trained as independent stages and then frozen. They execute inside the same trajectory and receive credit from the same downstream outcome.
+The canonical training unit is one complete incident-resolution trajectory. RCA and Action execute together inside the same incident trajectory, but they do **not** share one optimizer return. Each trainable role has its own policy, LoRA adapter, optimizer buffer, and policy-specific reward/advantage.
 
 ## Data views
 
@@ -15,31 +15,93 @@ Before a trainable policy sees a state, `training_pipeline/agent_input_safety.py
 
 ```text
 redacted incident state
-  -> RCA instruction policy
+  -> RCA policy (shared frozen base + LoRA_RCA)
   -> fixed/safe RCA solver
   -> predicted RCA
   -> counterfactual digital-twin feedback
-  -> Action prompt policy
+  -> Action policy (shared frozen base + LoRA_Action)
   -> fixed/LLM ActionAgent
   -> command safety + normalization
   -> twin action execution/simulation
   -> SLA/recovery verification
-  -> one end-to-end trajectory return
 ```
 
-A group contains multiple complete trajectories for the same incident. The group-normalized trajectory advantage is attached to every trainable policy decision in that trajectory. This is the joint-credit signal used by the future optimizer.
+The full pipeline is always executed together. After the complete trajectory finishes, credit is factorized:
+
+```text
+RCA decisions    -> RCA-specific return    -> RCA GRPO buffer
+Action decisions -> Action-specific return -> Action GRPO buffer
+whole trajectory -> system reward          -> evaluation/model selection
+```
+
+This prevents a noisy downstream Action failure from completely erasing a strong RCA decision, while still giving RCA a small amount of downstream recovery credit so the policies remain coupled.
 
 The canonical orchestration modules are:
 
-- `training_pipeline/end_to_end_loop.py`: complete trajectory-group rollout.
-- `training_pipeline/end_to_end_reward.py`: recovery-centric joint reward.
-- `training_pipeline/train_end_to_end_grpo.py`: canonical joint rollout entry point.
+- `training_pipeline/end_to_end_loop.py`: complete trajectory-group rollout and factorized advantage assignment.
+- `training_pipeline/end_to_end_reward.py`: system reward plus separate RCA/Action policy returns.
+- `training_pipeline/train_end_to_end_grpo.py`: canonical joint rollout entry point and separate policy-buffer writer.
 
 `train_rca_grpo.py` and `train_action_grpo.py` remain useful component/debug runners but are not the final training architecture.
 
+## Factorized credit assignment
+
+For each complete trajectory, the reward layer produces three quantities:
+
+```text
+system_reward
+rca_policy_return
+action_policy_return
+```
+
+The RCA return is dominated by RCA-local service/fault quality and counterfactual-twin reproduction, with a smaller downstream recovery contribution. The Action return is dominated by action-local safety/repair/recovery quality, with a moderate system-level contribution.
+
+For a GRPO trajectory group, normalization is performed separately:
+
+```text
+A_RCA    = normalize(rca_policy_return across trajectories)
+A_Action = normalize(action_policy_return across trajectories)
+A_System = normalize(system_reward across trajectories)   # diagnostic only
+```
+
+Optimizer-facing samples use `policy_advantage`. `system_advantage` is logged for analysis and must not be blindly substituted as the policy gradient signal.
+
+## Update schedule
+
+Execution is sequential and causal:
+
+```text
+RCA -> twin -> Action -> recovery
+```
+
+Learning uses synchronized separate-policy updates rather than fully asynchronous policy publication:
+
+```text
+collect N complete incident groups with policy versions k
+        -> RCA buffer + Action buffer
+        -> update LoRA_RCA with RCA policy_advantage
+        -> update LoRA_Action with Action policy_advantage
+        -> publish both adapter versions k+1 together
+        -> collect next batch
+```
+
+This limits policy non-stationarity: Action does not train against an RCA policy that changes in the middle of the same rollout batch.
+
+The rollout driver writes:
+
+```text
+joint_trajectories.jsonl
+rca_policy_samples.jsonl
+action_policy_samples.jsonl
+all_policy_samples_diagnostic.jsonl
+policy_update_batches.jsonl
+```
+
+`policy_update_batches.jsonl` records the synchronization contract for the future real GRPO learners.
+
 ## RCA path
 
-`training_pipeline/rca_loop.py` operates on an agent-safe state and public retry history. Hidden exact-label correctness can shape evaluator-side scalar reward, but exact match, pair score, hidden root-count mismatch, and oracle names are not exposed to later policy decisions.
+`training_pipeline/rca_loop.py` operates on an agent-safe state and public retry history. Hidden exact-label correctness can shape evaluator-side reward, but exact match, pair score, hidden root-count mismatch, and oracle names are not exposed to later policy decisions.
 
 The safe solver contract is:
 
@@ -87,37 +149,31 @@ Commands are passed through:
 4. `sla_verifier.py`
 5. `action_reward.py`
 
-## Joint reward and success
+## Policy architecture
 
-The complete trajectory reward is recovery-centric. Dense local RCA/twin/action signals can provide shaping, but final trajectory success is based on a safe remediation resolving the verifier environment and restoring the target/global SLA. It does not require the private RCA exact-label flag.
+The intended final model layout is:
 
-During current CPU plumbing work the reward mode is explicitly labeled `offline_diagnostic_joint_v1`; it must not be reported as a live-twin scientific result.
+```text
+                 shared frozen Qwen base
+                    /             \
+                   /               \
+              LoRA_RCA          LoRA_Action
+                 |                  |
+             RCA policy         Action policy
+                 |                  |
+          separate optimizer  separate optimizer
+```
 
-## Trainable versus fixed components
+The base model can be shared in memory, but the adapters and optimizer states are independent.
 
-Trainable in the final joint run:
+## Current status before GPU training
 
-- RCA prompt/controller policy
-- Action prompt/controller policy
+The factorized joint rollout/credit path is implemented, but real parameter updates are not yet enabled. Before the final training run we still need:
 
-These may use separate LoRA adapters or a shared policy with role conditioning, but their updates occur in the same optimizer iteration using the complete-trajectory advantage.
+- real Qwen sampling for both trainable policy roles,
+- separate `LoRA_RCA` and `LoRA_Action` adapters,
+- old token log-probabilities for both buffers,
+- two GRPO optimizer steps using `policy_advantage`, synchronized at rollout-batch boundaries,
+- live Kubernetes counterfactual twin execution/recollection for the final strict reward.
 
-Fixed environment/agent components:
-
-- fixed RCA solver/foundation agent
-- fixed ActionAgent/foundation agent
-- command safety gate
-- digital twin
-- telemetry compressor
-- SLA verifier
-
-## Remaining before real GPU training
-
-The joint rollout/credit path is now present, but real parameter updates are not yet enabled. Before the final training run we still need:
-
-- real Qwen/LoRA sampling for the trainable prompt policies,
-- old token log-probabilities for both trainable roles,
-- a joint optimizer that consumes `joint_advantage`,
-- live Kubernetes counterfactual twin execution and recollection for the final strict reward.
-
-The next phase is component and end-to-end smoke testing before enabling those expensive training paths.
+The next phase is component and full CPU end-to-end smoke testing of this exact architecture before enabling GPU training.
