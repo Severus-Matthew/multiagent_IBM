@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
+
 from .schemas import FaultLabel, normalize_fault_type
 
 
@@ -12,11 +14,16 @@ def _neighbors(full_state: dict[str, Any], service: str) -> set[str]:
     target = normalize_service_name(service)
     out = {target}
     for edge in (full_state.get("graph", {}) or {}).get("edges", []) or []:
-        src, dst = edge.get("src"), edge.get("dst")
+        if isinstance(edge, dict):
+            src, dst = edge.get("src"), edge.get("dst")
+        elif isinstance(edge, (list, tuple)) and len(edge) >= 2:
+            src, dst = edge[0], edge[1]
+        else:
+            continue
         src_n, dst_n = normalize_service_name(src), normalize_service_name(dst)
-        if src_n == target and dst:
+        if src_n == target and dst_n:
             out.add(dst_n)
-        if dst_n == target and src:
+        if dst_n == target and src_n:
             out.add(src_n)
     return out
 
@@ -41,25 +48,68 @@ def _pair_score(gt: FaultLabel, pred: FaultLabel, full_state: dict[str, Any]) ->
     }
 
 
-def greedy_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel], full_state: dict[str, Any]):
-    """Return one-to-one evaluator diagnostics. Never expose them in agent history."""
-    remaining = set(range(len(pred_labels)))
-    matches = []
-    for gt in gt_labels:
-        best = None
-        best_j = None
-        for j in remaining:
-            cand = _pair_score(gt, pred_labels[j], full_state)
-            if best is None or cand["score"] > best["score"]:
-                best = cand
-                best_j = j
-        if best is not None and best_j is not None:
-            remaining.remove(best_j)
-            matches.append(best)
+def optimal_match(
+    gt_labels: list[FaultLabel],
+    pred_labels: list[FaultLabel],
+    full_state: dict[str, Any],
+) -> tuple[list[dict[str, Any]], float]:
+    """Maximum-weight one-to-one GT/prediction matching.
+
+    The previous greedy matcher depended on ground-truth ordering and could assign
+    a suboptimal pair in multifault incidents. This bitmask dynamic program finds
+    the exact maximum-score assignment while allowing unmatched GT labels when
+    fewer predictions are present. RCA root-cause sets are small, so the exact
+    O(|GT| * |PRED| * 2^|PRED|) solver is inexpensive here.
+    """
     if not gt_labels:
         return [], 0.0
-    pair_score = sum(m["score"] for m in matches) / len(gt_labels)
+    if not pred_labels:
+        return [], 0.0
+
+    pair_matrix = [
+        [_pair_score(gt, pred, full_state) for pred in pred_labels]
+        for gt in gt_labels
+    ]
+
+    @lru_cache(maxsize=None)
+    def solve(gt_index: int, used_mask: int) -> tuple[float, tuple[tuple[int, int], ...]]:
+        if gt_index >= len(gt_labels):
+            return 0.0, ()
+
+        # Leaving this GT unmatched contributes zero and is necessary when there
+        # are fewer predictions than GT labels.
+        best_score, best_pairs = solve(gt_index + 1, used_mask)
+
+        for pred_index in range(len(pred_labels)):
+            bit = 1 << pred_index
+            if used_mask & bit:
+                continue
+            tail_score, tail_pairs = solve(gt_index + 1, used_mask | bit)
+            candidate_score = float(pair_matrix[gt_index][pred_index]["score"]) + tail_score
+            candidate_pairs = ((gt_index, pred_index),) + tail_pairs
+            if candidate_score > best_score + 1e-12:
+                best_score, best_pairs = candidate_score, candidate_pairs
+            elif abs(candidate_score - best_score) <= 1e-12 and candidate_pairs < best_pairs:
+                # Deterministic tie-break for reproducible audits.
+                best_score, best_pairs = candidate_score, candidate_pairs
+
+        return best_score, best_pairs
+
+    total_score, assignment = solve(0, 0)
+    matches: list[dict[str, Any]] = []
+    for gt_index, pred_index in assignment:
+        row = dict(pair_matrix[gt_index][pred_index])
+        row["ground_truth_index"] = gt_index
+        row["prediction_index"] = pred_index
+        matches.append(row)
+
+    pair_score = total_score / len(gt_labels)
     return matches, max(0.0, min(1.0, pair_score))
+
+
+def greedy_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel], full_state: dict[str, Any]):
+    """Backward-compatible alias; matching is now exact rather than greedy."""
+    return optimal_match(gt_labels, pred_labels, full_state)
 
 
 def exact_set_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel]) -> bool:
@@ -83,7 +133,7 @@ def rca_reward(
     this module is based on output validity, repeated self-history, and the
     independent twin reproduction signal.
     """
-    matches, pair_score = greedy_match(gt_labels, pred_labels, full_state)
+    matches, pair_score = optimal_match(gt_labels, pred_labels, full_state)
     twin_score = float((twin_result or {}).get("reproduction_score", 0.0) or 0.0)
     twin_score = max(0.0, min(1.0, twin_score))
     exact = exact_set_match(gt_labels, pred_labels)
@@ -118,6 +168,7 @@ def rca_reward(
         "format_reward": round(format_reward, 4),
         "pair_score": round(pair_score, 4),
         "pair_match_reward": round(pair_match_reward, 4),
+        "matching_algorithm": "exact_max_weight_bipartite_dp",
         "exact_set_match": exact,
         "exact_label_required_for_local_rca_success": True,
         "exact_set_bonus": round(exact_set_bonus, 4),
