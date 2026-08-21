@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -69,9 +70,33 @@ def _build_action_agent(args):
     raise ValueError(args.action_agent)
 
 
+def _stamp_optimizer_buffer_sample(
+    sample: dict[str, Any],
+    *,
+    sync_batch_id: str,
+    adapter_id: str,
+    optimizer_role: str,
+) -> dict[str, Any]:
+    row = dict(sample)
+    metadata = dict(row.get("metadata", {}) or {})
+    metadata.update({
+        "sync_batch_id": sync_batch_id,
+        "adapter_id": adapter_id,
+        "optimizer_role": optimizer_role,
+        "update_schedule": "collect_joint_batch_then_update_separate_policies_then_publish_together",
+    })
+    row["metadata"] = metadata
+    row["sync_batch_id"] = sync_batch_id
+    row["adapter_id"] = adapter_id
+    return row
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Joint RCA -> twin -> Action -> recovery GRPO-ready trajectory rollout driver"
+        description=(
+            "Joint RCA -> twin -> Action -> recovery rollout driver with separate "
+            "RCA and Action policy credit/buffers"
+        )
     )
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--output_dir", required=True)
@@ -81,7 +106,16 @@ def main() -> None:
     ap.add_argument("--trajectory_group_size", type=int, default=4)
     ap.add_argument("--rca_max_iterations", type=int, default=3)
     ap.add_argument("--action_max_iterations", type=int, default=3)
-    ap.add_argument("--policy_version", default="joint-v0")
+    ap.add_argument("--policy_version", default="factorized-joint-v1")
+    ap.add_argument(
+        "--update_batch_scenarios",
+        type=int,
+        default=32,
+        help=(
+            "Number of incident groups collected under the same RCA/Action policy versions before "
+            "the future separate learner updates are synchronized and published together."
+        ),
+    )
 
     ap.add_argument("--rca_instruction_policy", choices=["heuristic", "operator", "qwen_stub"], default="operator")
     ap.add_argument("--operator_profile", choices=["auto", "system_first", "trace_first", "log_first", "multifault_first"], default="auto")
@@ -104,14 +138,38 @@ def main() -> None:
     ap.add_argument("--max_commands", type=int, default=15)
 
     ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
+    ap.add_argument(
+        "--rca_downstream_credit_weight",
+        type=float,
+        default=0.15,
+        help="Fraction of the RCA policy return supplied by downstream end-to-end recovery quality.",
+    )
+    ap.add_argument(
+        "--action_system_credit_weight",
+        type=float,
+        default=0.25,
+        help="Fraction of the Action policy return supplied by shared end-to-end recovery quality.",
+    )
     args = ap.parse_args()
+
+    if args.update_batch_scenarios < 1:
+        raise ValueError("--update_batch_scenarios must be >= 1")
 
     out_dir = Path(args.output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     trajectories_path = out_dir / "joint_trajectories.jsonl"
-    samples_path = out_dir / "joint_grpo_samples.jsonl"
+    rca_samples_path = out_dir / "rca_policy_samples.jsonl"
+    action_samples_path = out_dir / "action_policy_samples.jsonl"
+    combined_samples_path = out_dir / "all_policy_samples_diagnostic.jsonl"
+    update_manifest_path = out_dir / "policy_update_batches.jsonl"
     summary_path = out_dir / "summary.json"
-    for p in (trajectories_path, samples_path):
+    for p in (
+        trajectories_path,
+        rca_samples_path,
+        action_samples_path,
+        combined_samples_path,
+        update_manifest_path,
+    ):
         if p.exists():
             p.unlink()
 
@@ -125,8 +183,18 @@ def main() -> None:
     scenario_count = 0
     trajectory_count = 0
     successful_trajectories = 0
-    joint_sample_count = 0
+    rca_sample_count = 0
+    action_sample_count = 0
     unsafe_agent_inputs = 0
+    batch_stats: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "scenario_count": 0,
+            "trajectory_count": 0,
+            "rca_samples": 0,
+            "action_samples": 0,
+            "successful_trajectories": 0,
+        }
+    )
 
     for rec in iter_scenarios(args.processed_states):
         if allowed_ids is not None and rec.scenario_id not in allowed_ids:
@@ -135,6 +203,9 @@ def main() -> None:
             continue
         if args.limit is not None and scenario_count >= args.limit:
             break
+
+        batch_index = scenario_count // args.update_batch_scenarios
+        sync_batch_id = f"sync-batch-{batch_index:05d}"
 
         result = run_end_to_end_trajectory_group(
             rec.full_state,
@@ -154,49 +225,110 @@ def main() -> None:
             action_policy_model_name=f"structured-action-policy:{args.action_strategy}",
             policy_version=args.policy_version,
             agent_input_mode="training_safe",
-            reward_mode="offline_diagnostic_joint_v1",
+            reward_mode="factorized_joint_pipeline_v1",
             min_twin_reproduction_score=args.min_twin_reproduction_score,
+            rca_downstream_credit_weight=args.rca_downstream_credit_weight,
+            action_system_credit_weight=args.action_system_credit_weight,
         )
 
         scenario_count += 1
         unsafe_agent_inputs += int(not bool((result.get("agent_input_safety") or {}).get("safe_for_training_agent")))
         trajectories = result.get("trajectories", []) or []
-        samples = result.get("joint_grpo_samples", []) or []
+        rca_samples = result.get("rca_grpo_samples", []) or []
+        action_samples = result.get("action_grpo_samples", []) or []
         trajectory_count += len(trajectories)
-        successful_trajectories += sum(1 for t in trajectories if t.get("trajectory_success"))
-        joint_sample_count += len(samples)
+        num_success = sum(1 for t in trajectories if t.get("trajectory_success"))
+        successful_trajectories += num_success
+        rca_sample_count += len(rca_samples)
+        action_sample_count += len(action_samples)
 
         _append_jsonl(trajectories_path, {
             "scenario_id": result.get("scenario_id"),
             "trajectory_group_id": result.get("trajectory_group_id"),
+            "sync_batch_id": sync_batch_id,
             "reward_mode": result.get("reward_mode"),
-            "group_reward_mean": result.get("group_reward_mean"),
-            "group_reward_std": result.get("group_reward_std"),
+            "credit_assignment_mode": result.get("credit_assignment_mode"),
+            "update_schedule": result.get("update_schedule"),
+            "system_group_reward_mean": result.get("system_group_reward_mean"),
+            "system_group_reward_std": result.get("system_group_reward_std"),
+            "rca_group_return_mean": result.get("rca_group_return_mean"),
+            "rca_group_return_std": result.get("rca_group_return_std"),
+            "action_group_return_mean": result.get("action_group_return_mean"),
+            "action_group_return_std": result.get("action_group_return_std"),
             "trajectories": trajectories,
             "agent_input_safety": result.get("agent_input_safety"),
+            "policy_credit_contract": result.get("policy_credit_contract"),
         })
-        for sample in samples:
-            _append_jsonl(samples_path, sample)
+
+        for sample in rca_samples:
+            row = _stamp_optimizer_buffer_sample(
+                sample,
+                sync_batch_id=sync_batch_id,
+                adapter_id="lora_rca",
+                optimizer_role="rca_policy",
+            )
+            _append_jsonl(rca_samples_path, row)
+            _append_jsonl(combined_samples_path, row)
+        for sample in action_samples:
+            row = _stamp_optimizer_buffer_sample(
+                sample,
+                sync_batch_id=sync_batch_id,
+                adapter_id="lora_action",
+                optimizer_role="action_policy",
+            )
+            _append_jsonl(action_samples_path, row)
+            _append_jsonl(combined_samples_path, row)
+
+        stats = batch_stats[sync_batch_id]
+        stats["scenario_count"] += 1
+        stats["trajectory_count"] += len(trajectories)
+        stats["rca_samples"] += len(rca_samples)
+        stats["action_samples"] += len(action_samples)
+        stats["successful_trajectories"] += num_success
 
         print(
-            f"[E2E] scenario={scenario_count} id={rec.scenario_id} "
-            f"trajectories={len(trajectories)} successful={sum(1 for t in trajectories if t.get('trajectory_success'))} "
-            f"samples={len(samples)}"
+            f"[E2E] scenario={scenario_count} batch={sync_batch_id} id={rec.scenario_id} "
+            f"trajectories={len(trajectories)} successful={num_success} "
+            f"rca_samples={len(rca_samples)} action_samples={len(action_samples)}"
         )
 
+    for sync_batch_id in sorted(batch_stats):
+        stats = batch_stats[sync_batch_id]
+        _append_jsonl(update_manifest_path, {
+            "sync_batch_id": sync_batch_id,
+            **stats,
+            "rca_adapter_id": "lora_rca",
+            "action_adapter_id": "lora_action",
+            "shared_base_model": args.qwen_model,
+            "update_contract": (
+                "Freeze rollout policy versions for this batch; update RCA and Action adapters with their "
+                "own policy_advantage fields; publish both new adapter versions together before the next batch."
+            ),
+            "rca_optimizer_advantage_field": "policy_advantage",
+            "action_optimizer_advantage_field": "policy_advantage",
+            "system_advantage_is_optimizer_signal": False,
+        })
+
     summary = {
-        "stage": "end_to_end_joint",
+        "stage": "end_to_end_factorized_joint",
         "scenario_count": scenario_count,
         "trajectory_count": trajectory_count,
         "successful_trajectories": successful_trajectories,
         "trajectory_success_rate": successful_trajectories / max(trajectory_count, 1),
-        "joint_grpo_samples": joint_sample_count,
+        "rca_policy_samples": rca_sample_count,
+        "action_policy_samples": action_sample_count,
         "unsafe_agent_inputs": unsafe_agent_inputs,
         "trajectory_group_size": args.trajectory_group_size,
         "rca_max_iterations": args.rca_max_iterations,
         "action_max_iterations": args.action_max_iterations,
         "agent_input_mode": "training_safe",
-        "reward_mode": "offline_diagnostic_joint_v1",
+        "reward_mode": "factorized_joint_pipeline_v1",
+        "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v1",
+        "update_schedule": "batch_synchronized_separate_policy_updates",
+        "update_batch_scenarios": args.update_batch_scenarios,
+        "num_sync_batches": len(batch_stats),
+        "rca_downstream_credit_weight": args.rca_downstream_credit_weight,
+        "action_system_credit_weight": args.action_system_credit_weight,
         "rca_instruction_policy": args.rca_instruction_policy,
         "rca_solver": args.rca_solver,
         "action_prompt_policy": "structured",
@@ -206,11 +338,17 @@ def main() -> None:
         "uses_real_training_update": False,
         "uses_real_trainable_rca_policy": False,
         "uses_real_trainable_action_policy": False,
+        "shared_base_model_contract": args.qwen_model,
+        "rca_adapter_contract": "shared_frozen_base+lora_rca+separate_optimizer",
+        "action_adapter_contract": "shared_frozen_base+lora_action+separate_optimizer",
         "joint_trajectories_jsonl": str(trajectories_path),
-        "joint_grpo_samples_jsonl": str(samples_path),
+        "rca_policy_samples_jsonl": str(rca_samples_path),
+        "action_policy_samples_jsonl": str(action_samples_path),
+        "all_policy_samples_diagnostic_jsonl": str(combined_samples_path),
+        "policy_update_batches_jsonl": str(update_manifest_path),
         "next_training_backend_requirement": (
-            "Replace dry-run/structured prompt policies with trainable Qwen/LoRA sampling that records old logprobs, "
-            "then update all trainable policy decisions with joint_advantage in one optimizer iteration."
+            "Enable trainable Qwen sampling with old logprobs for both adapters, then consume RCA and Action "
+            "buffers with separate GRPO optimizers at synchronized batch boundaries."
         ),
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
