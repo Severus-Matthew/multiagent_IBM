@@ -2,7 +2,8 @@
   "note": "Configuration mirror for current defaults. Reward/config loading is still partially hard-coded; keep this file synchronized with the implementation until the unified config loader is wired.",
   "training_architecture": {
     "execution": "joint_end_to_end_trajectory",
-    "credit_assignment": "factorized_policy_returns",
+    "credit_assignment": "joint_rollout_factorized_policy_returns_v2",
+    "reward_mode": "factorized_joint_pipeline_v2_no_double_count",
     "update_schedule": "batch_synchronized_separate_policy_updates",
     "shared_base_model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
     "rca_adapter": "lora_rca",
@@ -11,9 +12,64 @@
     "separate_optimizers": true,
     "verifier_trainable": false,
     "trajectory_group_size": 4,
+    "trajectory_group_size_minimum": 2,
     "update_batch_scenarios": 32,
     "rca_downstream_credit_weight": 0.15,
-    "action_system_credit_weight": 0.25
+    "action_system_credit_weight": 0.25,
+    "advantage_normalization": "per_incident_complete_trajectory_group_population_std",
+    "optimizer_advantage_field": "policy_advantage",
+    "system_advantage_is_optimizer_signal": false,
+    "recompute_advantages_inside_optimizer": false,
+    "loss_aggregation": "mean_completion_tokens_per_decision_then_sum_decisions_per_trajectory_then_mean_trajectories"
+  },
+  "real_grpo_contract": {
+    "exact_completion_token_ids_required": true,
+    "per_token_old_logprobs_required": true,
+    "old_logprob_sum_is_diagnostic_only": true,
+    "token_level_importance_ratio": "exp(new_token_logprob-old_token_logprob)",
+    "clip_epsilon_low": 0.2,
+    "clip_epsilon_high": 0.2,
+    "reference_kl_estimator": "exp(log_pi_ref-log_pi)- (log_pi_ref-log_pi) - 1",
+    "legacy_training_grpo_trainer_enabled": false
+  },
+  "factorized_return": {
+    "rca_positive_weights": {
+      "pair_score": 0.4,
+      "exact_set_match": 0.2,
+      "counterfactual_twin_reproduction": 0.4
+    },
+    "rca_penalty_weights": {
+      "invalid_format": 0.2,
+      "normalized_count_mismatch": 0.1,
+      "repeated_wrong_guess": 0.05,
+      "bounded_iteration": 0.03,
+      "bounded_instruction_length": 0.02
+    },
+    "action_positive_weights": {
+      "safe": 0.1,
+      "action_repairs_fault_type": 0.15,
+      "target_symptom_reduction": 0.25,
+      "global_symptom_reduction": 0.15,
+      "target_sla_restored": 0.15,
+      "sla_restored": 0.1,
+      "resolved": 0.1
+    },
+    "action_penalty_weights": {
+      "unsafe": 0.35,
+      "missing_verification": 0.05,
+      "missing_mutation": 0.08,
+      "bounded_command_excess": 0.02,
+      "bounded_iteration": 0.03
+    },
+    "system_quality_weights": {
+      "safe": 0.1,
+      "target_symptom_reduction": 0.2,
+      "global_symptom_reduction": 0.2,
+      "target_sla_restored": 0.15,
+      "sla_restored": 0.15,
+      "resolved": 0.2
+    },
+    "raw_local_rewards_reused_in_factorized_return": false
   },
   "max_rca_iterations": 5,
   "max_action_iterations": 5,
@@ -24,6 +80,7 @@
     "service_exact_weight_inside_pair": 0.55,
     "fault_type_exact_weight_inside_pair": 0.3,
     "neighborhood_match_weight_inside_pair": 0.15,
+    "matching_algorithm": "exact_max_weight_bipartite_dp",
     "twin_reproduction_weight": 1.0,
     "count_mismatch_penalty": 0.4,
     "repeated_wrong_guess_penalty": 0.25,
@@ -47,7 +104,8 @@
     "command_count_penalty": 0.04,
     "instruction_token_penalty_after_120_tokens": 0.001,
     "iteration_penalty": 0.1,
-    "terminal_failure_penalty": -2.0
+    "terminal_failure_penalty": -2.0,
+    "note": "This local scalar is diagnostic/retry shaping in the joint pipeline; the optimizer-facing Action return is rebuilt from normalized causal components to avoid double counting."
   },
   "digital_twin": {
     "default_mode": "counterfactual_offline_diagnostic",
