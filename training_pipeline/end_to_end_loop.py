@@ -28,10 +28,11 @@ def _group_normalize(
         trajectory[std_key] = round(result.std, 6)
         trajectory[advantage_key] = round(float(advantage), 6)
         trajectory[zero_variance_key] = bool(result.zero_variance)
+        trajectory[f"{advantage_key}_std_correction"] = result.std_correction
+        trajectory[f"{advantage_key}_normalization_epsilon"] = result.normalization_epsilon
 
 
 def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
-    # System advantage is diagnostic/model-selection only.
     _group_normalize(
         trajectories,
         value_key="system_reward",
@@ -40,7 +41,6 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         advantage_key="system_advantage",
         zero_variance_key="system_group_zero_variance",
     )
-    # These two advantages are the optimizer-facing returns.
     _group_normalize(
         trajectories,
         value_key="rca_policy_return",
@@ -96,7 +96,6 @@ def _attach_factorized_credit(
             buffer_name = "action_policy_buffer"
             optimizer_role = "action_policy"
         else:
-            # Non-trainable/verifier samples are never placed in an optimizer buffer.
             continue
 
         role_index = role_seen[stage]
@@ -119,21 +118,18 @@ def _attach_factorized_credit(
             "optimizer_buffer": buffer_name,
             "optimizer_advantage_field": "policy_advantage",
             "optimizer_loss_aggregation_contract": (
-                "mean_over_completion_tokens_per_decision; sum_decision_losses_within_trajectory; "
-                "mean_over_trajectories_in_optimizer_group"
+                "token_level_clipped_surrogate; normalize by total active completion tokens "
+                "within each role optimizer update (DAPO-style token normalization)"
             ),
         })
         row["metadata"] = metadata
 
-        # Optimizer-facing factorized credit.
         row["policy_reward"] = round(float(policy_reward), 6)
         row["policy_advantage"] = round(float(policy_advantage), 6)
         row["optimizer_group_id"] = f"{trajectory_group_id}:{optimizer_role}"
         row["trajectory_group_id"] = trajectory_group_id
         row["trajectory_id"] = trajectory_id
 
-        # Keep end-to-end quantities for analysis only; do not use these as the
-        # direct policy gradient signal.
         row["system_reward"] = round(float(system_reward), 6)
         row["system_advantage"] = round(float(system_advantage), 6)
         row["joint_reward"] = row["system_reward"]
@@ -168,22 +164,14 @@ def run_end_to_end_trajectory_group(
     rca_downstream_credit_weight: float = 0.15,
     action_system_credit_weight: float = 0.25,
 ) -> dict[str, Any]:
-    """Generate complete joint trajectories with factorized policy credit.
+    """Generate complete joint trajectories with factorized role-specific credit.
 
-    Execution is always end-to-end and causally ordered:
-
-        incident -> RCA policy -> RCA solver -> twin -> Action policy
-                 -> ActionAgent -> action verifier -> SLA/recovery
-
-    Optimization is factorized:
-
-        RCA decisions    -> RCA-specific return/advantage -> RCA policy buffer
-        Action decisions -> Action-specific return/advantage -> Action policy buffer
-
-    Advantages are normalized across complete trajectories generated from the same
-    initial incident. This is a trajectory-level group-relative baseline, not a
-    second normalization over individual decision rows. The future optimizer must
-    consume the stored `policy_advantage` directly.
+    The group baseline is over complete trajectories sampled from the same initial
+    incident. This is a trajectory-level group-relative policy-gradient design;
+    later RCA/Action decision prompts can differ because their histories differ.
+    We therefore do not claim that every decision row is a vanilla same-prompt
+    GRPO completion. The stored trajectory advantage is the Monte-Carlo credit
+    applied to all decisions of that role in the sampled trajectory.
     """
     if agent_input_mode != "training_safe":
         raise ValueError("joint training requires agent_input_mode='training_safe'")
@@ -205,8 +193,6 @@ def run_end_to_end_trajectory_group(
     for trajectory_index in range(int(trajectory_group_size)):
         trajectory_id = f"{trajectory_group_id}:traj{trajectory_index}"
 
-        # One stochastic path through each policy per outer trajectory. Once the
-        # trainable Qwen policies are enabled, diversity comes from model sampling.
         rca_result = run_rca_grpo_episode(
             full_state,
             compressed_state,
@@ -222,8 +208,6 @@ def run_end_to_end_trajectory_group(
             agent_input_mode="training_safe",
             agent_input_safety=safety,
             sample_index_offset=trajectory_index,
-            # Hidden exact-label correctness must not alter the joint state
-            # transition. Action still receives the RCA prediction and twin signal.
             stop_on_local_success=False,
         )
         rca_samples = list(rca_result.get("grpo_samples", []) or [])
@@ -238,8 +222,6 @@ def run_end_to_end_trajectory_group(
             action_agent,
             twin_verifier,
             max_iterations=action_max_iterations,
-            # Offline twin v3 is diagnostic, not a calibrated strict gate. The
-            # action stage still runs so downstream recovery can contribute credit.
             require_rca_twin_verification=False,
             skip_action_if_rca_unverified=False,
             min_twin_reproduction_score=min_twin_reproduction_score,
@@ -298,7 +280,6 @@ def run_end_to_end_trajectory_group(
         rca_policy_samples.extend(rca_rows)
         action_policy_samples.extend(action_rows)
 
-    # Combined view is retained for debugging/analysis only.
     all_policy_samples = rca_policy_samples + action_policy_samples
 
     return {
@@ -329,12 +310,12 @@ def run_end_to_end_trajectory_group(
             "rca_optimizer_advantage": "rca_policy_advantage",
             "action_optimizer_advantage": "action_policy_advantage",
             "system_advantage": "diagnostic_only",
-            "advantage_normalization": "per_incident_complete_trajectory_group_population_std",
+            "advantage_normalization": "per_incident_complete_trajectory_group_sample_std_plus_1e-4",
+            "trajectory_group_baseline_scope": "same_initial_incident",
+            "decision_prompt_equivalence": "not_assumed_after_history_diverges",
             "rca_downstream_credit_weight": float(rca_downstream_credit_weight),
             "action_system_credit_weight": float(action_system_credit_weight),
             "verifier_trainable": False,
-            "future_loss_aggregation": (
-                "token_mean_per decision -> sum decisions per trajectory -> mean trajectories per optimizer group"
-            ),
+            "future_loss_aggregation": "DAPO-style total-active-token normalization per role optimizer update",
         },
     }
