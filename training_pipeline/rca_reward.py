@@ -42,7 +42,7 @@ def _pair_score(gt: FaultLabel, pred: FaultLabel, full_state: dict[str, Any]) ->
 
 
 def greedy_match(gt_labels: list[FaultLabel], pred_labels: list[FaultLabel], full_state: dict[str, Any]):
-    """Return one-to-one greedy match diagnostics without exposing GT names in feedback."""
+    """Return one-to-one evaluator diagnostics. Never expose them in agent history."""
     remaining = set(range(len(pred_labels)))
     matches = []
     for gt in gt_labels:
@@ -78,10 +78,10 @@ def rca_reward(
 ) -> dict[str, Any]:
     """Reward one RCA attempt.
 
-    RCA learning gets both an oracle-label component and the digital-twin
-    reproduction component. Episode success remains exact-label based here, and
-    strict runs should additionally enable the final twin gate so a prediction is
-    counted as fully verified only when label match and twin reproduction both pass.
+    Hidden labels may shape the evaluator-side scalar reward, but they must never
+    appear in policy-visible retry feedback. The only retry feedback emitted by
+    this module is based on output validity, repeated self-history, and the
+    independent twin reproduction signal.
     """
     matches, pair_score = greedy_match(gt_labels, pred_labels, full_state)
     twin_score = float((twin_result or {}).get("reproduction_score", 0.0) or 0.0)
@@ -110,9 +110,8 @@ def rca_reward(
         - token_penalty
     )
 
-    # No soft success: high twin score without hidden-label agreement is useful
-    # reward signal, but it is not counted as RCA success.
-    soft_success = False
+    # Exact label match remains a private evaluator success flag. Joint end-to-end
+    # rollouts may still continue into the action stage even when this is false.
     success = bool(exact)
 
     components = {
@@ -120,7 +119,7 @@ def rca_reward(
         "pair_score": round(pair_score, 4),
         "pair_match_reward": round(pair_match_reward, 4),
         "exact_set_match": exact,
-        "exact_label_required_for_success": True,
+        "exact_label_required_for_local_rca_success": True,
         "exact_set_bonus": round(exact_set_bonus, 4),
         "twin_reproduction_score": round(twin_score, 4),
         "twin_reproduction_reward": round(twin_reproduction_reward, 4),
@@ -136,8 +135,7 @@ def rca_reward(
         "invalid_format": invalid_format,
         "num_gt": len(gt_labels),
         "num_pred": len(pred_labels),
-        "soft_success": soft_success,
-        "matches_public": matches,
+        "matches_private_evaluator": matches,
         "service_normalization": "case_insensitive_underscore_to_dash",
     }
     return {
@@ -149,24 +147,22 @@ def rca_reward(
 
 
 def non_leaking_feedback(c: dict[str, Any]) -> str:
-    """Feedback visible to the trainable policy. Never reveal true labels."""
-    if c.get("exact_set_match"):
-        return "RCA prediction matches the hidden label; final credit also depends on twin reproduction in strict-gate runs."
-
+    """Policy-visible feedback derived only from public/self/twin signals."""
     parts = []
     if c.get("invalid_format"):
         parts.append("Output format invalid; use one service::fault_type per line.")
-    if c.get("count_mismatch", 0) > 0:
-        parts.append("Predicted number of root causes does not match the incident structure.")
-    if c.get("pair_score", 0.0) < 0.5:
-        parts.append("Prediction does not align with the strongest service/fault evidence pattern.")
-    elif c.get("pair_score", 0.0) < 0.9:
-        parts.append("Prediction is partially aligned but not specific enough.")
-    if c.get("twin_reproduction_score", 0.0) < 0.5:
-        parts.append("Twin reproduction score is low; predicted fault does not recreate the observed symptom signature well.")
+
+    twin_score = float(c.get("twin_reproduction_score", 0.0) or 0.0)
+    if twin_score < 0.20:
+        parts.append("Counterfactual twin reproduction is very low; choose a different upstream service/mechanism hypothesis.")
+    elif twin_score < 0.50:
+        parts.append("Counterfactual twin reproduction is weak; refine the service/mechanism using the observed telemetry.")
+    else:
+        parts.append("Counterfactual twin reproduction is comparatively strong; keep the causal explanation focused and avoid adding unsupported roots.")
+
     if c.get("repeated_wrong_guess"):
-        parts.append("Avoid repeating the same unsuccessful guess.")
-    return " ".join(parts or ["Prediction was close but did not satisfy the verifier."])
+        parts.append("Avoid repeating the same previous hypothesis.")
+    return " ".join(parts)
 
 
 def terminal_rca_failure_penalty(num_iterations: int = 5) -> dict[str, Any]:
@@ -174,5 +170,5 @@ def terminal_rca_failure_penalty(num_iterations: int = 5) -> dict[str, Any]:
         "reward": -2.0,
         "success": False,
         "components": {"terminal_failure": True, "num_iterations": num_iterations},
-        "feedback": "RCA failed after the iteration budget. Try a different non-leaking evidence strategy.",
+        "feedback": "RCA iteration budget exhausted. Change the telemetry-based causal strategy rather than repeating prior hypotheses.",
     }
