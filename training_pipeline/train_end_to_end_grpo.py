@@ -318,12 +318,13 @@ def main() -> None:
             "shared_base_model": args.qwen_model,
             "update_contract": (
                 "Freeze rollout policy versions for this batch; update RCA and Action adapters separately using "
-                "their precomputed policy_advantage fields. The future learner uses token-level clipped ratios "
-                "and DAPO-style normalization by total active completion tokens within each role update, then "
-                "publishes both adapter versions together."
+                "their stored policy_advantage values. For each decision, compute the mean token-level clipped "
+                "surrogate over active completion tokens; multiply by optimizer_sample_weight=1/D_role; then "
+                "average equally over complete trajectories before publishing both adapter versions together."
             ),
             "rca_optimizer_advantage_field": "policy_advantage",
             "action_optimizer_advantage_field": "policy_advantage",
+            "optimizer_sample_weight_field": "optimizer_sample_weight",
             "system_advantage_is_optimizer_signal": False,
             "recompute_advantages_inside_optimizer": False,
         })
@@ -348,7 +349,9 @@ def main() -> None:
         "advantage_normalization": "per_incident_complete_trajectory_group_sample_std_plus_1e-4",
         "advantage_std_correction": 1,
         "update_schedule": "batch_synchronized_separate_policy_updates",
-        "future_loss_aggregation": "DAPO-style total-active-token normalization per role optimizer update",
+        "future_loss_aggregation": (
+            "mean token surrogate per decision; optimizer_sample_weight=1/D_role; equal mean over complete trajectories"
+        ),
         "update_batch_scenarios": args.update_batch_scenarios,
         "num_sync_batches": len(batch_stats),
         "rca_downstream_credit_weight": args.rca_downstream_credit_weight,
@@ -366,6 +369,7 @@ def main() -> None:
         "rca_adapter_contract": "shared_frozen_base+lora_rca+separate_optimizer",
         "action_adapter_contract": "shared_frozen_base+lora_action+separate_optimizer",
         "optimizer_must_use_precomputed_policy_advantage": True,
+        "optimizer_must_use_optimizer_sample_weight": True,
         "optimizer_must_use_exact_completion_token_ids": True,
         "optimizer_must_use_per_token_old_logprobs": True,
         "joint_trajectories_jsonl": str(trajectories_path),
@@ -375,8 +379,9 @@ def main() -> None:
         "policy_update_batches_jsonl": str(update_manifest_path),
         "next_training_backend_requirement": (
             "Enable trainable Qwen sampling for both adapters and record exact completion token IDs plus "
-            "per-token old-policy logprobs. The learner consumes stored policy_advantage directly with "
-            "token-level importance ratios and must not renormalize duplicated decision rows."
+            "per-token old-policy logprobs. The learner consumes stored policy_advantage directly, uses "
+            "token-level clipped importance ratios, applies optimizer_sample_weight to prevent trajectory-length "
+            "bias, and must not renormalize duplicated decision rows."
         ),
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
