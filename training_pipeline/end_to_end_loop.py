@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from statistics import mean, pstdev
 from typing import Any
 
 from .action_loop import run_action_prompt_optimizer_loop
 from .agent_input_safety import agent_input_safety_report, sanitize_agent_state
 from .end_to_end_reward import end_to_end_reward
+from .grpo_math import group_relative_advantages
 from .rca_loop import run_rca_grpo_episode
 from .schemas import parse_fault_lines
 
@@ -17,18 +17,17 @@ def _group_normalize(
     mean_key: str,
     std_key: str,
     advantage_key: str,
+    zero_variance_key: str,
 ) -> None:
-    values = [float(t.get(value_key, 0.0) or 0.0) for t in trajectories]
-    if not values:
-        return
-    mu = mean(values)
-    sigma = pstdev(values) if len(values) > 1 else 0.0
-    denom = sigma if sigma > 1e-8 else 1.0
-    for trajectory in trajectories:
-        advantage = (float(trajectory.get(value_key, 0.0) or 0.0) - mu) / denom
-        trajectory[mean_key] = round(mu, 6)
-        trajectory[std_key] = round(sigma, 6)
-        trajectory[advantage_key] = round(advantage, 6)
+    result = group_relative_advantages(
+        [float(t.get(value_key, 0.0) or 0.0) for t in trajectories],
+        scale_by_std=True,
+    )
+    for trajectory, advantage in zip(trajectories, result.advantages):
+        trajectory[mean_key] = round(result.mean, 6)
+        trajectory[std_key] = round(result.std, 6)
+        trajectory[advantage_key] = round(float(advantage), 6)
+        trajectory[zero_variance_key] = bool(result.zero_variance)
 
 
 def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
@@ -39,6 +38,7 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         mean_key="system_group_reward_mean",
         std_key="system_group_reward_std",
         advantage_key="system_advantage",
+        zero_variance_key="system_group_zero_variance",
     )
     # These two advantages are the optimizer-facing returns.
     _group_normalize(
@@ -47,6 +47,7 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         mean_key="rca_group_return_mean",
         std_key="rca_group_return_std",
         advantage_key="rca_policy_advantage",
+        zero_variance_key="rca_group_zero_variance",
     )
     _group_normalize(
         trajectories,
@@ -54,6 +55,7 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         mean_key="action_group_return_mean",
         std_key="action_group_return_std",
         advantage_key="action_policy_advantage",
+        zero_variance_key="action_group_zero_variance",
     )
 
 
@@ -74,6 +76,12 @@ def _attach_factorized_credit(
     rca_rows: list[dict[str, Any]] = []
     action_rows: list[dict[str, Any]] = []
 
+    role_counts = {
+        "rca": sum(1 for sample in samples if str(sample.get("stage") or "") == "rca"),
+        "action": sum(1 for sample in samples if str(sample.get("stage") or "") == "action"),
+    }
+    role_seen = {"rca": 0, "action": 0}
+
     for decision_index, sample in enumerate(samples):
         row = dict(sample)
         stage = str(row.get("stage") or "")
@@ -91,12 +99,17 @@ def _attach_factorized_credit(
             # Non-trainable/verifier samples are never placed in an optimizer buffer.
             continue
 
+        role_index = role_seen[stage]
+        role_seen[stage] += 1
+
         metadata = dict(row.get("metadata", {}) or {})
         metadata.update({
             "trajectory_group_id": trajectory_group_id,
             "trajectory_id": trajectory_id,
             "trajectory_index": trajectory_index,
             "trajectory_decision_index": decision_index,
+            "trajectory_role_decision_index": role_index,
+            "trajectory_role_decision_count": role_counts[stage],
             "role_local_reward": row.get("reward"),
             "role_local_advantage": row.get("advantage"),
             "system_reward": round(float(system_reward), 6),
@@ -105,6 +118,10 @@ def _attach_factorized_credit(
             "optimizer_role": optimizer_role,
             "optimizer_buffer": buffer_name,
             "optimizer_advantage_field": "policy_advantage",
+            "optimizer_loss_aggregation_contract": (
+                "mean_over_completion_tokens_per_decision; sum_decision_losses_within_trajectory; "
+                "mean_over_trajectories_in_optimizer_group"
+            ),
         })
         row["metadata"] = metadata
 
@@ -146,7 +163,7 @@ def run_end_to_end_trajectory_group(
     action_policy_model_name: str = "structured-action-policy",
     policy_version: str = "v0",
     agent_input_mode: str = "training_safe",
-    reward_mode: str = "factorized_joint_pipeline_v1",
+    reward_mode: str = "factorized_joint_pipeline_v2_no_double_count",
     min_twin_reproduction_score: float = 0.0,
     rca_downstream_credit_weight: float = 0.15,
     action_system_credit_weight: float = 0.25,
@@ -163,13 +180,18 @@ def run_end_to_end_trajectory_group(
         RCA decisions    -> RCA-specific return/advantage -> RCA policy buffer
         Action decisions -> Action-specific return/advantage -> Action policy buffer
 
-    The two buffers are intended to be updated separately, using independent LoRA
-    adapters/optimizers, after the same rollout batch has completed. This gives us
-    joint system learning without forcing both policies to share one noisy scalar
-    return. The verifier/twin remains fixed.
+    Advantages are normalized across complete trajectories generated from the same
+    initial incident. This is a trajectory-level group-relative baseline, not a
+    second normalization over individual decision rows. The future optimizer must
+    consume the stored `policy_advantage` directly.
     """
     if agent_input_mode != "training_safe":
         raise ValueError("joint training requires agent_input_mode='training_safe'")
+    if int(trajectory_group_size) < 2:
+        raise ValueError(
+            "trajectory_group_size must be >= 2 for group-relative policy optimization; "
+            "a singleton group has zero relative advantage"
+        )
 
     agent_state = sanitize_agent_state(compressed_state, mode="training_safe")
     safety = agent_input_safety_report(agent_state)
@@ -180,7 +202,7 @@ def run_end_to_end_trajectory_group(
     trajectory_group_id = f"e2e:{scenario_id}"
     trajectories: list[dict[str, Any]] = []
 
-    for trajectory_index in range(max(1, int(trajectory_group_size))):
+    for trajectory_index in range(int(trajectory_group_size)):
         trajectory_id = f"{trajectory_group_id}:traj{trajectory_index}"
 
         # One stochastic path through each policy per outer trajectory. Once the
@@ -282,11 +304,11 @@ def run_end_to_end_trajectory_group(
     return {
         "scenario_id": scenario_id,
         "trajectory_group_id": trajectory_group_id,
-        "trajectory_group_size": max(1, int(trajectory_group_size)),
+        "trajectory_group_size": int(trajectory_group_size),
         "agent_input_mode": "training_safe",
         "agent_input_safety": safety,
         "reward_mode": reward_mode,
-        "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v1",
+        "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v2",
         "update_schedule": "batch_synchronized_separate_policy_updates",
         "trajectories": trajectories,
         "rca_grpo_samples": rca_policy_samples,
@@ -298,6 +320,8 @@ def run_end_to_end_trajectory_group(
         "rca_group_return_std": trajectories[0].get("rca_group_return_std") if trajectories else None,
         "action_group_return_mean": trajectories[0].get("action_group_return_mean") if trajectories else None,
         "action_group_return_std": trajectories[0].get("action_group_return_std") if trajectories else None,
+        "rca_group_zero_variance": trajectories[0].get("rca_group_zero_variance") if trajectories else None,
+        "action_group_zero_variance": trajectories[0].get("action_group_zero_variance") if trajectories else None,
         "num_successful_trajectories": sum(1 for t in trajectories if t.get("trajectory_success")),
         "uses_hidden_rca_success_for_action_transition": False,
         "uses_real_training_update": False,
@@ -305,8 +329,12 @@ def run_end_to_end_trajectory_group(
             "rca_optimizer_advantage": "rca_policy_advantage",
             "action_optimizer_advantage": "action_policy_advantage",
             "system_advantage": "diagnostic_only",
+            "advantage_normalization": "per_incident_complete_trajectory_group_population_std",
             "rca_downstream_credit_weight": float(rca_downstream_credit_weight),
             "action_system_credit_weight": float(action_system_credit_weight),
             "verifier_trainable": False,
+            "future_loss_aggregation": (
+                "token_mean_per decision -> sum decisions per trajectory -> mean trajectories per optimizer group"
+            ),
         },
     }
