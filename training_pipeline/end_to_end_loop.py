@@ -98,8 +98,14 @@ def _attach_factorized_credit(
         else:
             continue
 
+        role_count = max(1, int(role_counts[stage]))
         role_index = role_seen[stage]
         role_seen[stage] += 1
+        # Each complete sampled trajectory should have equal weight in the role
+        # loss even when trajectories contain different numbers of RCA/Action
+        # decisions. The future learner must multiply each decision-level loss by
+        # this weight, average tokens inside the decision, then average trajectories.
+        decision_weight = 1.0 / float(role_count)
 
         metadata = dict(row.get("metadata", {}) or {})
         metadata.update({
@@ -108,7 +114,8 @@ def _attach_factorized_credit(
             "trajectory_index": trajectory_index,
             "trajectory_decision_index": decision_index,
             "trajectory_role_decision_index": role_index,
-            "trajectory_role_decision_count": role_counts[stage],
+            "trajectory_role_decision_count": role_count,
+            "trajectory_role_decision_weight": decision_weight,
             "role_local_reward": row.get("reward"),
             "role_local_advantage": row.get("advantage"),
             "system_reward": round(float(system_reward), 6),
@@ -117,15 +124,18 @@ def _attach_factorized_credit(
             "optimizer_role": optimizer_role,
             "optimizer_buffer": buffer_name,
             "optimizer_advantage_field": "policy_advantage",
+            "optimizer_sample_weight_field": "optimizer_sample_weight",
             "optimizer_loss_aggregation_contract": (
-                "token_level_clipped_surrogate; normalize by total active completion tokens "
-                "within each role optimizer update (DAPO-style token normalization)"
+                "for each role: normalize return across complete trajectories from the same incident; "
+                "for each decision average clipped token surrogates over active completion tokens; "
+                "weight each decision by 1/num_role_decisions_in_trajectory; average equally across trajectories"
             ),
         })
         row["metadata"] = metadata
 
         row["policy_reward"] = round(float(policy_reward), 6)
         row["policy_advantage"] = round(float(policy_advantage), 6)
+        row["optimizer_sample_weight"] = decision_weight
         row["optimizer_group_id"] = f"{trajectory_group_id}:{optimizer_role}"
         row["trajectory_group_id"] = trajectory_group_id
         row["trajectory_id"] = trajectory_id
@@ -170,8 +180,12 @@ def run_end_to_end_trajectory_group(
     incident. This is a trajectory-level group-relative policy-gradient design;
     later RCA/Action decision prompts can differ because their histories differ.
     We therefore do not claim that every decision row is a vanilla same-prompt
-    GRPO completion. The stored trajectory advantage is the Monte-Carlo credit
-    applied to all decisions of that role in the sampled trajectory.
+    GRPO completion. The stored trajectory advantage is Monte-Carlo credit applied
+    to all decisions of that role in the sampled trajectory.
+
+    To avoid length bias, the future optimizer must average tokens within each
+    decision and apply optimizer_sample_weight=1/D_role, where D_role is the number
+    of decisions by that role in the trajectory, before averaging trajectories.
     """
     if agent_input_mode != "training_safe":
         raise ValueError("joint training requires agent_input_mode='training_safe'")
@@ -316,6 +330,10 @@ def run_end_to_end_trajectory_group(
             "rca_downstream_credit_weight": float(rca_downstream_credit_weight),
             "action_system_credit_weight": float(action_system_credit_weight),
             "verifier_trainable": False,
-            "future_loss_aggregation": "DAPO-style total-active-token normalization per role optimizer update",
+            "future_loss_aggregation": (
+                "per decision: mean clipped surrogate over completion tokens; "
+                "per trajectory-role: weighted mean using optimizer_sample_weight=1/D_role; "
+                "per optimizer group: equal mean over complete trajectories"
+            ),
         },
     }
