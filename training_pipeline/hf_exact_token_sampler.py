@@ -3,10 +3,10 @@ from __future__ import annotations
 """Exact-token rollout sampling for the factorized RCA/Action policies.
 
 The sampler deliberately separates *sampling* from the log-probability contract
-used by GRPO.  A completion is first generated with the active role adapter.  We
+used by GRPO. A completion is first generated with the active role adapter. We
 then replay the exact prompt+completion token sequence through that same adapter
 and store raw-model per-token log probabilities, matching the policy log-probability
-computation used by the audited learner.  Reference log probabilities are computed
+computation used by the audited learner. Reference log probabilities are computed
 on the same exact tokens with all LoRA adapters disabled.
 
 This mirrors the important behavior of modern GRPO implementations: generation
@@ -50,7 +50,7 @@ class HFExactTokenPolicySampler:
     """Generate one policy completion and capture exact rollout statistics.
 
     ``model`` must be one shared causal-LM object containing named ``lora_rca``
-    and ``lora_action`` adapters and supporting ``set_adapter``.  ``tokenizer``
+    and ``lora_action`` adapters and supporting ``set_adapter``. ``tokenizer``
     must provide ``encode`` and ``decode`` plus optional EOS/PAD token IDs.
     """
 
@@ -91,7 +91,7 @@ class HFExactTokenPolicySampler:
         truncated = False
         limit = self.config.max_prompt_tokens
         if limit is not None and len(ids) > limit:
-            # Keep the most recent context.  Real Qwen has a large context window,
+            # Keep the most recent context. Real Qwen has a large context window,
             # so truncation should be exceptional and is explicitly logged.
             ids = ids[-int(limit):]
             truncated = True
@@ -108,14 +108,66 @@ class HFExactTokenPolicySampler:
         if self.device.type == "cuda":
             torch.cuda.manual_seed_all(int(seed))
 
+    def _active_adapters_snapshot(self) -> list[str] | None:
+        """Best-effort snapshot of the currently active adapter names."""
+        active = getattr(self.model, "active_adapters", None)
+        try:
+            value = active() if callable(active) else active
+        except Exception:
+            return None
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            return [str(x) for x in value]
+        return None
+
     @contextlib.contextmanager
     def _reference_context(self):
-        if not hasattr(self.model, "disable_adapter"):
+        """Run the shared frozen base with *all* PEFT adapters disabled.
+
+        Hugging Face exposes two valid PEFT integration surfaces:
+
+        * ``PeftModel.disable_adapter()`` -- singular context manager;
+        * Transformers ``PeftAdapterMixin.disable_adapters()`` /
+          ``enable_adapters()`` -- plural imperative methods.
+
+        The tiny/local audits use the Transformers mixin, while a production Qwen
+        setup may use a wrapped ``PeftModel``. Supporting both is required; silently
+        evaluating an active LoRA as the reference policy is never allowed.
+        """
+        singular = getattr(self.model, "disable_adapter", None)
+        if callable(singular):
+            cm = singular()
+            if not hasattr(cm, "__enter__") or not hasattr(cm, "__exit__"):
+                raise TypeError("model.disable_adapter() exists but is not a context manager")
+            with cm:
+                yield
+            return
+
+        disable = getattr(self.model, "disable_adapters", None)
+        enable = getattr(self.model, "enable_adapters", None)
+        if not callable(disable) or not callable(enable):
             raise TypeError(
-                "shared PEFT model must expose disable_adapter() so frozen-base reference logprobs are exact"
+                "shared PEFT model must expose either disable_adapter() context manager "
+                "or disable_adapters()/enable_adapters() for exact frozen-base reference logprobs"
             )
-        with self.model.disable_adapter():
+
+        active_before = self._active_adapters_snapshot()
+        disable()
+        try:
             yield
+        finally:
+            enable()
+            # Transformers normally preserves the active adapter across a disable /
+            # enable cycle. Restore it explicitly when the API exposes the name so
+            # a future implementation change cannot silently alter rollout state.
+            if active_before:
+                setter = getattr(self.model, "set_adapter", None)
+                if not callable(setter):
+                    raise TypeError("model lost set_adapter() while restoring reference context")
+                setter(active_before[0] if len(active_before) == 1 else active_before)
 
     def _completion_logprobs(self, prompt_ids: list[int], completion_ids: list[int]) -> list[float]:
         input_ids = torch.tensor([prompt_ids + completion_ids], dtype=torch.long, device=self.device)
@@ -179,7 +231,7 @@ class HFExactTokenPolicySampler:
                 raise RuntimeError("generation produced zero completion tokens")
 
             # Recompute old policy logprobs from the active rollout adapter on the
-            # exact sampled token sequence.  Do not use text re-tokenization and do
+            # exact sampled token sequence. Do not use text re-tokenization and do
             # not use transformed sampling scores for the PPO/GRPO ratio.
             self.model.set_adapter(adapter_name)
             old_logprobs = self._completion_logprobs(prompt_ids, completion_ids)
