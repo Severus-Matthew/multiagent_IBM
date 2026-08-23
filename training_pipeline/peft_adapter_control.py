@@ -3,7 +3,7 @@ from __future__ import annotations
 """Utilities for safely training one LoRA role adapter at a time.
 
 The IBM joint pipeline keeps one frozen causal-LM base with two independent LoRA
-adapters: ``lora_rca`` and ``lora_action``.  During one role optimizer step the
+adapters: ``lora_rca`` and ``lora_action``. During one role optimizer step the
 selected adapter is active and trainable; the shared base and the other role
 adapter must remain frozen.
 
@@ -24,17 +24,44 @@ def parameter_belongs_to_adapter(parameter_name: str, adapter_name: str) -> bool
     return str(adapter_name) in str(parameter_name).split(".")
 
 
+def _clear_all_gradients(model: Any) -> None:
+    """Remove every stale gradient tensor before changing optimization roles.
+
+    This must clear gradients for *all* parameters, not only the parameters that
+    will belong to the next optimizer. Otherwise an RCA gradient can remain
+    attached to a now-frozen RCA tensor while the Action role is active, making
+    gradient-isolation audits ambiguous and creating a real risk if a later
+    optimizer is accidentally constructed over the wrong parameter set.
+    """
+    if hasattr(model, "zero_grad"):
+        model.zero_grad(set_to_none=True)
+    else:
+        for parameter in model.parameters():
+            parameter.grad = None
+
+    leaked = [name for name, parameter in model.named_parameters() if parameter.grad is not None]
+    if leaked:
+        raise AssertionError(f"failed to clear stale gradients before adapter switch: {leaked[:20]}")
+
+
 def activate_exclusive_adapter(model: Any, adapter_name: str) -> list[str]:
     """Activate exactly one PEFT adapter and make only its tensors trainable.
 
-    The model must expose ``set_adapter`` (Transformers/PEFT integration).  Every
-    non-selected tensor, including the frozen base and the other role adapter, is
-    forced to ``requires_grad=False``.
+    Role switching is an optimization boundary. Every gradient from the previous
+    role is first cleared globally, then the requested adapter is activated, and
+    finally every non-selected tensor (including the shared base and the other
+    role adapter) is forced to ``requires_grad=False``.
     """
     if adapter_name not in ROLE_ADAPTERS:
         raise ValueError(f"unsupported role adapter: {adapter_name}")
     if not hasattr(model, "set_adapter"):
         raise TypeError("model does not expose set_adapter(); PEFT adapter model required")
+
+    # Important: optimizer.zero_grad() on the *new* role optimizer cannot clear
+    # gradients left on parameters owned by the previous role because those
+    # tensors are not in the new optimizer's parameter groups. Clear the complete
+    # model here before changing trainability.
+    _clear_all_gradients(model)
 
     model.set_adapter(adapter_name)
     trainable_names: list[str] = []
@@ -47,12 +74,22 @@ def activate_exclusive_adapter(model: Any, adapter_name: str) -> list[str]:
     if not trainable_names:
         raise RuntimeError(f"no parameters found for adapter {adapter_name!r}")
 
-    leaked = [
+    leaked_trainables = [
         name for name, parameter in model.named_parameters()
         if parameter.requires_grad and not parameter_belongs_to_adapter(name, adapter_name)
     ]
-    if leaked:
-        raise AssertionError(f"non-selected parameters remained trainable: {leaked[:20]}")
+    if leaked_trainables:
+        raise AssertionError(f"non-selected parameters remained trainable: {leaked_trainables[:20]}")
+
+    # Switching adapters must leave a clean gradient state. This assertion also
+    # catches PEFT/version-specific behavior that could reattach stale gradients.
+    leaked_gradients = [
+        name for name, parameter in model.named_parameters()
+        if parameter.grad is not None
+    ]
+    if leaked_gradients:
+        raise AssertionError(f"adapter activation left stale gradients: {leaked_gradients[:20]}")
+
     return trainable_names
 
 
@@ -103,8 +140,8 @@ def finite_selected_adapter_gradients(model: Any, adapter_name: str) -> dict[str
                 if not torch.isfinite(parameter.grad).all():
                     nonfinite.append(name)
         elif parameter.grad is not None:
-            # A zero gradient tensor on an inactive/base parameter is still a
-            # contract violation: it indicates the graph included that tensor.
+            # Any gradient tensor on an inactive/base parameter is a contract
+            # violation for the current role backward pass.
             leaked_gradients.append(name)
 
     if selected == 0:
