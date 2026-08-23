@@ -46,9 +46,8 @@ class TrainableHFRCAInstructionPolicy:
         sample_index: int = 0,
         group_id: str | None = None,
     ) -> str:
-        # Backward-compatible direct call.  The canonical RCA loop uses
-        # generate_from_prompt() so the exact stored policy_prompt is guaranteed to
-        # be the exact text presented to the model.
+        # The canonical RCA loop constructs this same prompt.  The driver must set
+        # max_iterations consistently with the episode configuration.
         prompt = build_rca_policy_prompt(
             compressed_state,
             history,
@@ -93,7 +92,23 @@ class TrainableHFActionPromptPolicy:
         return text
 
     def generate(self, context: dict[str, Any]) -> str:
-        raise RuntimeError(
-            "TrainableHFActionPromptPolicy must be called through the canonical action loop's "
-            "generate_from_prompt() path so model input and stored policy_prompt are identical."
+        # Backward-compatible with the existing action-loop protocol while still
+        # guaranteeing that the model sees exactly the canonical policy_prompt
+        # that the loop stores in the rollout row.
+        from .action_loop import _build_action_policy_prompt
+
+        prompt = _build_action_policy_prompt(
+            agent_state=context.get("redacted_state", {}) or {},
+            public_rca_result=context.get("rca_result", {}) or {},
+            public_rca_twin_gate=context.get("rca_twin_gate", {}) or {},
+            current_sla=context.get("current_sla", {}) or {},
+            history=context.get("previous_attempts", []) or [],
+            iteration=int(context.get("iteration", 0) or 0),
+            max_iterations=int(context.get("max_iterations", 1) or 1),
+        )
+        return self.generate_from_prompt(
+            prompt,
+            sample_index=int(context.get("sample_index", 0) or 0),
+            group_id=context.get("group_id"),
+            context=context,
         )
