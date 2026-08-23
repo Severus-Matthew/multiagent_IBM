@@ -56,10 +56,12 @@ def main() -> None:
 
     row = make_row(model, "t0", 1.0, 1.0, [1, 0])
     d = model_decision_loss(model, row, config=cfg)
-    if abs(float(d.ratio_mean) - 1.0) > 1e-6:
-        raise AssertionError(f"unchanged rollout policy must have ratio 1, got {float(d.ratio_mean)}")
-    if abs(float(d.loss) + 1.0) > 1e-6:
-        raise AssertionError(f"ratio=1, A=1, beta=0 should give decision loss -1, got {float(d.loss)}")
+    ratio_mean = float(d.ratio_mean.detach())
+    decision_loss = float(d.loss.detach())
+    if abs(ratio_mean - 1.0) > 1e-6:
+        raise AssertionError(f"unchanged rollout policy must have ratio 1, got {ratio_mean}")
+    if abs(decision_loss + 1.0) > 1e-6:
+        raise AssertionError(f"ratio=1, A=1, beta=0 should give decision loss -1, got {decision_loss}")
 
     # Two trajectories. t0 has one decision; t1 has two decisions. The role loss
     # must use stored 1/D weights and therefore give both trajectories equal mass.
@@ -69,11 +71,12 @@ def main() -> None:
         make_row(model, "t1", -1.0, 0.5, [2]),
     ]
     role_loss, diag = role_buffer_loss(model, rows, config=cfg)
+    role_loss_value = float(role_loss.detach())
 
     # At ratio 1 the t0 trajectory loss is -1 and t1 is +1, so equal trajectory
     # averaging must produce exactly 0 even though t1 has twice as many rows.
-    if abs(float(role_loss.detach())) > 1e-6:
-        raise AssertionError(f"exact-token role aggregation has trajectory-length bias: {float(role_loss)}")
+    if abs(role_loss_value) > 1e-6:
+        raise AssertionError(f"exact-token role aggregation has trajectory-length bias: {role_loss_value}")
 
     role_loss.backward()
     if model.base.grad is not None:
@@ -93,9 +96,9 @@ def main() -> None:
         raise AssertionError("learner accepted a row without exact prompt token IDs")
 
     print(json.dumps({
-        "unchanged_policy_ratio_mean": float(d.ratio_mean),
-        "ratio_one_positive_advantage_decision_loss": float(d.loss.detach()),
-        "equal_trajectory_role_loss": float(role_loss.detach()),
+        "unchanged_policy_ratio_mean": ratio_mean,
+        "ratio_one_positive_advantage_decision_loss": decision_loss,
+        "equal_trajectory_role_loss": role_loss_value,
         "frozen_base_gradient": None,
         "adapter_gradient_finite": True,
         "missing_prompt_token_ids_rejected": True,
