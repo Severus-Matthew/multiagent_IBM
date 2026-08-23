@@ -106,11 +106,14 @@ def _controlled_credit_copy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if any(abs(float(r["optimizer_sample_weight"]) - expected_weight) > 1e-10 for r in trows):
                 raise AssertionError(f"{gid}/{tid}: decision weights are not 1/D_role")
             for row in trows:
+                original_reward = row.get("policy_reward")
+                original_advantage = row.get("policy_advantage")
                 row["policy_reward"] = float(reward)
                 row["policy_advantage"] = float(advantage)
                 metadata = dict(row.get("metadata", {}) or {})
                 metadata["controlled_credit_for_optimizer_audit_only"] = True
-                metadata["original_policy_reward"] = row.get("policy_reward")
+                metadata["original_policy_reward"] = original_reward
+                metadata["original_policy_advantage"] = original_advantage
                 row["metadata"] = metadata
     return out
 
