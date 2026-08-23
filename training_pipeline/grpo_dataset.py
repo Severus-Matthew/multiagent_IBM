@@ -43,6 +43,10 @@ def _finite_float_list(value: Any) -> bool:
     return isinstance(value, list) and bool(value) and all(_is_finite_number(x) for x in value)
 
 
+def _valid_logprob_list(value: Any) -> bool:
+    return _finite_float_list(value) and all(float(x) <= 1e-5 for x in value)
+
+
 def _valid_token_id_list(value: Any) -> bool:
     if not isinstance(value, list) or not value:
         return False
@@ -101,33 +105,47 @@ def validate_grpo_sample(
             errors.append("invalid:metadata.optimizer_advantage_field")
         if metadata.get("optimizer_sample_weight_field") != "optimizer_sample_weight":
             errors.append("invalid:metadata.optimizer_sample_weight_field")
-        if row.get("adapter_id") is not None and expected_adapter and row.get("adapter_id") != expected_adapter:
+        if not row.get("adapter_id"):
+            errors.append("missing:adapter_id")
+        elif expected_adapter and row.get("adapter_id") != expected_adapter:
             errors.append("invalid:adapter_id")
 
     if require_old_logprobs:
+        prompt_ids = row.get("prompt_token_ids")
+        completion_ids = row.get("completion_token_ids")
         old_logprobs = row.get("old_logprobs")
-        token_ids = row.get("completion_token_ids")
-        if not _finite_float_list(old_logprobs):
-            errors.append("invalid:old_logprobs")
-        if not _valid_token_id_list(token_ids):
+
+        # Exact rollout tokenization is mandatory.  Re-tokenizing policy_prompt or
+        # completion text during the optimizer step would invalidate causal token
+        # alignment and old/new importance ratios.
+        if not _valid_token_id_list(prompt_ids):
+            errors.append("invalid:prompt_token_ids")
+        if not _valid_token_id_list(completion_ids):
             errors.append("invalid:completion_token_ids")
-        if isinstance(old_logprobs, list) and isinstance(token_ids, list) and len(old_logprobs) != len(token_ids):
+        if not _valid_logprob_list(old_logprobs):
+            errors.append("invalid:old_logprobs")
+        if isinstance(old_logprobs, list) and isinstance(completion_ids, list) and len(old_logprobs) != len(completion_ids):
             errors.append("mismatch:old_logprobs_vs_completion_token_ids")
 
         old_sum = row.get("old_logprob_sum")
         if not _is_finite_number(old_sum):
             errors.append("invalid:old_logprob_sum")
-        elif _finite_float_list(old_logprobs):
+        elif _valid_logprob_list(old_logprobs):
             expected = float(sum(float(x) for x in old_logprobs))
             if abs(float(old_sum) - expected) > 1e-5 * max(1.0, abs(expected)):
                 errors.append("mismatch:old_logprob_sum")
 
         ref_logprobs = row.get("ref_logprobs")
         if ref_logprobs is not None:
-            if not _finite_float_list(ref_logprobs):
+            if not _valid_logprob_list(ref_logprobs):
                 errors.append("invalid:ref_logprobs")
-            elif isinstance(token_ids, list) and len(ref_logprobs) != len(token_ids):
+            elif isinstance(completion_ids, list) and len(ref_logprobs) != len(completion_ids):
                 errors.append("mismatch:ref_logprobs_vs_completion_token_ids")
+
+        if not str(row.get("policy_version") or "").strip():
+            errors.append("missing:policy_version")
+        if not str(row.get("model_name") or "").strip():
+            errors.append("missing:model_name")
 
     return errors
 
@@ -290,6 +308,7 @@ def summarize_dataset(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "policy_advantage_std_trajectory_level": round(pstdev(policy_advantages), 6) if len(policy_advantages) > 1 else 0.0,
         "missing_old_logprob_sum": sum(1 for x in rows if x.get("old_logprob_sum") is None),
         "missing_old_logprobs": sum(1 for x in rows if not x.get("old_logprobs")),
+        "missing_prompt_token_ids": sum(1 for x in rows if not x.get("prompt_token_ids")),
         "missing_completion_token_ids": sum(1 for x in rows if not x.get("completion_token_ids")),
         "success_samples": sum(1 for x in rows if x.get("success")),
         "adapter_ids": sorted(str(x) for x in adapters),
