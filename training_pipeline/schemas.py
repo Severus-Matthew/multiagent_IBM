@@ -128,7 +128,32 @@ class GRPORolloutSample:
     ref_logprobs: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        info = ((out.get("metadata") or {}).get("policy_info") or {})
+        if isinstance(info, dict):
+            # The policy object is the authoritative source for exact rollout-time
+            # tokenization.  Hoist those fields into the canonical optimizer row so
+            # the learner never has to inspect implementation-specific metadata.
+            for field_name in (
+                "prompt_token_ids",
+                "completion_token_ids",
+                "old_logprobs",
+                "old_logprob_sum",
+                "ref_logprobs",
+            ):
+                if out.get(field_name) is None and info.get(field_name) is not None:
+                    out[field_name] = info.get(field_name)
+
+            # When an exact-token policy records the literal prompt text, it must
+            # match the rollout row's policy_prompt byte-for-byte.  Fail here rather
+            # than permit a silently invalid old/new log-probability ratio later.
+            prompt_text = info.get("prompt_text")
+            if prompt_text is not None and str(prompt_text) != str(out.get("policy_prompt") or ""):
+                raise ValueError(
+                    "policy_info.prompt_text does not match GRPO policy_prompt; "
+                    "exact-token replay would be invalid"
+                )
+        return out
 
 
 def normalize_fault_type(text: str | None) -> str:
