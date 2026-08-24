@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-"""Real Qwen3-Coder shared-base backend for the factorized RCA/Action policies.
+"""Real Qwen3-Coder shared-base backend for factorized RCA/Action policies.
 
-One frozen instruction-tuned causal LM is loaded once on a single CUDA device.
-Two independent LoRA adapters are attached:
+The 30B-A3B checkpoint cannot leave enough headroom for Qwen3-MoE prefill and
+later LoRA backward passes when loaded as full BF16 on a single 96-GiB GPU.  The
+production single-GPU path therefore uses a frozen bitsandbytes NF4 base (QLoRA)
+with BF16 compute and two independent LoRA adapters:
 
     lora_rca     -> RCA prompt policy
     lora_action  -> Action prompt policy
 
-The backend intentionally adapts only attention q/v projections for the first
-production implementation.  This keeps the LoRA state small and is directly
-supported by the Transformers/PEFT integration for Qwen-family models.  The
-factorized trainer owns trainability and optimizer state; this loader leaves every
-parameter frozen after construction so rollout/replay cannot accidentally build a
-training graph.
+Reference-policy log probabilities are still well defined: they are evaluated on
+the exact same frozen quantized base with both LoRA adapters disabled.  Only LoRA
+parameters are ever optimized.
 """
 
 from dataclasses import dataclass
@@ -25,12 +24,14 @@ from .peft_adapter_control import ROLE_ADAPTERS, parameter_belongs_to_adapter
 
 
 DEFAULT_QWEN_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+SUPPORTED_QUANTIZATION_MODES = {"nf4", "bf16"}
 
 
 @dataclass(frozen=True)
 class QwenSharedPolicyBackendConfig:
     model_name: str = DEFAULT_QWEN_MODEL
     device: str = "cuda:0"
+    quantization: str = "nf4"
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
@@ -42,6 +43,11 @@ class QwenSharedPolicyBackendConfig:
         device = torch.device(self.device)
         if device.type != "cuda":
             raise ValueError("real Qwen backend currently requires a CUDA device")
+        if self.quantization not in SUPPORTED_QUANTIZATION_MODES:
+            raise ValueError(
+                f"quantization must be one of {sorted(SUPPORTED_QUANTIZATION_MODES)}; "
+                f"got {self.quantization!r}"
+            )
         if self.lora_r < 1:
             raise ValueError("lora_r must be >= 1")
         if self.lora_alpha < 1:
@@ -58,6 +64,8 @@ class QwenSharedPolicyBackend:
     tokenizer: Any
     config: QwenSharedPolicyBackendConfig
     adapter_parameter_counts: dict[str, int]
+    quantization_mode: str
+    model_memory_footprint_gib: float | None
 
 
 def _device_index(device: torch.device) -> int:
@@ -86,6 +94,16 @@ def _adapter_parameter_counts(model: Any) -> dict[str, int]:
     return counts
 
 
+def _memory_footprint_gib(model: Any) -> float | None:
+    getter = getattr(model, "get_memory_footprint", None)
+    if not callable(getter):
+        return None
+    try:
+        return float(getter()) / 1024**3
+    except Exception:
+        return None
+
+
 def load_qwen_shared_policy_backend(
     config: QwenSharedPolicyBackendConfig | None = None,
 ) -> QwenSharedPolicyBackend:
@@ -97,21 +115,53 @@ def load_qwen_shared_policy_backend(
     index = _device_index(device)
 
     try:
-        from peft import LoraConfig, TaskType
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     except Exception as exc:
         raise RuntimeError("Qwen backend requires transformers and peft") from exc
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        cfg.model_name,
-        dtype=torch.bfloat16,
-        device_map={"": index},
-        low_cpu_mem_usage=True,
-    )
-    if hasattr(model.config, "use_cache"):
-        model.config.use_cache = True
-    model.eval()
+
+    load_kwargs: dict[str, Any] = {
+        "device_map": {"": index},
+        "low_cpu_mem_usage": True,
+    }
+    if cfg.quantization == "nf4":
+        try:
+            import bitsandbytes  # noqa: F401
+        except Exception as exc:
+            raise RuntimeError(
+                "NF4 QLoRA backend requires bitsandbytes; install it with "
+                "`python -m pip install -U bitsandbytes`"
+            ) from exc
+        load_kwargs.update(
+            {
+                "dtype": torch.bfloat16,
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                ),
+            }
+        )
+    else:
+        load_kwargs["dtype"] = torch.bfloat16
+
+    base_model = AutoModelForCausalLM.from_pretrained(cfg.model_name, **load_kwargs)
+    if hasattr(base_model.config, "use_cache"):
+        base_model.config.use_cache = True
+    base_model.eval()
+
+    if cfg.quantization == "nf4":
+        # PEFT's documented QLoRA preparation freezes the quantized base and
+        # normalizes the non-quantized trainable surface. Gradient checkpointing
+        # is deliberately left off for rollout/replay; the production learner can
+        # enable it separately if activation memory requires it.
+        base_model = prepare_model_for_kbit_training(
+            base_model,
+            use_gradient_checkpointing=False,
+        )
 
     lora = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -122,18 +172,22 @@ def load_qwen_shared_policy_backend(
         target_modules=list(cfg.target_modules),
         bias="none",
     )
-    model.add_adapter(lora, adapter_name="lora_rca")
-    model.add_adapter(lora, adapter_name="lora_action")
+
+    # Wrap the first adapter through PEFT's canonical QLoRA path, then attach the
+    # second independent adapter to the same shared frozen base.
+    model = get_peft_model(base_model, lora, adapter_name="lora_rca")
+    model.add_adapter("lora_action", lora)
 
     peft_config = getattr(model, "peft_config", {}) or {}
     missing = sorted(ROLE_ADAPTERS - set(peft_config.keys()))
     if missing:
         raise RuntimeError(f"failed to attach expected adapters: {missing}")
 
-    # Rollout and old/ref replay are always no-grad. The synchronized trainer will
-    # explicitly reactivate only one role adapter at each optimizer boundary.
+    # Rollout and old/ref replay are no-grad. The synchronized trainer explicitly
+    # reactivates only one role adapter at each optimizer boundary.
     _freeze_all(model)
     model.set_adapter("lora_rca")
+    _freeze_all(model)
 
     devices = {str(parameter.device) for parameter in model.parameters()}
     expected = str(device)
@@ -146,4 +200,6 @@ def load_qwen_shared_policy_backend(
         tokenizer=tokenizer,
         config=cfg,
         adapter_parameter_counts=_adapter_parameter_counts(model),
+        quantization_mode=cfg.quantization,
+        model_memory_footprint_gib=_memory_footprint_gib(model),
     )
