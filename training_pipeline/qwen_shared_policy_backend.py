@@ -3,16 +3,30 @@ from __future__ import annotations
 """Real Qwen3-Coder shared-base backend for factorized RCA/Action policies.
 
 The 30B-A3B checkpoint cannot leave enough headroom for Qwen3-MoE prefill and
-later LoRA backward passes when loaded as full BF16 on a single 96-GiB GPU.  The
-production single-GPU path therefore uses a frozen bitsandbytes NF4 base (QLoRA)
-with BF16 compute and two independent LoRA adapters:
+later LoRA backward passes when loaded as full BF16 on a single 96-GiB GPU. The
+single-GPU path therefore uses a frozen bitsandbytes NF4 base with BF16 compute
+and two independent LoRA adapters:
 
     lora_rca     -> RCA prompt policy
     lora_action  -> Action prompt policy
 
-Reference-policy log probabilities are still well defined: they are evaluated on
-the exact same frozen quantized base with both LoRA adapters disabled.  Only LoRA
-parameters are ever optimized.
+A subtle Qwen3-MoE detail matters here: the routed expert weights are stored as
+large grouped tensors rather than ordinary ``nn.Linear`` modules. bitsandbytes
+therefore does not turn every expert tensor into ``Params4bit``. Current PEFT
+``prepare_model_for_kbit_training`` upcasts every remaining BF16/FP16 parameter
+that is not a ``Params4bit`` object to FP32. On this 30B MoE that transiently
+nearly doubles the expert-memory footprint and OOMs a 96-GiB GPU.
+
+For our custom LoRA-only learner we do not need that global upcast. We implement
+the required preparation explicitly: freeze every base parameter, leave frozen
+non-quantized tensors in their loaded dtype, attach LoRA only to q/v projections,
+and let the synchronized trainer reactivate exactly one adapter at an optimizer
+boundary. This preserves the frozen-base contract without the destructive FP32
+conversion.
+
+Reference-policy log probabilities remain well defined: they are evaluated on
+the exact same frozen partially-quantized base with both LoRA adapters disabled.
+Only LoRA parameters are ever optimized.
 """
 
 from dataclasses import dataclass
@@ -66,6 +80,7 @@ class QwenSharedPolicyBackend:
     adapter_parameter_counts: dict[str, int]
     quantization_mode: str
     model_memory_footprint_gib: float | None
+    cuda_allocated_after_base_load_gib: float | None
 
 
 def _device_index(device: torch.device) -> int:
@@ -104,6 +119,19 @@ def _memory_footprint_gib(model: Any) -> float | None:
         return None
 
 
+def _cuda_allocated_gib() -> float | None:
+    if not torch.cuda.is_available():
+        return None
+    return float(torch.cuda.memory_allocated()) / 1024**3
+
+
+def _validate_base_frozen(model: Any) -> None:
+    trainable = [name for name, p in model.named_parameters() if p.requires_grad]
+    if trainable:
+        preview = trainable[:8]
+        raise RuntimeError(f"base model must be fully frozen before adapter injection; found {preview}")
+
+
 def load_qwen_shared_policy_backend(
     config: QwenSharedPolicyBackendConfig | None = None,
 ) -> QwenSharedPolicyBackend:
@@ -115,7 +143,7 @@ def load_qwen_shared_policy_backend(
     index = _device_index(device)
 
     try:
-        from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+        from peft import LoraConfig, TaskType, get_peft_model
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     except Exception as exc:
         raise RuntimeError("Qwen backend requires transformers and peft") from exc
@@ -153,15 +181,15 @@ def load_qwen_shared_policy_backend(
         base_model.config.use_cache = True
     base_model.eval()
 
-    if cfg.quantization == "nf4":
-        # PEFT's documented QLoRA preparation freezes the quantized base and
-        # normalizes the non-quantized trainable surface. Gradient checkpointing
-        # is deliberately left off for rollout/replay; the production learner can
-        # enable it separately if activation memory requires it.
-        base_model = prepare_model_for_kbit_training(
-            base_model,
-            use_gradient_checkpointing=False,
-        )
+    # IMPORTANT: do NOT call prepare_model_for_kbit_training() here. Current PEFT
+    # upcasts every BF16/FP16 parameter that is not a bitsandbytes Params4bit
+    # object. Qwen3-MoE expert matrices are grouped tensors and many remain BF16,
+    # so that preparation path OOMs a 96-GiB GPU. Our custom learner only needs a
+    # frozen base plus trainable LoRA parameters, so freeze the base explicitly
+    # and preserve its loaded dtypes.
+    _freeze_all(base_model)
+    _validate_base_frozen(base_model)
+    allocated_after_base_load = _cuda_allocated_gib()
 
     lora = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -173,8 +201,10 @@ def load_qwen_shared_policy_backend(
         bias="none",
     )
 
-    # Wrap the first adapter through PEFT's canonical QLoRA path, then attach the
-    # second independent adapter to the same shared frozen base.
+    # PEFT understands bitsandbytes Linear4bit attention projections. The first
+    # adapter wraps the shared base; the second is another named adapter on the
+    # same object. The routed MoE experts remain frozen and are never optimizer
+    # parameters.
     model = get_peft_model(base_model, lora, adapter_name="lora_rca")
     model.add_adapter("lora_action", lora)
 
@@ -202,4 +232,5 @@ def load_qwen_shared_policy_backend(
         adapter_parameter_counts=_adapter_parameter_counts(model),
         quantization_mode=cfg.quantization,
         model_memory_footprint_gib=_memory_footprint_gib(model),
+        cuda_allocated_after_base_load_gib=allocated_after_base_load,
     )
