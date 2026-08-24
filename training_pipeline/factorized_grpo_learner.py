@@ -87,7 +87,7 @@ def completion_logprobs_from_causal_lm_logits(
     prompt_length: int,
     completion_length: int,
 ) -> torch.Tensor:
-    """Gather exact completion-token log probabilities from causal-LM logits.
+    """Gather exact completion-token log probabilities from full causal-LM logits.
 
     ``input_ids`` must be the exact rollout-time token sequence formed by
     ``prompt_token_ids + completion_token_ids``.  For a completion token stored at
@@ -115,8 +115,6 @@ def completion_logprobs_from_causal_lm_logits(
             f"input={input_ids.numel()} logits={logits.shape[0]}"
         )
 
-    # Completion tokens occupy input indices [P, P+T).  Their predicting logits
-    # occupy [P-1, P+T-1).
     prediction_logits = logits[prompt_length - 1 : total - 1]
     target_ids = input_ids[prompt_length:total]
     if prediction_logits.shape[0] != completion_length or target_ids.numel() != completion_length:
@@ -126,6 +124,89 @@ def completion_logprobs_from_causal_lm_logits(
     gathered = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
     _require_finite_tensor("completion_logprobs", gathered)
     return gathered
+
+
+def _completion_logprobs_from_tail_logits(
+    logits: torch.Tensor,
+    completion_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Gather completion logprobs from the final ``T+1`` causal logits.
+
+    Qwen3-MoE supports ``logits_to_keep``.  For a completion of length ``T`` we
+    request the final ``T+1`` logits so that positions ``[:-1]`` predict exactly
+    the ``T`` generated completion tokens.  This avoids materializing
+    ``prompt_length x vocab_size`` logits while preserving the exact GRPO token
+    likelihood and its gradient through the active LoRA adapter.
+    """
+    if completion_ids.ndim == 2:
+        if completion_ids.shape[0] != 1:
+            raise ValueError("reference implementation expects batch size 1")
+        completion_ids = completion_ids[0]
+    if completion_ids.ndim != 1 or completion_ids.numel() < 1:
+        raise ValueError("completion_ids must be one non-empty sequence")
+    if logits.ndim == 2:
+        logits = logits.unsqueeze(0)
+    if logits.ndim != 3 or logits.shape[0] != 1:
+        raise ValueError("tail logits must have shape [1, seq, vocab]")
+
+    completion_length = int(completion_ids.numel())
+    expected = completion_length + 1
+    if logits.shape[1] != expected:
+        raise ValueError(
+            f"tail-logit path expected exactly T+1={expected} positions; got {logits.shape[1]}"
+        )
+
+    prediction_logits = logits[0, :-1, :]
+    log_probs = F.log_softmax(prediction_logits.float(), dim=-1)
+    gathered = log_probs.gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+    if gathered.numel() != completion_length:
+        raise AssertionError("tail causal completion alignment produced the wrong number of tokens")
+    _require_finite_tensor("completion_logprobs_tail", gathered)
+    return gathered
+
+
+def _model_completion_logprobs(
+    model: Any,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    *,
+    prompt_length: int,
+    completion_length: int,
+) -> torch.Tensor:
+    """Differentiable exact completion logprobs with a memory-efficient Qwen path.
+
+    Models that expose ``logits_to_keep`` compute only the final ``T+1`` logits.
+    Older/tiny audit models fall back to the full-logit path.  The fallback is
+    intentionally retained so the CPU mathematical audits remain unchanged.
+    """
+    tail_count = int(completion_length) + 1
+    kwargs = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "use_cache": False,
+        "logits_to_keep": tail_count,
+    }
+    used_tail = True
+    try:
+        outputs = model(**kwargs)
+    except TypeError as exc:
+        if "logits_to_keep" not in str(exc):
+            raise
+        used_tail = False
+        kwargs.pop("logits_to_keep", None)
+        outputs = model(**kwargs)
+
+    logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+    if used_tail and logits.ndim == 3 and logits.shape[1] == tail_count:
+        completion = input_ids[:, prompt_length : prompt_length + completion_length]
+        return _completion_logprobs_from_tail_logits(logits, completion)
+
+    return completion_logprobs_from_causal_lm_logits(
+        logits,
+        input_ids,
+        prompt_length=prompt_length,
+        completion_length=completion_length,
+    )
 
 
 def sampled_reverse_kl(
@@ -147,7 +228,6 @@ def sampled_reverse_kl(
         raise ValueError("policy/reference logprob shapes must match")
     x = (reference_logprobs.detach() - policy_logprobs).clamp(-clamp, clamp)
     kl = torch.exp(x) - x - 1.0
-    # Floating-point roundoff near x=0 can produce tiny negatives.
     kl = torch.clamp_min(kl, 0.0)
     _require_finite_tensor("sampled_reverse_kl", kl)
     return kl
@@ -223,8 +303,9 @@ def model_decision_loss(
 ) -> DecisionLoss:
     """Compute one rollout-row loss using exact stored tokenization/logprobs.
 
-    This is a slow reference path used for audits and small-model tests.  A future
-    batched GPU implementation must match it numerically.
+    This remains a correctness-first single-row path, but uses tail-only logits
+    when supported so Qwen does not materialize the full prompt-by-vocabulary
+    tensor during a training forward pass.
     """
     cfg = config or FactorizedGRPOConfig()
     cfg.validate()
@@ -251,11 +332,10 @@ def model_decision_loss(
     input_ids = torch.cat([prompt, completion], dim=0).unsqueeze(0)
     attention_mask = torch.ones_like(input_ids)
 
-    outputs = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
-    logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-    new_logprobs = completion_logprobs_from_causal_lm_logits(
-        logits,
+    new_logprobs = _model_completion_logprobs(
+        model,
         input_ids,
+        attention_mask,
         prompt_length=int(prompt.numel()),
         completion_length=int(completion.numel()),
     )
@@ -311,7 +391,10 @@ def aggregate_role_loss(records: Iterable[WeightedDecisionLoss]) -> torch.Tensor
                 raise ValueError(
                     f"{group_id}/{trajectory_id}: optimizer sample weights must sum to 1; got {weight_sum}"
                 )
-            loss = sum((float(x.sample_weight) * x.decision_loss for x in decisions), start=decisions[0].decision_loss * 0.0)
+            loss = sum(
+                (float(x.sample_weight) * x.decision_loss for x in decisions),
+                start=decisions[0].decision_loss * 0.0,
+            )
             _require_finite_tensor(f"trajectory_loss:{group_id}:{trajectory_id}", loss)
             trajectory_losses.append(loss)
         group_loss = torch.stack(trajectory_losses).mean()
