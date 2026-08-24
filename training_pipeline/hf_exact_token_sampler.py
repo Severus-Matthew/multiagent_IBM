@@ -5,14 +5,18 @@ from __future__ import annotations
 The sampler deliberately separates *sampling* from the log-probability contract
 used by GRPO. A completion is first generated with the active role adapter. We
 then replay the exact prompt+completion token sequence through that same adapter
-and store raw-model per-token log probabilities, matching the policy log-probability
-computation used by the audited learner. Reference log probabilities are computed
-on the same exact tokens with all LoRA adapters disabled.
+and store raw-model per-token log probabilities. Reference log probabilities are
+computed on the same exact tokens with all LoRA adapters disabled.
 
 Generation may use either plain tokenizer encoding (used by the tiny local audits)
 or the model tokenizer's chat template (used by instruction-tuned production
 backends such as Qwen3-Coder). In both cases, the exact token IDs actually passed
 to ``generate()`` are the authoritative rollout prompt representation.
+
+For large-vocabulary models, replay requests only the final ``T+1`` logits needed
+to score a completion of length ``T``. This is mathematically identical to a full
+logit replay but avoids materializing ``sequence_length x vocabulary_size`` logits,
+which can consume tens of GiB for long Qwen prompts.
 """
 
 import contextlib
@@ -22,7 +26,6 @@ from typing import Any, Literal
 
 import torch
 
-from .factorized_grpo_learner import completion_logprobs_from_causal_lm_logits
 from .peft_adapter_control import ROLE_ADAPTERS
 
 
@@ -136,9 +139,6 @@ class HFExactTokenPolicySampler:
         truncated = False
         limit = self.config.max_prompt_tokens
         if limit is not None and len(ids) > limit:
-            # Keep the most recent context and log that exact fact. Production Qwen
-            # smoke tests intentionally use no truncation so the full chat template
-            # is preserved. A later long-context policy may opt into this behavior.
             ids = ids[-int(limit):]
             truncated = True
         return ids, truncated
@@ -171,18 +171,7 @@ class HFExactTokenPolicySampler:
 
     @contextlib.contextmanager
     def _reference_context(self):
-        """Run the shared frozen base with *all* PEFT adapters disabled.
-
-        Hugging Face exposes two valid PEFT integration surfaces:
-
-        * ``PeftModel.disable_adapter()`` -- singular context manager;
-        * Transformers ``PeftAdapterMixin.disable_adapters()`` /
-          ``enable_adapters()`` -- plural imperative methods.
-
-        The tiny/local audits use the Transformers mixin, while a production Qwen
-        setup may use a wrapped ``PeftModel``. Supporting both is required; silently
-        evaluating an active LoRA as the reference policy is never allowed.
-        """
+        """Run the shared frozen base with *all* PEFT adapters disabled."""
         singular = getattr(self.model, "disable_adapter", None)
         if callable(singular):
             cm = singular()
@@ -206,9 +195,6 @@ class HFExactTokenPolicySampler:
             yield
         finally:
             enable()
-            # Transformers normally preserves the active adapter across a disable /
-            # enable cycle. Restore it explicitly when the API exposes the name so
-            # a future implementation change cannot silently alter rollout state.
             if active_before:
                 setter = getattr(self.model, "set_adapter", None)
                 if not callable(setter):
@@ -216,17 +202,50 @@ class HFExactTokenPolicySampler:
                 setter(active_before[0] if len(active_before) == 1 else active_before)
 
     def _completion_logprobs(self, prompt_ids: list[int], completion_ids: list[int]) -> list[float]:
+        """Replay exact completion tokens without materializing full-sequence logits."""
+        if not prompt_ids or not completion_ids:
+            raise ValueError("prompt_ids and completion_ids must both be non-empty")
         input_ids = torch.tensor([prompt_ids + completion_ids], dtype=torch.long, device=self.device)
         attention_mask = torch.ones_like(input_ids)
+        completion_length = len(completion_ids)
+        logits_to_keep = completion_length + 1
+
+        forward_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "use_cache": False,
+            "logits_to_keep": logits_to_keep,
+        }
         with torch.no_grad():
-            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+            try:
+                outputs = self.model(**forward_kwargs)
+            except TypeError as exc:
+                # Compatibility fallback for older/small audit models that do not
+                # expose the modern Transformers logits_to_keep argument.
+                if "logits_to_keep" not in str(exc):
+                    raise
+                forward_kwargs.pop("logits_to_keep", None)
+                outputs = self.model(**forward_kwargs)
+
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-            values = completion_logprobs_from_causal_lm_logits(
-                logits,
-                input_ids,
-                prompt_length=len(prompt_ids),
-                completion_length=len(completion_ids),
-            )
+            if logits.ndim != 3 or logits.shape[0] != 1:
+                raise RuntimeError(f"expected causal-LM logits [1,seq,vocab], got {tuple(logits.shape)}")
+            if logits.shape[1] < logits_to_keep:
+                raise RuntimeError(
+                    f"replay returned too few logits: need {logits_to_keep}, got {logits.shape[1]}"
+                )
+
+            # The final T+1 model positions are [P-1, ..., P+T-1]. The first T
+            # of those positions predict the T completion tokens exactly.
+            prediction_logits = logits[:, -logits_to_keep:-1, :]
+            target_ids = torch.tensor([completion_ids], dtype=torch.long, device=self.device)
+            if prediction_logits.shape[1] != completion_length:
+                raise AssertionError("tail-logit replay produced wrong completion alignment")
+
+            log_probs = torch.log_softmax(prediction_logits.float(), dim=-1)
+            values = log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)[0]
+            if not torch.isfinite(values).all():
+                raise FloatingPointError("completion replay logprobs contain NaN/Inf")
         return [float(x) for x in values.detach().cpu()]
 
     def generate(
@@ -278,14 +297,9 @@ class HFExactTokenPolicySampler:
             if not completion_ids:
                 raise RuntimeError("generation produced zero completion tokens")
 
-            # Recompute old policy logprobs from the active rollout adapter on the
-            # exact sampled token sequence. Do not use text re-tokenization and do
-            # not use transformed sampling scores for the PPO/GRPO ratio.
             self.model.set_adapter(adapter_name)
             old_logprobs = self._completion_logprobs(prompt_ids, completion_ids)
 
-            # Reference policy is the exact same frozen shared base with adapters
-            # disabled, evaluated on the same token sequence.
             with self._reference_context():
                 ref_logprobs = self._completion_logprobs(prompt_ids, completion_ids)
             self.model.set_adapter(adapter_name)
@@ -318,8 +332,9 @@ class HFExactTokenPolicySampler:
                 "old_logprobs": old_logprobs,
                 "old_logprob_sum": float(sum(old_logprobs)),
                 "ref_logprobs": ref_logprobs,
-                "old_logprobs_source": "active_adapter_forward_replay_on_exact_sampled_tokens",
-                "reference_logprobs_source": "shared_frozen_base_with_adapters_disabled",
+                "old_logprobs_source": "active_adapter_tail_logits_replay_on_exact_sampled_tokens",
+                "reference_logprobs_source": "shared_frozen_base_disabled_adapters_tail_logits_replay",
+                "replay_logits_to_keep": int(len(completion_ids) + 1),
                 "sampling_temperature": float(self.config.temperature),
                 "sampling_top_p": float(self.config.top_p),
                 "sampling_do_sample": bool(self.config.do_sample),
