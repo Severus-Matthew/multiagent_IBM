@@ -9,16 +9,16 @@ and store raw-model per-token log probabilities, matching the policy log-probabi
 computation used by the audited learner. Reference log probabilities are computed
 on the same exact tokens with all LoRA adapters disabled.
 
-This mirrors the important behavior of modern GRPO implementations: generation
-may use temperature/top-p to obtain diverse samples, while old-policy logprobs are
-recomputed from the rollout model on the sampled token sequence and stored for
-later importance ratios.
+Generation may use either plain tokenizer encoding (used by the tiny local audits)
+or the model tokenizer's chat template (used by instruction-tuned production
+backends such as Qwen3-Coder). In both cases, the exact token IDs actually passed
+to ``generate()`` are the authoritative rollout prompt representation.
 """
 
 import contextlib
 import hashlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -34,6 +34,8 @@ class ExactTokenGenerationConfig:
     do_sample: bool = True
     max_prompt_tokens: int | None = None
     seed: int = 0
+    prompt_format: Literal["plain", "chat_template"] = "plain"
+    chat_role: str = "user"
 
     def validate(self) -> None:
         if self.max_new_tokens < 1:
@@ -44,6 +46,10 @@ class ExactTokenGenerationConfig:
             raise ValueError("top_p must be in (0, 1]")
         if self.max_prompt_tokens is not None and self.max_prompt_tokens < 1:
             raise ValueError("max_prompt_tokens must be >= 1 when provided")
+        if self.prompt_format not in {"plain", "chat_template"}:
+            raise ValueError("prompt_format must be 'plain' or 'chat_template'")
+        if not str(self.chat_role).strip():
+            raise ValueError("chat_role must be non-empty")
 
 
 class HFExactTokenPolicySampler:
@@ -51,7 +57,8 @@ class HFExactTokenPolicySampler:
 
     ``model`` must be one shared causal-LM object containing named ``lora_rca``
     and ``lora_action`` adapters and supporting ``set_adapter``. ``tokenizer``
-    must provide ``encode`` and ``decode`` plus optional EOS/PAD token IDs.
+    must provide ``encode`` and ``decode`` plus optional EOS/PAD token IDs. When
+    ``prompt_format='chat_template'``, it must also expose ``apply_chat_template``.
     """
 
     def __init__(
@@ -70,6 +77,8 @@ class HFExactTokenPolicySampler:
             raise TypeError("HFExactTokenPolicySampler requires a PEFT-capable model with set_adapter()")
         if not hasattr(tokenizer, "encode") or not hasattr(tokenizer, "decode"):
             raise TypeError("tokenizer must expose encode() and decode()")
+        if self.config.prompt_format == "chat_template" and not hasattr(tokenizer, "apply_chat_template"):
+            raise TypeError("chat_template prompt format requires tokenizer.apply_chat_template()")
         self.device = torch.device(device) if device is not None else self._infer_device()
 
     def _infer_device(self) -> torch.device:
@@ -78,11 +87,47 @@ class HFExactTokenPolicySampler:
         except StopIteration:
             return torch.device("cpu")
 
+    def _plain_prompt_ids(self, prompt_text: str) -> list[int]:
+        ids = self.tokenizer.encode(str(prompt_text), add_special_tokens=True)
+        return [int(x) for x in ids]
+
+    def _chat_template_prompt_ids(self, prompt_text: str) -> list[int]:
+        rendered = self.tokenizer.apply_chat_template(
+            [{"role": str(self.config.chat_role), "content": str(prompt_text)}],
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        if isinstance(rendered, dict):
+            input_ids = rendered.get("input_ids")
+        else:
+            input_ids = getattr(rendered, "input_ids", None)
+        if input_ids is None:
+            raise TypeError("apply_chat_template(..., return_dict=True) did not return input_ids")
+        if isinstance(input_ids, torch.Tensor):
+            if input_ids.ndim == 2:
+                if input_ids.shape[0] != 1:
+                    raise ValueError(f"chat template returned unexpected batch size: {tuple(input_ids.shape)}")
+                input_ids = input_ids[0]
+            if input_ids.ndim != 1:
+                raise ValueError(f"chat template input_ids must be 1-D after unbatching: {tuple(input_ids.shape)}")
+            return [int(x) for x in input_ids.detach().cpu().tolist()]
+        if isinstance(input_ids, (list, tuple)):
+            if input_ids and isinstance(input_ids[0], (list, tuple)):
+                if len(input_ids) != 1:
+                    raise ValueError("chat template returned more than one prompt sequence")
+                input_ids = input_ids[0]
+            return [int(x) for x in input_ids]
+        raise TypeError(f"unsupported chat-template input_ids type: {type(input_ids)!r}")
+
     def _encode_prompt(self, prompt_text: str) -> tuple[list[int], bool]:
         if not str(prompt_text).strip():
             raise ValueError("policy prompt must be non-empty")
-        ids = self.tokenizer.encode(str(prompt_text), add_special_tokens=True)
-        ids = [int(x) for x in ids]
+        if self.config.prompt_format == "chat_template":
+            ids = self._chat_template_prompt_ids(prompt_text)
+        else:
+            ids = self._plain_prompt_ids(prompt_text)
         if not ids:
             raise ValueError("tokenizer produced an empty policy prompt")
         if any(x < 0 for x in ids):
@@ -91,8 +136,9 @@ class HFExactTokenPolicySampler:
         truncated = False
         limit = self.config.max_prompt_tokens
         if limit is not None and len(ids) > limit:
-            # Keep the most recent context. Real Qwen has a large context window,
-            # so truncation should be exceptional and is explicitly logged.
+            # Keep the most recent context and log that exact fact. Production Qwen
+            # smoke tests intentionally use no truncation so the full chat template
+            # is preserved. A later long-context policy may opt into this behavior.
             ids = ids[-int(limit):]
             truncated = True
         return ids, truncated
@@ -210,18 +256,20 @@ class HFExactTokenPolicySampler:
         try:
             with self._rng_context(seed):
                 self._set_seed(seed)
+                generation_kwargs = {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "max_new_tokens": int(self.config.max_new_tokens),
+                    "do_sample": bool(self.config.do_sample),
+                    "eos_token_id": eos_id,
+                    "pad_token_id": pad_id,
+                    "use_cache": True,
+                }
+                if self.config.do_sample:
+                    generation_kwargs["temperature"] = float(self.config.temperature)
+                    generation_kwargs["top_p"] = float(self.config.top_p)
                 with torch.no_grad():
-                    sequences = self.model.generate(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        max_new_tokens=int(self.config.max_new_tokens),
-                        do_sample=bool(self.config.do_sample),
-                        temperature=float(self.config.temperature) if self.config.do_sample else None,
-                        top_p=float(self.config.top_p) if self.config.do_sample else None,
-                        eos_token_id=eos_id,
-                        pad_token_id=pad_id,
-                        use_cache=True,
-                    )
+                    sequences = self.model.generate(**generation_kwargs)
 
             if sequences.ndim != 2 or sequences.shape[0] != 1:
                 raise RuntimeError(f"expected generate() to return [1, seq], got {tuple(sequences.shape)}")
@@ -263,6 +311,9 @@ class HFExactTokenPolicySampler:
                 "policy_prompt_sha256": hashlib.sha256(str(prompt_text).encode("utf-8")).hexdigest(),
                 "prompt_token_ids": prompt_ids,
                 "prompt_was_truncated": bool(prompt_truncated),
+                "prompt_format": self.config.prompt_format,
+                "chat_role": str(self.config.chat_role) if self.config.prompt_format == "chat_template" else None,
+                "chat_template_applied": bool(self.config.prompt_format == "chat_template"),
                 "completion_token_ids": completion_ids,
                 "old_logprobs": old_logprobs,
                 "old_logprob_sum": float(sum(old_logprobs)),
