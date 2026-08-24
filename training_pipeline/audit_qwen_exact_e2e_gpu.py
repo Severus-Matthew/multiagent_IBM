@@ -3,9 +3,9 @@ from __future__ import annotations
 """Single-GPU smoke of the canonical joint trajectory with the real Qwen backend.
 
 This is intentionally a rollout/replay smoke, not a scientific training run. It
-loads one BF16 Qwen3-Coder shared base, attaches independent RCA and Action LoRAs,
-uses Qwen's chat template for the exact policy prompt tokenization, and runs the
-existing causal pipeline:
+loads one Qwen3-Coder shared base using the production single-GPU NF4 QLoRA path,
+attaches independent RCA and Action LoRAs, uses Qwen's chat template for exact
+policy prompt tokenization, and runs the existing causal pipeline:
 
     Qwen LoRA_RCA -> RCA solver -> twin -> Qwen LoRA_Action -> action -> verifier
 
@@ -36,6 +36,7 @@ from .hf_exact_token_sampler import ExactTokenGenerationConfig, HFExactTokenPoli
 from .qwen_shared_policy_backend import (
     DEFAULT_QWEN_MODEL,
     QwenSharedPolicyBackendConfig,
+    SUPPORTED_QUANTIZATION_MODES,
     load_qwen_shared_policy_backend,
 )
 from .rca_loop import HeuristicRCASolver
@@ -125,6 +126,12 @@ def main() -> None:
     ap.add_argument("--scenario_ids", default=None)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--model", default=DEFAULT_QWEN_MODEL)
+    ap.add_argument(
+        "--quantization",
+        choices=sorted(SUPPORTED_QUANTIZATION_MODES),
+        default="nf4",
+        help="Single-GPU production default is NF4 QLoRA; BF16 is retained only for larger-memory hosts.",
+    )
     ap.add_argument("--limit", type=int, default=1)
     ap.add_argument("--trajectory_group_size", type=int, default=2)
     ap.add_argument("--rca_max_iterations", type=int, default=1)
@@ -160,6 +167,7 @@ def main() -> None:
         QwenSharedPolicyBackendConfig(
             model_name=args.model,
             device="cuda:0",
+            quantization=args.quantization,
             lora_r=args.lora_r,
             lora_alpha=args.lora_alpha,
             lora_dropout=0.0,
@@ -168,6 +176,15 @@ def main() -> None:
     )
     model = backend.model
     tokenizer = backend.tokenizer
+
+    allocated_after_load = torch.cuda.memory_allocated() / 1024**3
+    reserved_after_load = torch.cuda.memory_reserved() / 1024**3
+    print(
+        f"[QWEN-GPU-SMOKE] quantization={backend.quantization_mode} "
+        f"model_footprint_gib={backend.model_memory_footprint_gib} "
+        f"allocated_after_load_gib={allocated_after_load:.3f} "
+        f"reserved_after_load_gib={reserved_after_load:.3f}"
+    )
 
     sampler = HFExactTokenPolicySampler(
         model,
@@ -191,9 +208,6 @@ def main() -> None:
     )
     action_policy = TrainableHFActionPromptPolicy(sampler, adapter_name="lora_action")
 
-    # These are deliberately deterministic for this backend-integration smoke.
-    # Scientific non-zero policy credit is tested only after the real policy-
-    # sensitive downstream solver/action path is enabled.
     rca_solver = HeuristicRCASolver()
     action_agent = FixedActionAgent(max_commands=15)
     twin = BehavioralTwinVerifier()
@@ -224,8 +238,8 @@ def main() -> None:
             trajectory_group_size=args.trajectory_group_size,
             rca_max_iterations=args.rca_max_iterations,
             action_max_iterations=args.action_max_iterations,
-            rca_policy_model_name=f"{args.model}+lora_rca",
-            action_policy_model_name=f"{args.model}+lora_action",
+            rca_policy_model_name=f"{args.model}+{args.quantization}+lora_rca",
+            action_policy_model_name=f"{args.model}+{args.quantization}+lora_action",
             policy_version="qwen-gpu-smoke-v1",
             agent_input_mode="training_safe",
             reward_mode="factorized_joint_pipeline_v2_no_double_count",
@@ -292,6 +306,14 @@ def main() -> None:
     summary = {
         "status": "PASS",
         "model": args.model,
+        "quantization": backend.quantization_mode,
+        "model_memory_footprint_gib": (
+            round(backend.model_memory_footprint_gib, 3)
+            if backend.model_memory_footprint_gib is not None
+            else None
+        ),
+        "allocated_after_load_gib": round(allocated_after_load, 3),
+        "reserved_after_load_gib": round(reserved_after_load, 3),
         "gpu": torch.cuda.get_device_name(0),
         "scenario_count": scenario_count,
         "trajectory_count": trajectory_count,
