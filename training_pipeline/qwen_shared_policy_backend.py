@@ -24,6 +24,14 @@ and let the synchronized trainer reactivate exactly one adapter at an optimizer
 boundary. This preserves the frozen-base contract without the destructive FP32
 conversion.
 
+For this memory-constrained single-GPU path we also default the MoE expert
+implementation to ``eager``. Transformers' grouped-mm prefill materializes
+num_tokens x top_k expert-token workspaces; on the long Action prompt that pushed
+runtime allocation from ~56 GiB after load to ~90 GiB before another ~5 GiB
+workspace was requested. Eager expert execution processes expert subsets
+sequentially and trades throughput for materially lower peak prefill memory. The
+expert backend can still be overridden explicitly for larger-memory hosts.
+
 Reference-policy log probabilities remain well defined: they are evaluated on
 the exact same frozen partially-quantized base with both LoRA adapters disabled.
 Only LoRA parameters are ever optimized.
@@ -39,6 +47,7 @@ from .peft_adapter_control import ROLE_ADAPTERS, parameter_belongs_to_adapter
 
 DEFAULT_QWEN_MODEL = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
 SUPPORTED_QUANTIZATION_MODES = {"nf4", "bf16"}
+SUPPORTED_EXPERTS_IMPLEMENTATIONS = {"eager", "batched_mm", "grouped_mm"}
 
 
 @dataclass(frozen=True)
@@ -46,6 +55,7 @@ class QwenSharedPolicyBackendConfig:
     model_name: str = DEFAULT_QWEN_MODEL
     device: str = "cuda:0"
     quantization: str = "nf4"
+    experts_implementation: str = "eager"
     lora_r: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
@@ -61,6 +71,11 @@ class QwenSharedPolicyBackendConfig:
             raise ValueError(
                 f"quantization must be one of {sorted(SUPPORTED_QUANTIZATION_MODES)}; "
                 f"got {self.quantization!r}"
+            )
+        if self.experts_implementation not in SUPPORTED_EXPERTS_IMPLEMENTATIONS:
+            raise ValueError(
+                "experts_implementation must be one of "
+                f"{sorted(SUPPORTED_EXPERTS_IMPLEMENTATIONS)}; got {self.experts_implementation!r}"
             )
         if self.lora_r < 1:
             raise ValueError("lora_r must be >= 1")
@@ -79,6 +94,7 @@ class QwenSharedPolicyBackend:
     config: QwenSharedPolicyBackendConfig
     adapter_parameter_counts: dict[str, int]
     quantization_mode: str
+    experts_implementation: str
     model_memory_footprint_gib: float | None
     cuda_allocated_after_base_load_gib: float | None
 
@@ -132,6 +148,25 @@ def _validate_base_frozen(model: Any) -> None:
         raise RuntimeError(f"base model must be fully frozen before adapter injection; found {preview}")
 
 
+def _read_experts_implementation(model: Any, fallback: str) -> str:
+    getter = getattr(model, "get_experts_implementation", None)
+    if not callable(getter):
+        return fallback
+    try:
+        value = getter()
+    except Exception:
+        return fallback
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        root = value.get("")
+        if root is not None:
+            return str(root)
+        if value:
+            return ",".join(f"{k}:{v}" for k, v in sorted(value.items()))
+    return fallback
+
+
 def load_qwen_shared_policy_backend(
     config: QwenSharedPolicyBackendConfig | None = None,
 ) -> QwenSharedPolicyBackend:
@@ -153,6 +188,7 @@ def load_qwen_shared_policy_backend(
     load_kwargs: dict[str, Any] = {
         "device_map": {"": index},
         "low_cpu_mem_usage": True,
+        "experts_implementation": cfg.experts_implementation,
     }
     if cfg.quantization == "nf4":
         try:
@@ -231,6 +267,7 @@ def load_qwen_shared_policy_backend(
         config=cfg,
         adapter_parameter_counts=_adapter_parameter_counts(model),
         quantization_mode=cfg.quantization,
+        experts_implementation=_read_experts_implementation(model, cfg.experts_implementation),
         model_memory_footprint_gib=_memory_footprint_gib(model),
         cuda_allocated_after_base_load_gib=allocated_after_base_load,
     )
