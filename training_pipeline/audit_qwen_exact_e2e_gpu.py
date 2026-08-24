@@ -28,7 +28,6 @@ from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 
 from .data_loader import iter_scenarios
 from .end_to_end_loop import run_end_to_end_trajectory_group
-from .factorized_grpo_learner import FactorizedGRPOConfig, model_decision_loss
 from .fixed_action_agent import FixedActionAgent
 from .ground_truth import labels_from_full_state
 from .grpo_dataset import load_grpo_dataset, summarize_dataset
@@ -67,15 +66,68 @@ def _stamp(row: dict[str, Any], *, adapter_id: str, optimizer_role: str) -> dict
     return out
 
 
+def _memory_efficient_row_logprobs(model: Any, row: dict[str, Any]) -> torch.Tensor:
+    """Recompute exact row logprobs while materializing only T+1 tail logits."""
+    prompt_ids = row.get("prompt_token_ids")
+    completion_ids = row.get("completion_token_ids")
+    if not isinstance(prompt_ids, list) or not prompt_ids:
+        raise ValueError("replay row is missing prompt_token_ids")
+    if not isinstance(completion_ids, list) or not completion_ids:
+        raise ValueError("replay row is missing completion_token_ids")
+
+    device = torch.device("cuda:0")
+    input_ids = torch.tensor([prompt_ids + completion_ids], dtype=torch.long, device=device)
+    attention_mask = torch.ones_like(input_ids)
+    completion_length = len(completion_ids)
+    logits_to_keep = completion_length + 1
+    kwargs = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "use_cache": False,
+        "logits_to_keep": logits_to_keep,
+    }
+    try:
+        outputs = model(**kwargs)
+    except TypeError as exc:
+        if "logits_to_keep" not in str(exc):
+            raise
+        kwargs.pop("logits_to_keep", None)
+        outputs = model(**kwargs)
+
+    logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+    if logits.ndim != 3 or logits.shape[0] != 1 or logits.shape[1] < logits_to_keep:
+        raise RuntimeError(
+            f"unexpected replay logits shape {tuple(logits.shape)} for T={completion_length}"
+        )
+    prediction_logits = logits[:, -logits_to_keep:-1, :]
+    targets = torch.tensor([completion_ids], dtype=torch.long, device=device)
+    values = torch.log_softmax(prediction_logits.float(), dim=-1).gather(
+        -1, targets.unsqueeze(-1)
+    ).squeeze(-1)[0]
+    if values.numel() != completion_length or not torch.isfinite(values).all():
+        raise AssertionError("memory-efficient exact replay produced invalid token logprobs")
+    return values
+
+
 def _replay_ratios(model: Any, rows: list[dict[str, Any]], adapter_name: str) -> dict[str, Any]:
     model.set_adapter(adapter_name)
     model.eval()
-    cfg = FactorizedGRPOConfig(kl_coeff=0.0)
     values: list[float] = []
     with torch.no_grad():
         for row in rows:
-            d = model_decision_loss(model, row, config=cfg, device="cuda:0")
-            values.append(float(d.ratio_mean.detach().cpu()))
+            new_logprobs = _memory_efficient_row_logprobs(model, row)
+            old_values = row.get("old_logprobs")
+            if not isinstance(old_values, list) or len(old_values) != new_logprobs.numel():
+                raise ValueError("stored old_logprobs do not match completion length")
+            old_logprobs = torch.tensor(
+                old_values,
+                dtype=new_logprobs.dtype,
+                device=new_logprobs.device,
+            )
+            token_ratios = torch.exp(new_logprobs - old_logprobs)
+            if not torch.isfinite(token_ratios).all():
+                raise FloatingPointError("exact replay ratio contains NaN/Inf")
+            values.append(float(token_ratios.mean().detach().cpu()))
     if not values:
         raise AssertionError(f"{adapter_name}: no optimizer rows emitted")
     max_dev = max(abs(x - 1.0) for x in values)
@@ -88,6 +140,7 @@ def _replay_ratios(model: Any, rows: list[dict[str, Any]], adapter_name: str) ->
         "ratio_mean": sum(values) / len(values),
         "max_abs_deviation_from_one": max_dev,
         "all_ratio_one": True,
+        "replay_uses_tail_logits_only": True,
     }
 
 
