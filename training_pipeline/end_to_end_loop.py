@@ -4,6 +4,7 @@ from typing import Any
 
 from .action_loop import run_action_prompt_optimizer_loop
 from .agent_input_safety import agent_input_safety_report, sanitize_agent_state
+from .bounded_agent_state import BoundedAgentStateConfig, build_bounded_agent_state
 from .end_to_end_reward import end_to_end_reward
 from .grpo_math import group_relative_advantages
 from .rca_loop import run_rca_grpo_episode
@@ -101,10 +102,6 @@ def _attach_factorized_credit(
         role_count = max(1, int(role_counts[stage]))
         role_index = role_seen[stage]
         role_seen[stage] += 1
-        # Each complete sampled trajectory should have equal weight in the role
-        # loss even when trajectories contain different numbers of RCA/Action
-        # decisions. The future learner must multiply each decision-level loss by
-        # this weight, average tokens inside the decision, then average trajectories.
         decision_weight = 1.0 / float(role_count)
 
         metadata = dict(row.get("metadata", {}) or {})
@@ -173,6 +170,7 @@ def run_end_to_end_trajectory_group(
     min_twin_reproduction_score: float = 0.0,
     rca_downstream_credit_weight: float = 0.15,
     action_system_credit_weight: float = 0.25,
+    bounded_agent_state_config: BoundedAgentStateConfig | None = None,
 ) -> dict[str, Any]:
     """Generate complete joint trajectories with factorized role-specific credit.
 
@@ -183,9 +181,12 @@ def run_end_to_end_trajectory_group(
     GRPO completion. The stored trajectory advantage is Monte-Carlo credit applied
     to all decisions of that role in the sampled trajectory.
 
-    To avoid length bias, the future optimizer must average tokens within each
-    decision and apply optimizer_sample_weight=1/D_role, where D_role is the number
-    of decisions by that role in the trajectory, before averaging trajectories.
+    ``compressed_state`` remains the verifier/twin input. ``agent_state`` is derived
+    independently from that already-redacted state. When ``bounded_agent_state_config``
+    is supplied, only the RCA/Action policy and downstream agent-facing view is
+    semantically projected; the twin still receives the original compressed state.
+    This separation prevents a training-memory optimization from weakening the
+    verifier's observable state.
     """
     if agent_input_mode != "training_safe":
         raise ValueError("joint training requires agent_input_mode='training_safe'")
@@ -196,6 +197,11 @@ def run_end_to_end_trajectory_group(
         )
 
     agent_state = sanitize_agent_state(compressed_state, mode="training_safe")
+    if bounded_agent_state_config is not None:
+        agent_state = build_bounded_agent_state(
+            agent_state,
+            config=bounded_agent_state_config,
+        )
     safety = agent_input_safety_report(agent_state)
     if not safety.get("safe_for_training_agent"):
         raise ValueError(f"agent-facing state failed safety audit: {safety}")
@@ -295,6 +301,7 @@ def run_end_to_end_trajectory_group(
         action_policy_samples.extend(action_rows)
 
     all_policy_samples = rca_policy_samples + action_policy_samples
+    projection = agent_state.get("projection") if isinstance(agent_state, dict) else None
 
     return {
         "scenario_id": scenario_id,
@@ -302,6 +309,8 @@ def run_end_to_end_trajectory_group(
         "trajectory_group_size": int(trajectory_group_size),
         "agent_input_mode": "training_safe",
         "agent_input_safety": safety,
+        "agent_state_projection": projection,
+        "bounded_agent_state_enabled": bounded_agent_state_config is not None,
         "reward_mode": reward_mode,
         "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v2",
         "update_schedule": "batch_synchronized_separate_policy_updates",
@@ -330,6 +339,7 @@ def run_end_to_end_trajectory_group(
             "rca_downstream_credit_weight": float(rca_downstream_credit_weight),
             "action_system_credit_weight": float(action_system_credit_weight),
             "verifier_trainable": False,
+            "bounded_agent_state_enabled": bounded_agent_state_config is not None,
             "future_loss_aggregation": (
                 "per decision: mean clipped surrogate over completion tokens; "
                 "per trajectory-role: weighted mean using optimizer_sample_weight=1/D_role; "
