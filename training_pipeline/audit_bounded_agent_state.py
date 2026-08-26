@@ -29,6 +29,8 @@ def _chat_tokens(tokenizer: Any, text: str) -> int:
     if ids is None:
         raise TypeError("chat template did not return input_ids")
     if getattr(ids, "ndim", None) == 2:
+        if ids.shape[0] != 1:
+            raise ValueError(f"unexpected tokenizer batch shape {tuple(ids.shape)}")
         return int(ids.shape[1])
     if getattr(ids, "ndim", None) == 1:
         return int(ids.shape[0])
@@ -52,9 +54,24 @@ def main() -> None:
     ap.add_argument("--scenario_id", default=None)
     ap.add_argument("--model", default=DEFAULT_QWEN_MODEL)
     ap.add_argument("--max_serialized_chars", type=int, default=42_000)
-    ap.add_argument("--max_system_services", type=int, default=24)
-    ap.add_argument("--max_metric_services", type=int, default=24)
-    ap.add_argument("--max_log_services", type=int, default=20)
+    ap.add_argument(
+        "--max_system_services",
+        type=int,
+        default=12,
+        help="Maximum services receiving rich deployment/endpoint/event detail; all system services keep health summaries.",
+    )
+    ap.add_argument(
+        "--max_metric_services",
+        type=int,
+        default=64,
+        help="Maximum services receiving compact metric flat summaries; verbose metric groups are never copied.",
+    )
+    ap.add_argument(
+        "--max_log_services",
+        type=int,
+        default=8,
+        help="Maximum services receiving bounded raw log text examples; all log services keep signal/count summaries.",
+    )
     ap.add_argument("--target_prompt_tokens", type=int, default=16_000)
     args = ap.parse_args()
 
@@ -69,6 +86,7 @@ def main() -> None:
     bounded = build_bounded_agent_state(original, config=cfg)
 
     from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     original_prompt = build_rca_policy_prompt(original, [], 0, 1)
@@ -80,6 +98,14 @@ def main() -> None:
     after_safety = agent_input_safety_report(bounded)
     if not after_safety.get("safe_for_training_agent"):
         raise AssertionError(after_safety)
+
+    projection = dict(bounded.get("projection", {}) or {})
+    section_chars = {
+        key: len(_json(value))
+        for key, value in bounded.items()
+        if key != "projection"
+    }
+    section_chars = dict(sorted(section_chars.items(), key=lambda kv: kv[1], reverse=True))
 
     summary = {
         "status": "PASS" if bounded_tokens <= args.target_prompt_tokens else "OVER_TARGET",
@@ -97,10 +123,14 @@ def main() -> None:
             "safe_for_training_agent": bool(after_safety.get("safe_for_training_agent")),
             "compression_ratio_tokens": round(bounded_tokens / original_tokens, 6),
             "tokens_removed": original_tokens - bounded_tokens,
-            "projection": bounded.get("projection"),
-            "system_detailed_services": len([k for k in (bounded.get("system") or {}) if k != "__projection_summary__"]),
-            "metric_detailed_services": len([k for k in (bounded.get("metrics") or {}) if k != "__projection_summary__"]),
-            "log_detailed_services": len([k for k in (bounded.get("logs") or {}) if k != "__projection_summary__"]),
+            "projection": projection,
+            "system_total_services": projection.get("system_total_services"),
+            "system_rich_detail_services": projection.get("system_rich_detail_services"),
+            "metric_total_services": projection.get("metric_total_services"),
+            "metric_summary_services": projection.get("metric_summary_services"),
+            "log_total_services": projection.get("log_total_services"),
+            "log_text_evidence_services": projection.get("log_text_evidence_services"),
+            "section_serialized_chars": section_chars,
         },
         "preserved_top_level_keys": sorted(bounded.keys()),
         "raw_prompt_token_truncation_used": False,
