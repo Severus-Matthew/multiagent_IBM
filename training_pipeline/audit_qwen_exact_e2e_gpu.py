@@ -9,11 +9,12 @@ policy prompt tokenization, and runs the existing causal pipeline:
 
     Qwen LoRA_RCA -> RCA solver -> twin -> Qwen LoRA_Action -> action -> verifier
 
-The emitted role buffers must pass strict exact-token GRPO validation and replay
-at importance ratio one before any real Qwen optimizer update is attempted.
+The agent-facing state uses the bounded semantic projection while the twin continues
+to receive the original compressed state. The emitted role buffers must pass strict
+exact-token GRPO validation and replay at importance ratio one.
 
-For this first integration smoke the downstream RCA solver/action executor remain
-the deterministic training-safe debug components. Therefore zero within-incident
+For this integration smoke the downstream RCA solver/action executor remain the
+deterministic training-safe debug components. Therefore zero within-incident
 advantages are allowed and no optimizer step is performed here.
 """
 
@@ -26,6 +27,7 @@ import torch
 
 from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
 
+from .bounded_agent_state import BoundedAgentStateConfig
 from .data_loader import iter_scenarios
 from .end_to_end_loop import run_end_to_end_trajectory_group
 from .fixed_action_agent import FixedActionAgent
@@ -144,7 +146,7 @@ def _replay_ratios(model: Any, rows: list[dict[str, Any]], adapter_name: str) ->
     }
 
 
-def _prompt_contract(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _prompt_contract(rows: list[dict[str, Any]], *, max_prompt_tokens: int) -> dict[str, Any]:
     prompt_lengths: list[int] = []
     completion_lengths: list[int] = []
     truncated = 0
@@ -163,6 +165,10 @@ def _prompt_contract(rows: list[dict[str, Any]]) -> dict[str, Any]:
         )
     if truncated:
         raise AssertionError(f"Qwen smoke unexpectedly truncated {truncated} policy prompts")
+    if max(prompt_lengths) > int(max_prompt_tokens):
+        raise AssertionError(
+            f"bounded policy prompt exceeded mechanics budget: {max(prompt_lengths)} > {max_prompt_tokens}"
+        )
     return {
         "chat_template_rows": chat_template_rows,
         "truncated_rows": truncated,
@@ -170,6 +176,7 @@ def _prompt_contract(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "prompt_tokens_max": max(prompt_lengths),
         "completion_tokens_min": min(completion_lengths),
         "completion_tokens_max": max(completion_lengths),
+        "max_prompt_tokens_contract": int(max_prompt_tokens),
     }
 
 
@@ -194,6 +201,11 @@ def main() -> None:
     ap.add_argument("--top_p", type=float, default=0.9)
     ap.add_argument("--lora_r", type=int, default=16)
     ap.add_argument("--lora_alpha", type=int, default=32)
+    ap.add_argument("--max_prompt_tokens", type=int, default=18_000)
+    ap.add_argument("--max_serialized_chars", type=int, default=50_000)
+    ap.add_argument("--max_system_services", type=int, default=1)
+    ap.add_argument("--max_metric_services", type=int, default=64)
+    ap.add_argument("--max_log_services", type=int, default=1)
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
@@ -202,6 +214,13 @@ def main() -> None:
         raise ValueError("--limit must be >= 1")
     if args.trajectory_group_size < 2:
         raise ValueError("--trajectory_group_size must be >= 2")
+
+    bounded_cfg = BoundedAgentStateConfig(
+        max_serialized_chars=args.max_serialized_chars,
+        max_system_services=args.max_system_services,
+        max_metric_services=args.max_metric_services,
+        max_log_services=args.max_log_services,
+    )
 
     out_dir = Path(args.output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -271,6 +290,7 @@ def main() -> None:
     unsafe_agent_inputs = 0
     rca_rows: list[dict[str, Any]] = []
     action_rows: list[dict[str, Any]] = []
+    projection_reports: list[dict[str, Any]] = []
 
     for rec in iter_scenarios(args.processed_states):
         if allowed_ids is not None and rec.scenario_id not in allowed_ids:
@@ -293,13 +313,19 @@ def main() -> None:
             action_max_iterations=args.action_max_iterations,
             rca_policy_model_name=f"{args.model}+{args.quantization}+lora_rca",
             action_policy_model_name=f"{args.model}+{args.quantization}+lora_action",
-            policy_version="qwen-gpu-smoke-v1",
+            policy_version="qwen-gpu-bounded-smoke-v1",
             agent_input_mode="training_safe",
             reward_mode="factorized_joint_pipeline_v2_no_double_count",
             min_twin_reproduction_score=0.0,
             rca_downstream_credit_weight=0.15,
             action_system_credit_weight=0.25,
+            bounded_agent_state_config=bounded_cfg,
         )
+        if not result.get("bounded_agent_state_enabled"):
+            raise AssertionError("joint runner did not enable bounded agent state")
+        if isinstance(result.get("agent_state_projection"), dict):
+            projection_reports.append(dict(result["agent_state_projection"]))
+
         scenario_count += 1
         trajectories = list(result.get("trajectories", []) or [])
         trajectory_count += len(trajectories)
@@ -313,6 +339,8 @@ def main() -> None:
                 "trajectory_group_id": result.get("trajectory_group_id"),
                 "trajectories": trajectories,
                 "agent_input_safety": result.get("agent_input_safety"),
+                "agent_state_projection": result.get("agent_state_projection"),
+                "bounded_agent_state_enabled": result.get("bounded_agent_state_enabled"),
                 "rca_group_zero_variance": result.get("rca_group_zero_variance"),
                 "action_group_zero_variance": result.get("action_group_zero_variance"),
             },
@@ -351,8 +379,8 @@ def main() -> None:
         require_old_logprobs=True,
     )
 
-    rca_prompt_contract = _prompt_contract(strict_rca)
-    action_prompt_contract = _prompt_contract(strict_action)
+    rca_prompt_contract = _prompt_contract(strict_rca, max_prompt_tokens=args.max_prompt_tokens)
+    action_prompt_contract = _prompt_contract(strict_action, max_prompt_tokens=args.max_prompt_tokens)
     rca_replay = _replay_ratios(model, strict_rca, "lora_rca")
     action_replay = _replay_ratios(model, strict_action, "lora_action")
 
@@ -374,6 +402,15 @@ def main() -> None:
         "shared_base_two_role_adapters": True,
         "adapter_parameter_counts": backend.adapter_parameter_counts,
         "qwen_chat_template_exact_prompt_tokens": True,
+        "bounded_agent_state_enabled": True,
+        "bounded_agent_state_config": {
+            "max_serialized_chars": args.max_serialized_chars,
+            "max_system_services": args.max_system_services,
+            "max_metric_services": args.max_metric_services,
+            "max_log_services": args.max_log_services,
+            "max_prompt_tokens_mechanics_contract": args.max_prompt_tokens,
+        },
+        "agent_state_projections": projection_reports,
         "rca": summarize_dataset(strict_rca),
         "action": summarize_dataset(strict_action),
         "rca_prompt_contract": rca_prompt_contract,
@@ -384,6 +421,7 @@ def main() -> None:
         "strict_old_logprob_validation": True,
         "uses_real_qwen_generation": True,
         "uses_real_training_update": False,
+        "twin_receives_original_compressed_state": True,
         "downstream_components_are_debug_for_this_smoke": True,
         "peak_cuda_memory_gib": round(torch.cuda.max_memory_allocated() / 1024**3, 3),
     }
