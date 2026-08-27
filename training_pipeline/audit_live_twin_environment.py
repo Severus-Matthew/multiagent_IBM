@@ -20,9 +20,9 @@ next live reinjection experiment; it does not validate Twin reproduction quality
 import argparse
 import importlib
 import json
-import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +105,11 @@ def main() -> None:
     aiopslab_root = Path(args.aiopslab_root).expanduser().resolve()
     preferred_namespace = str(args.preferred_namespace)
 
+    # Probe the checkout directly even when AIOpsLab is not installed as an
+    # editable package in the active venv.  This does not modify the checkout.
+    if aiopslab_root.exists() and str(aiopslab_root) not in sys.path:
+        sys.path.insert(0, str(aiopslab_root))
+
     binaries = {
         name: shutil.which(name)
         for name in ("kubectl", "helm")
@@ -114,7 +119,7 @@ def main() -> None:
     cluster_info = _run(["kubectl", "cluster-info"], timeout=20)
     nodes_obj, nodes_raw = _kubectl_json(["get", "nodes"], timeout=30)
     ns_obj, ns_raw = _kubectl_json(["get", "namespaces"], timeout=30)
-    crd_obj, crd_raw = _kubectl_json(["get", "crds"], timeout=30)
+    crd_obj, _crd_raw = _kubectl_json(["get", "crds"], timeout=30)
 
     node_names: list[str] = []
     if isinstance(nodes_obj, dict):
@@ -168,8 +173,8 @@ def main() -> None:
     else:
         namespace_probe = {"present": False}
 
-    # Read permissions are required for state collection.  Mutation permissions
-    # are reported, not exercised.
+    # Read permissions are required for state collection. Mutation permissions are
+    # reported only; this audit never exercises them.
     auth = {
         "get_pods": _auth_can_i("get", "pods", preferred_namespace),
         "get_logs": _auth_can_i("get", "pods/log", preferred_namespace),
