@@ -27,18 +27,60 @@ class TwinSpec:
         return asdict(self)
 
 
-def _graph_edges(state: dict[str, Any]) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
+def _graph_edge_records(state: dict[str, Any]) -> tuple[list[tuple[str, str]], dict[str, int]]:
+    """Return observable service edges from both graph and compressed traces.
+
+    Some historical processed states have an empty/partial ``graph.edges`` even
+    though ``traces.per_edge`` contains the actual request topology.  The sparse
+    live Twin must not silently interpret missing graph serialization as a
+    one-service application, so we merge both observable sources here.
+    """
+    edges: list[tuple[str, str]] = []
+    graph_count = 0
+    trace_count = 0
+
     for edge in (state.get("graph", {}) or {}).get("edges", []) or []:
         if isinstance(edge, dict):
-            src, dst = edge.get("src"), edge.get("dst")
+            src = edge.get("src") or edge.get("source")
+            dst = edge.get("dst") or edge.get("target")
         elif isinstance(edge, (list, tuple)) and len(edge) >= 2:
             src, dst = edge[0], edge[1]
         else:
             continue
         if src and dst:
-            out.append((str(src), str(dst)))
-    return out
+            edges.append((str(src), str(dst)))
+            graph_count += 1
+
+    traces = state.get("traces", {}) or {}
+    per_edge = traces.get("per_edge", {}) if isinstance(traces, dict) else {}
+    if isinstance(per_edge, dict):
+        for edge_id, feats in per_edge.items():
+            feats = feats if isinstance(feats, dict) else {}
+            src = feats.get("source")
+            dst = feats.get("target")
+            if (not src or not dst) and "->" in str(edge_id):
+                src, dst = str(edge_id).split("->", 1)
+            if src and dst:
+                edges.append((str(src), str(dst)))
+                trace_count += 1
+
+    # Stable deduplication is useful for deterministic audit output.
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for edge in edges:
+        if edge not in seen:
+            deduped.append(edge)
+            seen.add(edge)
+
+    return deduped, {
+        "graph_edge_records": graph_count,
+        "trace_edge_records": trace_count,
+        "deduplicated_observable_edges": len(deduped),
+    }
+
+
+def _graph_edges(state: dict[str, Any]) -> list[tuple[str, str]]:
+    return _graph_edge_records(state)[0]
 
 
 def _adjacency(edges: list[tuple[str, str]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -165,6 +207,32 @@ def _undirected_distance_set(
     return _bounded_reachable(starts, adjacency, max_hops, allowed)
 
 
+def _invalid_spec(
+    compressed_state: dict[str, Any],
+    predicted_faults: list[FaultLabel],
+    all_services: set[str],
+    entrypoints: set[str],
+    *,
+    mode: str,
+    summary: dict[str, Any],
+) -> TwinSpec:
+    return TwinSpec(
+        scenario_id=str(compressed_state.get("scenario_id", "unknown")),
+        namespace=compressed_state.get("namespace"),
+        mode=mode,
+        services_to_keep=[],
+        services_to_prune=sorted(all_services),
+        target_faults=[x.to_dict() for x in predicted_faults],
+        reason={},
+        impact_services=[],
+        support_services=[],
+        entrypoint_services=sorted(entrypoints),
+        selected_paths=[],
+        selection_policy="fault_conditioned_sparse_live_v2",
+        resource_summary=summary,
+    )
+
+
 def build_sparse_live_twin_spec(
     compressed_state: dict[str, Any],
     predicted_faults: list[FaultLabel],
@@ -176,21 +244,14 @@ def build_sparse_live_twin_spec(
 ) -> TwinSpec:
     """Build a fault-conditioned sparse live-Twin plan from agent-safe evidence.
 
-    The live Twin is intentionally *not* the full application.  It keeps:
-      1. the RCA-predicted root service(s),
-      2. bounded upstream callers that can exhibit propagated impact,
-      3. bounded downstream dependencies needed to execute the predicted root,
-      4. the shortest observable path from a workload/application entrypoint to
-         each predicted root when such a path exists, and
-      5. already-degraded observable services only when they are graph-close to a
-         predicted root.
-
-    Hidden labels, ``fault_context``, scenario-name hints, and injection manifests
-    are never consulted.  The resulting resource summary is intended for the live
-    Twin resource-reduction evaluation.
+    The scientific live Twin is intentionally *not* the full application.  It
+    uses only the redacted observable service set, topology and RCA prediction.
+    Observable topology is merged from ``graph.edges`` and ``traces.per_edge`` so
+    historical graph-serialization gaps cannot masquerade as extreme resource
+    reduction.
     """
     all_services = {str(s) for s in (compressed_state.get("services", []) or []) if s}
-    edges = _graph_edges(compressed_state)
+    edges, topology_counts = _graph_edge_records(compressed_state)
     forward, reverse = _adjacency(edges)
     entrypoints = _entrypoints(all_services, edges)
 
@@ -198,49 +259,58 @@ def build_sparse_live_twin_spec(
         str(f.service) for f in predicted_faults
         if f.service and str(f.service) in all_services
     }
+
+    if not roots:
+        summary = {
+            "total_application_services": len(all_services),
+            "kept_services": 0,
+            "pruned_services": len(all_services),
+            "service_reduction_fraction": 1.0 if all_services else 0.0,
+            "invalid_predicted_root": True,
+            "invalid_topology": False,
+            **topology_counts,
+        }
+        return _invalid_spec(
+            compressed_state, predicted_faults, all_services, entrypoints,
+            mode="rca_predicted_sparse_live_invalid_root", summary=summary,
+        )
+
+    # A multi-service application with no observable edges cannot support a
+    # scientifically meaningful sparse causal Twin.  Fail closed instead of
+    # reporting a spurious ~100% reduction from a missing topology.
+    if len(all_services) > 1 and not edges:
+        summary = {
+            "total_application_services": len(all_services),
+            "kept_services": 0,
+            "pruned_services": len(all_services),
+            "service_reduction_fraction": 1.0,
+            "service_reduction_percent": 100.0,
+            "invalid_predicted_root": False,
+            "invalid_topology": True,
+            **topology_counts,
+        }
+        return _invalid_spec(
+            compressed_state, predicted_faults, all_services, entrypoints,
+            mode="rca_predicted_sparse_live_missing_observable_topology", summary=summary,
+        )
+
     reason: dict[str, list[str]] = {}
     for root in sorted(roots):
         reason.setdefault(root, []).append("rca_predicted_root_cause")
 
-    if not roots:
-        # Fail closed for the scientific live path.  Keeping the entire app here
-        # would erase the sparse-Twin contribution and could hide invalid RCA
-        # service names behind an expensive full-cluster fallback.
-        return TwinSpec(
-            scenario_id=str(compressed_state.get("scenario_id", "unknown")),
-            namespace=compressed_state.get("namespace"),
-            mode="rca_predicted_sparse_live_invalid_root",
-            services_to_keep=[],
-            services_to_prune=sorted(all_services),
-            target_faults=[x.to_dict() for x in predicted_faults],
-            reason={},
-            impact_services=[],
-            support_services=[],
-            entrypoint_services=sorted(entrypoints),
-            selected_paths=[],
-            selection_policy="fault_conditioned_sparse_live_v1",
-            resource_summary={
-                "total_application_services": len(all_services),
-                "kept_services": 0,
-                "pruned_services": len(all_services),
-                "service_reduction_fraction": 1.0 if all_services else 0.0,
-                "invalid_predicted_root": True,
-            },
-        )
-
-    # Upstream callers are the services in which a root failure can propagate.
+    # Upstream callers are services in which a root failure can propagate.
     impact = _bounded_reachable(roots, reverse, upstream_hops, all_services)
     for svc in sorted(impact - roots):
         reason.setdefault(svc, []).append("bounded_upstream_impact")
 
-    # Downstream dependencies support execution of the predicted faulty service;
-    # they are support infrastructure, not claimed as affected services.
+    # Downstream dependencies are retained as support infrastructure required to
+    # exercise the predicted faulty service.
     support = _bounded_reachable(roots, forward, downstream_support_hops, all_services) - roots
     for svc in sorted(support):
         reason.setdefault(svc, []).append("bounded_downstream_support")
 
     # Preserve one minimal observable request path to each root rather than every
-    # branch reachable from the frontend.  This is the key resource-saving choice.
+    # frontend branch.
     selected_paths: list[list[str]] = []
     path_services: set[str] = set()
     for root in sorted(roots):
@@ -251,10 +321,7 @@ def build_sparse_live_twin_spec(
             for svc in path:
                 reason.setdefault(svc, []).append(f"minimal_entry_path_to_{root}")
 
-    # Observable symptoms may identify an indirect impact service missed by a
-    # sparse trace graph, but only admit such a service when it is graph-close to
-    # the predicted root.  This avoids the old behavior of pulling every degraded
-    # service into the Twin and accidentally recreating the full application.
+    # Admit connected observable symptoms only when graph-close to the RCA root.
     degraded = _observable_degraded_services(compressed_state) & all_services
     near_root = _undirected_distance_set(roots, forward, reverse, all_services, symptom_hops)
     connected_degraded = degraded & near_root
@@ -281,7 +348,7 @@ def build_sparse_live_twin_spec(
         support_services=sorted(support),
         entrypoint_services=sorted(entrypoints),
         selected_paths=selected_paths,
-        selection_policy="fault_conditioned_sparse_live_v1",
+        selection_policy="fault_conditioned_sparse_live_v2",
         resource_summary={
             "total_application_services": total,
             "kept_services": kept,
@@ -293,16 +360,14 @@ def build_sparse_live_twin_spec(
             "symptom_hops": int(symptom_hops),
             "max_entry_path_hops": int(max_entry_path_hops),
             "invalid_predicted_root": False,
+            "invalid_topology": False,
+            **topology_counts,
         },
     )
 
 
 def build_predicted_twin_spec(compressed_state: dict[str, Any], predicted_faults: list[FaultLabel]) -> TwinSpec:
-    """Legacy offline predicted Twin spec.
-
-    Kept unchanged for existing offline diagnostics.  Final scientific live-Twin
-    construction should use :func:`build_sparse_live_twin_spec`.
-    """
+    """Legacy offline predicted Twin spec; retained for old diagnostics only."""
     all_services = set(compressed_state.get("services", []) or [])
     keep: set[str] = set()
     reason: dict[str, list[str]] = {}
