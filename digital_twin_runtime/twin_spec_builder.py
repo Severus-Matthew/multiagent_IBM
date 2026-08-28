@@ -31,7 +31,7 @@ def _graph_edge_records(state: dict[str, Any]) -> tuple[list[tuple[str, str]], d
     """Return observable service edges from both graph and compressed traces.
 
     Some historical processed states have an empty/partial ``graph.edges`` even
-    though ``traces.per_edge`` contains the actual request topology.  The sparse
+    though ``traces.per_edge`` contains the actual request topology. The sparse
     live Twin must not silently interpret missing graph serialization as a
     one-service application, so we merge both observable sources here.
     """
@@ -64,7 +64,6 @@ def _graph_edge_records(state: dict[str, Any]) -> tuple[list[tuple[str, str]], d
                 edges.append((str(src), str(dst)))
                 trace_count += 1
 
-    # Stable deduplication is useful for deterministic audit output.
     deduped: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for edge in edges:
@@ -154,7 +153,6 @@ def _shortest_path(
 
 
 def _entrypoints(all_services: set[str], edges: list[tuple[str, str]]) -> set[str]:
-    # Prefer explicit trace/application root edges when present.
     explicit = {
         dst for src, dst in edges
         if str(src).upper() == "ROOT" and dst in all_services
@@ -162,19 +160,16 @@ def _entrypoints(all_services: set[str], edges: list[tuple[str, str]]) -> set[st
     if explicit:
         return explicit
 
-    # Otherwise use graph roots among application services.  This is derived only
-    # from observable/redacted topology and does not use the hidden injected fault.
     indegree = {svc: 0 for svc in all_services}
     outdegree = {svc: 0 for svc in all_services}
     for src, dst in edges:
         if src in all_services and dst in all_services:
             indegree[dst] += 1
             outdegree[src] += 1
-    roots = {
+    return {
         svc for svc in all_services
         if indegree.get(svc, 0) == 0 and outdegree.get(svc, 0) > 0
     }
-    return roots
 
 
 def _observable_degraded_services(state: dict[str, Any]) -> set[str]:
@@ -192,19 +187,6 @@ def _observable_degraded_services(state: dict[str, Any]) -> set[str]:
         ):
             degraded.add(str(svc))
     return degraded
-
-
-def _undirected_distance_set(
-    starts: set[str],
-    forward: dict[str, set[str]],
-    reverse: dict[str, set[str]],
-    allowed: set[str],
-    max_hops: int,
-) -> set[str]:
-    adjacency: dict[str, set[str]] = {}
-    for node in allowed:
-        adjacency[node] = (forward.get(node, set()) | reverse.get(node, set())) & allowed
-    return _bounded_reachable(starts, adjacency, max_hops, allowed)
 
 
 def _invalid_spec(
@@ -228,7 +210,7 @@ def _invalid_spec(
         support_services=[],
         entrypoint_services=sorted(entrypoints),
         selected_paths=[],
-        selection_policy="fault_conditioned_sparse_live_v2",
+        selection_policy="fault_conditioned_sparse_live_v3",
         resource_summary=summary,
     )
 
@@ -238,17 +220,20 @@ def build_sparse_live_twin_spec(
     predicted_faults: list[FaultLabel],
     *,
     upstream_hops: int = 2,
-    downstream_support_hops: int = 1,
+    downstream_support_hops: int = 2,
     symptom_hops: int = 2,
     max_entry_path_hops: int = 8,
 ) -> TwinSpec:
-    """Build a fault-conditioned sparse live-Twin plan from agent-safe evidence.
+    """Build a fault-conditioned sparse live-Twin plan from safe evidence.
 
-    The scientific live Twin is intentionally *not* the full application.  It
-    uses only the redacted observable service set, topology and RCA prediction.
-    Observable topology is merged from ``graph.edges`` and ``traces.per_edge`` so
-    historical graph-serialization gaps cannot masquerade as extreme resource
-    reduction.
+    Scope is causal, not symptom-union based. We keep predicted roots, bounded
+    upstream impact, bounded downstream runtime support, and one minimal entry
+    path. Observable degraded services are retained as diagnostics only unless
+    they already lie on that causal scaffold. This prevents unrelated/stale
+    unready pods in historical captures from inflating the Twin.
+
+    Hidden labels, fault_context, scenario-name hints and injection manifests are
+    never consulted here.
     """
     all_services = {str(s) for s in (compressed_state.get("services", []) or []) if s}
     edges, topology_counts = _graph_edge_records(compressed_state)
@@ -275,9 +260,6 @@ def build_sparse_live_twin_spec(
             mode="rca_predicted_sparse_live_invalid_root", summary=summary,
         )
 
-    # A multi-service application with no observable edges cannot support a
-    # scientifically meaningful sparse causal Twin.  Fail closed instead of
-    # reporting a spurious ~100% reduction from a missing topology.
     if len(all_services) > 1 and not edges:
         summary = {
             "total_application_services": len(all_services),
@@ -298,19 +280,14 @@ def build_sparse_live_twin_spec(
     for root in sorted(roots):
         reason.setdefault(root, []).append("rca_predicted_root_cause")
 
-    # Upstream callers are services in which a root failure can propagate.
     impact = _bounded_reachable(roots, reverse, upstream_hops, all_services)
     for svc in sorted(impact - roots):
         reason.setdefault(svc, []).append("bounded_upstream_impact")
 
-    # Downstream dependencies are retained as support infrastructure required to
-    # exercise the predicted faulty service.
     support = _bounded_reachable(roots, forward, downstream_support_hops, all_services) - roots
     for svc in sorted(support):
         reason.setdefault(svc, []).append("bounded_downstream_support")
 
-    # Preserve one minimal observable request path to each root rather than every
-    # frontend branch.
     selected_paths: list[list[str]] = []
     path_services: set[str] = set()
     for root in sorted(roots):
@@ -321,15 +298,18 @@ def build_sparse_live_twin_spec(
             for svc in path:
                 reason.setdefault(svc, []).append(f"minimal_entry_path_to_{root}")
 
-    # Admit connected observable symptoms only when graph-close to the RCA root.
-    degraded = _observable_degraded_services(compressed_state) & all_services
-    near_root = _undirected_distance_set(roots, forward, reverse, all_services, symptom_hops)
-    connected_degraded = degraded & near_root
-    for svc in sorted(connected_degraded):
-        reason.setdefault(svc, []).append("observable_connected_degraded_service")
+    causal_scope = (roots | impact | support | path_services) & all_services
 
-    keep = roots | impact | support | path_services | connected_degraded
-    keep &= all_services
+    # Symptoms validate whether the causal plan covers the observed incident, but
+    # they do not expand deployment scope. This is essential when historical runs
+    # contain unrelated unready pods or stale health signals.
+    degraded = _observable_degraded_services(compressed_state) & all_services
+    degraded_on_scope = degraded & causal_scope
+    degraded_outside_scope = degraded - causal_scope
+    for svc in sorted(degraded_on_scope):
+        reason.setdefault(svc, []).append("observable_degraded_on_causal_scope")
+
+    keep = causal_scope
     prune = all_services - keep
 
     total = len(all_services)
@@ -344,11 +324,11 @@ def build_sparse_live_twin_spec(
         services_to_prune=sorted(prune),
         target_faults=[x.to_dict() for x in predicted_faults],
         reason={k: sorted(set(v)) for k, v in sorted(reason.items()) if k in keep},
-        impact_services=sorted(impact | connected_degraded),
+        impact_services=sorted(impact),
         support_services=sorted(support),
         entrypoint_services=sorted(entrypoints),
         selected_paths=selected_paths,
-        selection_policy="fault_conditioned_sparse_live_v2",
+        selection_policy="fault_conditioned_sparse_live_v3",
         resource_summary={
             "total_application_services": total,
             "kept_services": kept,
@@ -358,9 +338,14 @@ def build_sparse_live_twin_spec(
             "upstream_hops": int(upstream_hops),
             "downstream_support_hops": int(downstream_support_hops),
             "symptom_hops": int(symptom_hops),
+            "symptom_hops_role": "diagnostic_only_v3",
             "max_entry_path_hops": int(max_entry_path_hops),
             "invalid_predicted_root": False,
             "invalid_topology": False,
+            "symptoms_expand_deployment_scope": False,
+            "observable_degraded_services": sorted(degraded),
+            "observable_degraded_on_causal_scope": sorted(degraded_on_scope),
+            "observable_degraded_outside_causal_scope": sorted(degraded_outside_scope),
             **topology_counts,
         },
     )
