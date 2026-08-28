@@ -74,6 +74,10 @@ def main() -> None:
     roots = {f.service for f in faults}
     keep = set(spec.services_to_keep)
     prune = set(spec.services_to_prune)
+    rs = spec.resource_summary or {}
+    topology_edges = int(rs.get("deduplicated_observable_edges", 0) or 0)
+    topology_available = len(all_services) <= 1 or topology_edges > 0
+    path_available = bool(spec.selected_paths)
 
     invariants = {
         "uses_redacted_compressed_state_only": True,
@@ -84,6 +88,9 @@ def main() -> None:
         "keep_and_prune_disjoint": not bool(keep & prune),
         "keep_and_prune_cover_observable_services": (keep | prune) == all_services,
         "full_application_fallback_used": len(keep) == len(all_services),
+        "observable_topology_available": topology_available,
+        "entrypoint_evidence_available": bool(spec.entrypoint_services),
+        "root_reachable_from_entrypoint": path_available,
         "cluster_mutated": False,
     }
 
@@ -94,8 +101,9 @@ def main() -> None:
             "predicted_roots_kept",
             "keep_and_prune_disjoint",
             "keep_and_prune_cover_observable_services",
+            "observable_topology_available",
         )
-    ) and not spec.resource_summary.get("invalid_predicted_root", False)
+    ) and not rs.get("invalid_predicted_root", False) and not rs.get("invalid_topology", False)
 
     report = {
         "status": "PASS_SPARSE_LIVE_TWIN_SPEC" if valid else "FAIL_SPARSE_LIVE_TWIN_SPEC",
@@ -104,6 +112,13 @@ def main() -> None:
         "predicted_faults": [f.to_dict() for f in faults],
         "twin_spec": spec.to_dict(),
         "invariants": invariants,
+        "topology_diagnostics": {
+            "graph_edge_records": int(rs.get("graph_edge_records", 0) or 0),
+            "trace_edge_records": int(rs.get("trace_edge_records", 0) or 0),
+            "deduplicated_observable_edges": topology_edges,
+            "entrypoint_services": spec.entrypoint_services,
+            "selected_paths": spec.selected_paths,
+        },
         "next_gate": "sparse_live_manifest_preflight" if valid else "fix_sparse_twin_spec",
     }
     print(json.dumps(report, indent=2, sort_keys=True))
