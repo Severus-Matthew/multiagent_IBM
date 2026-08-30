@@ -240,9 +240,16 @@ class FrozenQwenRCASolver:
             "policy_instruction": str(instruction),
             "redacted_state": compressed_state,
             "output_contract": (
-                "Output only root-cause lines in component::fault_mechanism format, "
+                "Output only root-cause lines in "
+                "service::fault_type::injectible_mechanism[::variant] format, "
                 "one line per root cause. Do not add prose, labels, confidence, or explanations."
             ),
+            "public_injectible_mechanisms": [
+                "assign_to_non_existent_node", "delete_pod", "scale_replicas_zero",
+                "container_kill", "network_delay", "network_loss", "cpu_stress",
+                "memory_stress", "mongodb_auth_missing", "mongodb_auth_revoked",
+                "target_port_misconfig", "application_config_misconfig",
+            ],
             "reasoning_requirements": [
                 "Use only evidence present in redacted_state.",
                 "Distinguish a causal root service from downstream victims.",

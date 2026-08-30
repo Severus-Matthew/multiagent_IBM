@@ -31,7 +31,8 @@ class FixedActionAgent:
             if not service or service == "unknown":
                 continue
             action_family = str(item.get("action_family") or "restart_service")
-            commands.extend(_commands_for_action_family(service, namespace, action_family))
+            mechanism = str(item.get("fault_mechanism") or "")
+            commands.extend(_commands_for_action_family(service, namespace, action_family, mechanism))
             if len(commands) >= self.max_commands:
                 break
         return _dedupe(commands)[: self.max_commands]
@@ -60,11 +61,13 @@ def _fallback_plan(context: dict[str, Any]) -> dict[str, Any]:
             continue
         service = item.get("service") or item.get("root_cause_service")
         fault_type = item.get("fault_type") or item.get("fault_family") or "unknown"
+        fault_mechanism = item.get("fault_mechanism") or item.get("mechanism") or ""
         if service:
             plans.append({
                 "service": str(service),
                 "fault_type": str(fault_type),
                 "action_family": _default_family(str(fault_type)),
+                "fault_mechanism": str(fault_mechanism),
             })
     if not plans and rca.get("root_cause_service"):
         ft = str(rca.get("fault_type") or "unknown")
@@ -91,13 +94,18 @@ def _default_family(fault_type: str) -> str:
     return "restart_service"
 
 
-def _commands_for_action_family(service: str, namespace: str, action_family: str) -> list[str]:
+def _commands_for_action_family(service: str, namespace: str, action_family: str, fault_mechanism: str = "") -> list[str]:
     ns = namespace or "default"
     verify = f"kubectl rollout status deployment/{service} -n {ns} --timeout=120s"
     get_deploy = f"kubectl get deployment/{service} -n {ns}"
 
     if action_family == "infra_patch_first":
-        patch_node_name = "'[{\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeName\"}]'"
+        path = (
+            "/spec/template/spec/nodeSelector"
+            if fault_mechanism == "assign_to_non_existent_node"
+            else "/spec/template/spec/nodeName"
+        )
+        patch_node_name = f"'[{{\"op\":\"remove\",\"path\":\"{path}\"}}]'"
         return [
             f"kubectl patch deployment/{service} -n {ns} --type=json -p={patch_node_name}",
             f"kubectl rollout restart deployment/{service} -n {ns}",
@@ -112,10 +120,19 @@ def _commands_for_action_family(service: str, namespace: str, action_family: str
         ]
 
     if action_family == "scale_service":
+        replicas = 1 if fault_mechanism == "scale_replicas_zero" else 2
         return [
-            f"kubectl scale deployment/{service} -n {ns} --replicas=2",
+            f"kubectl scale deployment/{service} -n {ns} --replicas={replicas}",
             verify,
             f"kubectl get pods -n {ns}",
+        ]
+
+    if action_family == "repair_service_port":
+        patch = "'[{\"op\":\"replace\",\"path\":\"/spec/ports/0/targetPort\",\"value\":9090}]'"
+        return [
+            f"kubectl patch service/{service} -n {ns} --type=json -p={patch}",
+            f"kubectl get service/{service} -n {ns}",
+            f"kubectl get endpoints/{service} -n {ns}",
         ]
 
     if action_family == "rollback_config":

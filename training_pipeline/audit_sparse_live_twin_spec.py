@@ -8,18 +8,17 @@ from pathlib import Path
 from digital_twin_runtime.application_topology import discover_application_topology
 from digital_twin_runtime.twin_spec_builder import build_sparse_live_twin_spec
 from training_pipeline.data_loader import iter_scenarios
-from training_pipeline.schemas import FaultLabel, normalize_fault_type
+from training_pipeline.schemas import FaultLabel, parse_fault_lines
 
 
 def _parse_fault(text: str) -> FaultLabel:
-    if "::" not in text:
-        raise ValueError(f"fault must be SERVICE::FAULT_TYPE, got {text!r}")
-    service, fault_type = text.split("::", 1)
-    service = service.strip()
-    fault_type = normalize_fault_type(fault_type.strip())
-    if not service:
-        raise ValueError("fault service cannot be empty")
-    return FaultLabel(service=service, fault_type=fault_type)
+    parsed = parse_fault_lines(text)
+    if len(parsed) != 1:
+        raise ValueError(
+            "fault must be SERVICE::FAULT_TYPE[::INJECTIBLE_MECHANISM], "
+            f"got {text!r}"
+        )
+    return parsed[0]
 
 
 def _find_scenario(processed_states: str | Path, scenario_id: str):

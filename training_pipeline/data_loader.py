@@ -83,19 +83,26 @@ def assert_redacted_state_safe(compressed: dict[str, Any], scenario_id: str = ""
 
 
 def iter_scenarios(processed_states_dir: str | Path, limit: int | None = None,
-                   require_safe_redaction: bool = True) -> Iterator[ScenarioRecord]:
+                   require_safe_redaction: bool = True,
+                   allowed_ids: set[str] | None = None) -> Iterator[ScenarioRecord]:
     root = Path(processed_states_dir).expanduser()
     if not root.exists():
         raise FileNotFoundError(root)
     dirs = sorted(d for d in root.iterdir() if d.is_dir()
                   and (d / "state_abstraction.json").exists()
                   and (d / "state_abstraction_compressed.json").exists())
+    # Scenario IDs in the processed corpus are directory names. Filter before
+    # loading multi-megabyte state JSON, then still verify the embedded ID below.
+    if allowed_ids is not None:
+        dirs = [d for d in dirs if d.name in allowed_ids]
     if limit is not None:
         dirs = dirs[:limit]
     for d in dirs:
         full = read_json(d / "state_abstraction.json", {})
         comp = read_json(d / "state_abstraction_compressed.json", {})
         sid = full.get("scenario_id") or comp.get("scenario_id") or d.name
+        if allowed_ids is not None and str(sid) not in allowed_ids:
+            continue
         if require_safe_redaction:
             assert_redacted_state_safe(comp, sid)
         yield ScenarioRecord(sid, d, d / "state_abstraction.json",

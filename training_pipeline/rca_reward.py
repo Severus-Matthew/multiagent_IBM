@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from .schemas import FaultLabel, normalize_fault_type
+from .schemas import FaultLabel, normalize_fault_mechanism, normalize_fault_type
 
 
 def normalize_service_name(service: str | None) -> str:
@@ -29,7 +29,11 @@ def _neighbors(full_state: dict[str, Any], service: str) -> set[str]:
 
 
 def _canonical_key(label: FaultLabel) -> str:
-    return f"{normalize_service_name(label.service)}::{normalize_fault_type(label.fault_type or label.fault_family)}"
+    base = f"{normalize_service_name(label.service)}::{normalize_fault_type(label.fault_type or label.fault_family)}"
+    mechanism = normalize_fault_mechanism(label.fault_mechanism)
+    if mechanism:
+        return f"{base}::{mechanism}::{label.variant_name or 'default'}"
+    return base
 
 
 def _pair_score(gt: FaultLabel, pred: FaultLabel, full_state: dict[str, Any]) -> dict[str, Any]:
@@ -37,12 +41,30 @@ def _pair_score(gt: FaultLabel, pred: FaultLabel, full_state: dict[str, Any]) ->
     pred_service = normalize_service_name(pred.service)
     service_exact = 1.0 if gt_service == pred_service else 0.0
     fault_exact = 1.0 if normalize_fault_type(gt.fault_type) == normalize_fault_type(pred.fault_type) else 0.0
+    gt_mechanism = normalize_fault_mechanism(gt.fault_mechanism)
+    pred_mechanism = normalize_fault_mechanism(pred.fault_mechanism)
+    mechanism_available = bool(gt_mechanism)
+    mechanism_exact = 1.0 if mechanism_available and gt_mechanism == pred_mechanism else 0.0
+    variant_exact = 1.0 if mechanism_exact and (gt.variant_name or "default") == (pred.variant_name or "default") else 0.0
     neighborhood = 1.0 if pred_service in _neighbors(full_state, gt.service) else 0.0
-    score = 0.55 * service_exact + 0.30 * fault_exact + 0.15 * neighborhood
+    if mechanism_available:
+        score = (
+            0.40 * service_exact
+            + 0.20 * fault_exact
+            + 0.15 * mechanism_exact
+            + 0.10 * variant_exact
+            + 0.15 * neighborhood
+        )
+    else:
+        # Legacy/unsupported evaluator labels retain dense service/type credit.
+        score = 0.45 * service_exact + 0.40 * fault_exact + 0.15 * neighborhood
     return {
         "score": score,
         "service_exact": service_exact,
         "fault_type_exact": fault_exact,
+        "fault_mechanism_exact": mechanism_exact,
+        "variant_exact": variant_exact,
+        "mechanism_available_in_ground_truth": mechanism_available,
         "neighborhood_match": neighborhood,
         "predicted_key": _canonical_key(pred),
     }

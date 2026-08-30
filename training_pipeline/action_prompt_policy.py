@@ -48,10 +48,15 @@ class StructuredActionPromptPolicy:
         for root in root_causes:
             service = str(root.get("service") or "unknown")
             fault_type = str(root.get("fault_type") or "unknown")
-            action_family = _choose_action_family(fault_type, self.strategy, iteration, previous_attempts, sample_index)
+            fault_mechanism = str(root.get("fault_mechanism") or "")
+            action_family = _choose_action_family(
+                fault_type, self.strategy, iteration, previous_attempts,
+                sample_index, fault_mechanism=fault_mechanism,
+            )
             plans.append({
                 "service": service,
                 "fault_type": fault_type,
+                "fault_mechanism": fault_mechanism,
                 "action_family": action_family,
                 "namespace": namespace,
                 "verification": "rollout_status_then_get",
@@ -97,6 +102,7 @@ class StructuredActionPromptPolicy:
             "- rollback_config: rollback/restart configuration-affecting service, verify status.",
             "- scale_service: scale deployment, verify rollout, get pods.",
             "- recreate_pod: delete only target-owned pods, verify rollout.",
+            "- repair_service_port: restore a misconfigured Service targetPort with a JSON patch, then get Service and Endpoints.",
             "",
             "ACTION_PLAN_JSON:",
             json.dumps(payload, sort_keys=True, default=str),
@@ -112,8 +118,9 @@ def _root_causes(context: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(item, dict):
             svc = item.get("service") or item.get("root_cause_service")
             ft = item.get("fault_type") or item.get("fault_family") or "unknown"
+            mechanism = item.get("fault_mechanism") or item.get("mechanism") or ""
             if svc:
-                out.append({"service": str(svc), "fault_type": str(ft)})
+                out.append({"service": str(svc), "fault_type": str(ft), "fault_mechanism": str(mechanism)})
     if not out and rca.get("root_cause_service"):
         out.append({
             "service": str(rca.get("root_cause_service")),
@@ -128,6 +135,7 @@ def _choose_action_family(
     iteration: int,
     previous_attempts: list[dict[str, Any]],
     sample_index: int = 0,
+    fault_mechanism: str = "",
 ) -> str:
     ft = str(fault_type or "unknown")
     if strategy == "infra_patch_first":
@@ -140,6 +148,16 @@ def _choose_action_family(
         return "scale_service"
 
     retry = iteration > 0 or bool(previous_attempts)
+    if strategy == "auto" and fault_mechanism == "scale_replicas_zero":
+        families = ["scale_service", "restart_service", "infra_patch_first", "rollback_config"]
+        if retry:
+            families = ["restart_service", "scale_service", "infra_patch_first", "rollback_config"]
+        return families[sample_index % len(families)]
+    if strategy == "auto" and fault_mechanism == "target_port_misconfig":
+        families = ["repair_service_port", "restart_service", "rollback_config", "scale_service"]
+        if retry:
+            families = ["restart_service", "repair_service_port", "rollback_config", "scale_service"]
+        return families[sample_index % len(families)]
     if ft == "infra_failure":
         families = ["infra_patch_first", "restart_service", "scale_service", "rollback_config"]
         if retry:

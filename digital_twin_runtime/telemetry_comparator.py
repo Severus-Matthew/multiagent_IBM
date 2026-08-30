@@ -453,6 +453,72 @@ def compare_symptoms(original_state: dict[str, Any], twin_state: dict[str, Any])
     }
 
 
+def compare_symptoms_scoped(
+    original_state: dict[str, Any],
+    twin_state: dict[str, Any],
+    selected_services: list[str] | set[str],
+) -> dict[str, Any]:
+    """Compare a sparse Twin only over its principled common service scope.
+
+    Missing bystanders are neither treated as healthy nor included in the
+    reproduction denominator. Original symptoms outside the sparse subgraph are
+    reported separately so scope reduction cannot hide unexplained evidence.
+    """
+    scope = {_norm_service(x) for x in selected_services if _norm_service(x)}
+    orig = symptom_signature(original_state)
+    twin = symptom_signature(twin_state)
+
+    def services(values: list[str]) -> set[str]:
+        return {_norm_service(x) for x in values if _norm_service(x) in scope}
+
+    def edges(values: list[str]) -> set[str]:
+        kept = set()
+        for value in values:
+            text = str(value)
+            if "->" not in text:
+                continue
+            src, dst = (_norm_service(x) for x in text.split("->", 1))
+            if src in scope and dst in scope:
+                kept.add(f"{src}->{dst}")
+        return kept
+
+    orig_degraded = services(orig["degraded_services"])
+    twin_degraded = services(twin["degraded_services"])
+    orig_logs = services(orig["top_error_services"])
+    twin_logs = services(twin["top_error_services"])
+    orig_edges = edges(orig["failed_edges"])
+    twin_edges = edges(twin["failed_edges"])
+    degraded_score = _jaccard(orig_degraded, twin_degraded)
+    edge_score = _jaccard(orig_edges, twin_edges)
+    log_score = _jaccard(orig_logs, twin_logs)
+    score = 0.45 * degraded_score + 0.35 * edge_score + 0.20 * log_score
+    outside = {
+        "degraded_services": sorted(set(orig["degraded_services"]) - scope),
+        "top_error_services": sorted(set(orig["top_error_services"]) - scope),
+        "failed_edges": sorted(set(orig["failed_edges"]) - orig_edges),
+    }
+    return {
+        "reproduction_score": round(score, 4),
+        "comparison_scope": sorted(scope),
+        "scope_policy": "selected_sparse_common_scope_v1",
+        "degraded_service_overlap": round(degraded_score, 4),
+        "trace_edge_overlap": round(edge_score, 4),
+        "log_error_service_overlap": round(log_score, 4),
+        "original_scoped_signature": {
+            "degraded_services": sorted(orig_degraded),
+            "failed_edges": sorted(orig_edges),
+            "top_error_services": sorted(orig_logs),
+        },
+        "twin_scoped_signature": {
+            "degraded_services": sorted(twin_degraded),
+            "failed_edges": sorted(twin_edges),
+            "top_error_services": sorted(twin_logs),
+        },
+        "unexplained_original_symptoms_outside_scope": outside,
+        "missing_bystanders_counted_as_healthy": False,
+    }
+
+
 def score_resolution(before_state: dict[str, Any], after_state: dict[str, Any]) -> dict[str, Any]:
     before = symptom_signature(before_state)
     after = symptom_signature(after_state)

@@ -7,7 +7,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .schemas import CANONICAL_FAULT_TYPES, normalize_fault_type, parse_fault_lines
+from .schemas import (
+    CANONICAL_FAULT_TYPES,
+    normalize_fault_mechanism,
+    normalize_fault_type,
+    parse_fault_lines,
+)
 
 
 _SYSTEM_PROMPT = """\
@@ -22,11 +27,18 @@ helper services, Kubernetes nodes, app names, namespaces, or fault-family names.
 Output contract:
 - Output ONLY root-cause lines.
 - One root cause per line.
-- Each line must be exactly: service::fault_type
+- Each line must be exactly: service::fault_type::injectible_mechanism
 - service must be one of valid_services.
 - fault_type must be one of:
   infra_failure, auth_failure, dependency_failure, resource_exhaustion,
   latency_degradation, network_failure, config_error, unknown
+- injectible_mechanism must be one of the public Twin capabilities:
+  assign_to_non_existent_node, delete_pod, scale_replicas_zero, container_kill,
+  network_delay, network_loss, cpu_stress, memory_stress,
+  mongodb_auth_missing, mongodb_auth_revoked, target_port_misconfig,
+  application_config_misconfig
+- The mechanism must agree with fault_type. Infer it from telemetry; never use a
+  scenario ID, hidden label, or evaluator-provided fault family.
 - No prose, no markdown, no JSON, no bullets, no explanations.
 
 Diagnosis rules:
@@ -519,11 +531,17 @@ def sanitize_rca_prediction(raw: str, compressed_state: dict[str, Any] | None = 
         cleaned = line.strip().strip("`*->•- ").strip()
         if "::" not in cleaned:
             continue
-        left, right = [x.strip() for x in cleaned.split("::", 1)]
-        left = _clean_service(left)
-        right = normalize_fault_type(_clean_fault_type(right))
+        parts = [x.strip() for x in cleaned.split("::")]
+        if len(parts) < 2 or len(parts) > 4:
+            continue
+        left = _clean_service(parts[0])
+        right = normalize_fault_type(_clean_fault_type(parts[1]))
+        mechanism = normalize_fault_mechanism(parts[2]) if len(parts) >= 3 else ""
+        variant = parts[3] if len(parts) == 4 else ""
         if left:
-            lines.append(f"{left}::{right}")
+            suffix = f"::{mechanism}" if mechanism else ""
+            suffix += f"::{variant}" if mechanism and variant else ""
+            lines.append(f"{left}::{right}{suffix}")
     if not lines:
         lines = _lines_from_json(_extract_json(text))
     if lines:
@@ -538,7 +556,10 @@ def _repair_prediction_with_candidates(prediction: str, valid_services: set[str]
         return (_candidate_key(best), "fallback_no_parse") if best else (prediction or "unknown::unknown", "no_parse_no_candidate")
 
     label = parsed[0]
-    pred_key = label.canonical_key()
+    pred_key = (
+        f"{label.service}::{normalize_fault_type(label.fault_type)}::{label.fault_mechanism}"
+        if label.fault_mechanism else label.canonical_key()
+    )
     pred_service = label.service
     pred_ft = normalize_fault_type(label.fault_type)
 
@@ -593,8 +614,15 @@ def _lines_from_json(parsed: Any) -> list[str]:
             continue
         service = row.get("service") or row.get("root_cause_service") or row.get("root_cause")
         fault_type = row.get("fault_type") or row.get("fault") or row.get("fault_family")
+        mechanism = normalize_fault_mechanism(row.get("fault_mechanism") or row.get("mechanism"))
+        variant = str(row.get("variant_name") or "").strip()
         if service:
-            out.append(f"{_clean_service(str(service))}::{normalize_fault_type(str(fault_type or 'unknown'))}")
+            line = f"{_clean_service(str(service))}::{normalize_fault_type(str(fault_type or 'unknown'))}"
+            if mechanism:
+                line += f"::{mechanism}"
+                if variant:
+                    line += f"::{variant}"
+            out.append(line)
     return out
 
 
@@ -791,7 +819,12 @@ def _dedupe_lines(lines: list[str], compressed_state: dict[str, Any] | None = No
         parsed = parse_fault_lines(line)
         if not parsed:
             continue
-        normalized = parsed[0].canonical_key()
+        label = parsed[0]
+        normalized = label.canonical_key()
+        if label.fault_mechanism:
+            normalized += f"::{label.fault_mechanism}"
+            if label.variant_name and label.variant_name != "default":
+                normalized += f"::{label.variant_name}"
         if normalized in seen:
             continue
         seen.add(normalized)

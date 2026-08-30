@@ -108,6 +108,54 @@ def snapshot_named_parameters(model: Any) -> dict[str, torch.Tensor]:
     }
 
 
+def copy_role_adapter_parameters(source_model: Any, target_model: Any) -> int:
+    """Copy both role adapters between identical frozen-base model replicas.
+
+    Parallel rollout workers must always sample from one published policy
+    bundle.  Only the small LoRA tensors are copied; the frozen base is never
+    staged through CPU or modified.  Parameter names and shapes are checked so
+    a partially compatible replica fails closed instead of silently producing
+    stale-policy rollouts.
+    """
+    source = {
+        name: parameter
+        for name, parameter in source_model.named_parameters()
+        if any(parameter_belongs_to_adapter(name, adapter) for adapter in ROLE_ADAPTERS)
+    }
+    target = {
+        name: parameter
+        for name, parameter in target_model.named_parameters()
+        if any(parameter_belongs_to_adapter(name, adapter) for adapter in ROLE_ADAPTERS)
+    }
+    if not source or source.keys() != target.keys():
+        missing = sorted(source.keys() - target.keys())
+        extra = sorted(target.keys() - source.keys())
+        raise RuntimeError(
+            "parallel rollout replicas have incompatible LoRA parameters; "
+            f"missing={missing[:10]} extra={extra[:10]}"
+        )
+
+    copied = 0
+    with torch.no_grad():
+        for name, source_parameter in source.items():
+            target_parameter = target[name]
+            if source_parameter.shape != target_parameter.shape:
+                raise RuntimeError(
+                    f"parallel rollout adapter shape mismatch for {name}: "
+                    f"{tuple(source_parameter.shape)} != {tuple(target_parameter.shape)}"
+                )
+            target_parameter.copy_(
+                source_parameter.detach().to(
+                    device=target_parameter.device,
+                    dtype=target_parameter.dtype,
+                )
+            )
+            target_parameter.requires_grad_(False)
+            target_parameter.grad = None
+            copied += 1
+    return copied
+
+
 def changed_parameter_names(
     before: dict[str, torch.Tensor],
     model: Any,

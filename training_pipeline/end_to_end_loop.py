@@ -209,75 +209,87 @@ def run_end_to_end_trajectory_group(
     scenario_id = str(full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown")
     trajectory_group_id = f"e2e:{scenario_id}"
     trajectories: list[dict[str, Any]] = []
+    live_mode = bool(getattr(twin_verifier, "is_live", False))
 
     for trajectory_index in range(int(trajectory_group_size)):
         trajectory_id = f"{trajectory_group_id}:traj{trajectory_index}"
+        begin = getattr(twin_verifier, "begin_trajectory", None)
+        end = getattr(twin_verifier, "end_trajectory", None)
+        if callable(begin):
+            begin(trajectory_id)
+        try:
+            rca_result = run_rca_grpo_episode(
+                full_state,
+                compressed_state,
+                rca_instruction_policy,
+                rca_solver,
+                twin_validator=twin_verifier,
+                max_iterations=rca_max_iterations,
+                group_size=1,
+                selection_strategy="sample0",
+                policy_model_name=rca_policy_model_name,
+                policy_version=policy_version,
+                agent_state=agent_state,
+                agent_input_mode="training_safe",
+                agent_input_safety=safety,
+                sample_index_offset=trajectory_index,
+                stop_on_local_success=False,
+            )
+            rca_samples = list(rca_result.get("grpo_samples", []) or [])
+            rca_faults = parse_fault_lines(rca_result.get("final_prediction", ""))
+            active_gate = None
+            current_gate = getattr(twin_verifier, "current_rca_gate", None)
+            if callable(current_gate):
+                active_gate = current_gate(rca_faults)
 
-        rca_result = run_rca_grpo_episode(
-            full_state,
-            compressed_state,
-            rca_instruction_policy,
-            rca_solver,
-            twin_validator=twin_verifier,
-            max_iterations=rca_max_iterations,
-            group_size=1,
-            selection_strategy="sample0",
-            policy_model_name=rca_policy_model_name,
-            policy_version=policy_version,
-            agent_state=agent_state,
-            agent_input_mode="training_safe",
-            agent_input_safety=safety,
-            sample_index_offset=trajectory_index,
-            stop_on_local_success=False,
-        )
-        rca_samples = list(rca_result.get("grpo_samples", []) or [])
-        rca_faults = parse_fault_lines(rca_result.get("final_prediction", ""))
+            action_result = run_action_prompt_optimizer_loop(
+                full_state,
+                compressed_state,
+                rca_result,
+                rca_faults,
+                action_prompt_policy,
+                action_agent,
+                twin_verifier,
+                max_iterations=action_max_iterations,
+                require_rca_twin_verification=live_mode,
+                skip_action_if_rca_unverified=live_mode,
+                min_twin_reproduction_score=min_twin_reproduction_score,
+                rca_twin_gate=active_gate,
+                group_size=1,
+                selection_strategy="sample0",
+                policy_model_name=action_policy_model_name,
+                policy_version=policy_version,
+                agent_state=agent_state,
+                agent_input_mode="training_safe",
+                agent_input_safety=safety,
+                sample_index_offset=trajectory_index,
+                require_upstream_label_success_for_gate=False,
+            )
+            action_samples = list(action_result.get("grpo_samples", []) or [])
 
-        action_result = run_action_prompt_optimizer_loop(
-            full_state,
-            compressed_state,
-            rca_result,
-            rca_faults,
-            action_prompt_policy,
-            action_agent,
-            twin_verifier,
-            max_iterations=action_max_iterations,
-            require_rca_twin_verification=False,
-            skip_action_if_rca_unverified=False,
-            min_twin_reproduction_score=min_twin_reproduction_score,
-            rca_twin_gate=None,
-            group_size=1,
-            selection_strategy="sample0",
-            policy_model_name=action_policy_model_name,
-            policy_version=policy_version,
-            agent_state=agent_state,
-            agent_input_mode="training_safe",
-            agent_input_safety=safety,
-            sample_index_offset=trajectory_index,
-            require_upstream_label_success_for_gate=False,
-        )
-        action_samples = list(action_result.get("grpo_samples", []) or [])
-
-        reward_obj = end_to_end_reward(
-            rca_result,
-            action_result,
-            reward_mode=reward_mode,
-            rca_downstream_credit_weight=rca_downstream_credit_weight,
-            action_system_credit_weight=action_system_credit_weight,
-        )
-        trajectories.append({
-            "trajectory_id": trajectory_id,
-            "trajectory_index": trajectory_index,
-            "system_reward": reward_obj["system_reward"],
-            "system_quality": reward_obj["system_quality"],
-            "rca_policy_return": reward_obj["rca_policy_return"],
-            "action_policy_return": reward_obj["action_policy_return"],
-            "trajectory_success": reward_obj["success"],
-            "reward": reward_obj,
-            "rca_result": {k: v for k, v in rca_result.items() if k != "grpo_samples"},
-            "action_result": {k: v for k, v in action_result.items() if k != "grpo_samples"},
-            "_policy_samples": rca_samples + action_samples,
-        })
+            reward_obj = end_to_end_reward(
+                rca_result,
+                action_result,
+                reward_mode=reward_mode,
+                rca_downstream_credit_weight=rca_downstream_credit_weight,
+                action_system_credit_weight=action_system_credit_weight,
+            )
+            trajectories.append({
+                "trajectory_id": trajectory_id,
+                "trajectory_index": trajectory_index,
+                "system_reward": reward_obj["system_reward"],
+                "system_quality": reward_obj["system_quality"],
+                "rca_policy_return": reward_obj["rca_policy_return"],
+                "action_policy_return": reward_obj["action_policy_return"],
+                "trajectory_success": reward_obj["success"],
+                "reward": reward_obj,
+                "rca_result": {k: v for k, v in rca_result.items() if k != "grpo_samples"},
+                "action_result": {k: v for k, v in action_result.items() if k != "grpo_samples"},
+                "_policy_samples": rca_samples + action_samples,
+            })
+        finally:
+            if callable(end):
+                end()
 
     _compute_factorized_advantages(trajectories)
 

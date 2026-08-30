@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from .schemas import FaultLabel, normalize_fault_type
+from .schemas import FaultLabel, infer_fault_mechanism, normalize_fault_type
 
 
 def labels_from_fault_context(fault_context: dict[str, Any]) -> list[FaultLabel]:
@@ -25,6 +25,7 @@ def labels_from_fault_context(fault_context: dict[str, Any]) -> list[FaultLabel]
             fault_type=normalize_fault_type(family),
             fault_family=str(family),
             variant_name=str(inst.get("variant_name", "default")),
+            fault_mechanism=infer_fault_mechanism(str(family)),
             metadata={
                 "variant_params": inst.get("variant_params", {}),
                 "task": inst.get("task") or fault_context.get("task"),

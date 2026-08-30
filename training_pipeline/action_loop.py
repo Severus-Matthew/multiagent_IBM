@@ -115,11 +115,13 @@ def _scenario_id(full_state: dict[str, Any], compressed_state: dict[str, Any]) -
 
 
 def _public_faults(faults: list[FaultLabel]) -> list[dict[str, str]]:
-    """Expose only the RCA prediction itself, never oracle variant metadata."""
+    """Expose only the RCA prediction itself, never oracle-derived metadata."""
     return [
         {
             "service": str(f.service),
             "fault_type": normalize_fault_type(f.fault_type or f.fault_family),
+            "fault_mechanism": str(f.fault_mechanism or ""),
+            "variant_name": str(f.variant_name or "default"),
         }
         for f in faults
         if str(f.service or "").strip()
@@ -159,7 +161,6 @@ def _derive_rca_twin_gate(
     require_upstream_label_success: bool = True,
 ) -> dict[str, Any]:
     if not require_upstream_label_success:
-        provided_gate = None
         upstream_rca_success = None
 
     if isinstance(provided_gate, dict) and provided_gate:
@@ -283,6 +284,11 @@ def run_action_prompt_optimizer_loop(
     grpo_samples: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
     namespace = _namespace(full_state, compressed_state)
+    live_namespace = getattr(twin_verifier, "action_namespace", None)
+    if callable(live_namespace):
+        owned_namespace = live_namespace()
+        if owned_namespace:
+            namespace = str(owned_namespace)
     current_sla = sla_verdict_from_state(compressed_state)
     scenario_id = _scenario_id(full_state, compressed_state)
 
@@ -330,12 +336,22 @@ def run_action_prompt_optimizer_loop(
             normalized = normalize_commands(commands)
             action = _first_valid_mitigation_action(normalized)
             if safety.get("safe") and action and twin_verifier is not None:
-                verifier = twin_verifier.apply_action_and_score(
-                    full_state,
-                    rca_faults,
-                    action,
-                    compressed_state=compressed_state,
-                )
+                live_apply = getattr(twin_verifier, "apply_commands_and_score", None)
+                if callable(live_apply):
+                    verifier = live_apply(
+                        full_state,
+                        rca_faults,
+                        action,
+                        commands,
+                        compressed_state=compressed_state,
+                    )
+                else:
+                    verifier = twin_verifier.apply_action_and_score(
+                        full_state,
+                        rca_faults,
+                        action,
+                        compressed_state=compressed_state,
+                    )
             else:
                 verifier = {
                     "resolved": False,

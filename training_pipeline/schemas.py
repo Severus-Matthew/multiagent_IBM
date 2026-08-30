@@ -32,6 +32,53 @@ CANONICAL_FAULT_TYPES = {
     "config_error", "network_failure", "resource_exhaustion", "multifault", "unknown",
 }
 
+# Public capabilities of the live Twin. This is a tool schema, not a
+# scenario-specific candidate list, and is therefore safe to expose to RCA.
+INJECTIBLE_FAULT_MECHANISMS = {
+    "assign_to_non_existent_node": "infra_failure",
+    "delete_pod": "infra_failure",
+    "scale_replicas_zero": "infra_failure",
+    "container_kill": "infra_failure",
+    "network_delay": "latency_degradation",
+    "network_loss": "network_failure",
+    "cpu_stress": "resource_exhaustion",
+    "memory_stress": "resource_exhaustion",
+    "mongodb_auth_missing": "auth_failure",
+    "mongodb_auth_revoked": "auth_failure",
+    "target_port_misconfig": "config_error",
+    "application_config_misconfig": "config_error",
+}
+
+_FAULT_FAMILY_MECHANISM_MARKERS = (
+    ("assign_to_non_existent_node", "assign_to_non_existent_node"),
+    ("assign_non_existent_node", "assign_to_non_existent_node"),
+    ("scale_pod_zero", "scale_replicas_zero"),
+    ("scale_replicas_zero", "scale_replicas_zero"),
+    ("k8s_target_port_misconfig", "target_port_misconfig"),
+    ("target_port_misconfig", "target_port_misconfig"),
+    ("auth_miss_mongodb", "mongodb_auth_missing"),
+    ("revoke_auth_mongodb", "mongodb_auth_revoked"),
+    ("mongodb_auth_missing", "mongodb_auth_missing"),
+    ("mongodb_auth_revoked", "mongodb_auth_revoked"),
+    ("network_delay", "network_delay"),
+    ("network_loss", "network_loss"),
+    ("container_kill", "container_kill"),
+    ("delete_pod", "delete_pod"),
+    ("cpu_stress", "cpu_stress"),
+    ("memory_stress", "memory_stress"),
+    ("misconfig_app", "application_config_misconfig"),
+    ("application_config_misconfig", "application_config_misconfig"),
+)
+
+
+def infer_fault_mechanism(fault_family: str | None) -> str:
+    """Map evaluator-side AIOpsLab family identifiers to public replay tools."""
+    family = str(fault_family or "").strip().lower().replace("-", "_")
+    for marker, mechanism in _FAULT_FAMILY_MECHANISM_MARKERS:
+        if marker in family:
+            return mechanism
+    return ""
+
 
 @dataclass(frozen=True)
 class FaultLabel:
@@ -39,6 +86,7 @@ class FaultLabel:
     fault_type: str
     fault_family: str = ""
     variant_name: str = "default"
+    fault_mechanism: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def canonical_key(self) -> str:
@@ -46,6 +94,18 @@ class FaultLabel:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def injection_key(self) -> str:
+        mechanism = normalize_fault_mechanism(self.fault_mechanism)
+        return f"{self.service}::{mechanism}::{self.variant_name}"
+
+    def is_injectible(self) -> bool:
+        mechanism = normalize_fault_mechanism(self.fault_mechanism)
+        return (
+            mechanism in INJECTIBLE_FAULT_MECHANISMS
+            and INJECTIBLE_FAULT_MECHANISMS[mechanism]
+            == normalize_fault_type(self.fault_type)
+        )
 
 
 @dataclass
@@ -168,19 +228,39 @@ def normalize_fault_type(text: str | None) -> str:
     return value if value in CANONICAL_FAULT_TYPES else "unknown"
 
 
+def normalize_fault_mechanism(text: str | None) -> str:
+    value = str(text or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return value if value in INJECTIBLE_FAULT_MECHANISMS else ""
+
+
 def parse_fault_lines(text: str) -> list[FaultLabel]:
-    """Parse strict RCA output lines: service::fault_type."""
+    """Parse RCA lines.
+
+    The live contract is ``service::fault_type::mechanism[::variant]``. The
+    historical two-field form remains parseable for offline audits, but yields
+    a deliberately non-injectible label rather than guessing a mechanism.
+    """
     labels: list[FaultLabel] = []
     seen: set[str] = set()
     for raw in str(text or "").splitlines():
         line = raw.strip().strip("`").strip()
         if not line or line.startswith("#") or "::" not in line:
             continue
-        service, fault_type = [x.strip() for x in line.split("::", 1)]
+        parts = [x.strip() for x in line.split("::")]
+        if len(parts) < 2 or len(parts) > 4:
+            continue
+        service, fault_type = parts[:2]
+        mechanism = normalize_fault_mechanism(parts[2]) if len(parts) >= 3 else ""
+        variant = parts[3] if len(parts) == 4 and parts[3] else "default"
         if not service:
             continue
-        label = FaultLabel(service=service, fault_type=normalize_fault_type(fault_type))
-        key = label.canonical_key()
+        label = FaultLabel(
+            service=service,
+            fault_type=normalize_fault_type(fault_type),
+            fault_mechanism=mechanism,
+            variant_name=variant,
+        )
+        key = label.injection_key() if mechanism else label.canonical_key()
         if key not in seen:
             labels.append(label)
             seen.add(key)

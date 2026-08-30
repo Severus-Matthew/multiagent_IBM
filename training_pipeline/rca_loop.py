@@ -49,7 +49,7 @@ class HeuristicRCAInstructionPolicy:
         return (
             "Read only the redacted telemetry. "
             + strategy
-            + " Output only component::fault_mechanism, one root cause per line."
+            + " Output only service::fault_type::injectible_mechanism, one root cause per line."
             + retry
         )
 

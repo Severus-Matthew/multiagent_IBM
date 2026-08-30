@@ -53,6 +53,7 @@ SUPPORTED_EXPERTS_IMPLEMENTATIONS = {"eager", "batched_mm", "grouped_mm"}
 @dataclass(frozen=True)
 class QwenSharedPolicyBackendConfig:
     model_name: str = DEFAULT_QWEN_MODEL
+    cache_dir: str | None = None
     device: str = "cuda:0"
     quantization: str = "nf4"
     experts_implementation: str = "eager"
@@ -183,13 +184,15 @@ def load_qwen_shared_policy_backend(
     except Exception as exc:
         raise RuntimeError("Qwen backend requires transformers and peft") from exc
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.cache_dir)
 
     load_kwargs: dict[str, Any] = {
         "device_map": {"": index},
         "low_cpu_mem_usage": True,
         "experts_implementation": cfg.experts_implementation,
     }
+    if cfg.cache_dir:
+        load_kwargs["cache_dir"] = cfg.cache_dir
     if cfg.quantization == "nf4":
         try:
             import bitsandbytes  # noqa: F401

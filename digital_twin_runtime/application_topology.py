@@ -152,7 +152,28 @@ def discover_application_topology(
     for edge, files in lua_evidence.items():
         evidence.setdefault(edge, []).extend(files)
 
-    edges = _unique_edges(cpp_edges + lua_edges)
+    support_edges: list[tuple[str, str]] = []
+    support_evidence: dict[str, list[str]] = {}
+    values_path = root / "helm-chart" / "socialnetwork" / "values.yaml"
+    if "jaeger" in services and values_path.exists():
+        try:
+            values_text = values_path.read_text(errors="ignore")
+        except Exception:
+            values_text = ""
+        if re.search(r"localAgentHostPort\s*:\s*jaeger:\d+", values_text):
+            # Tracing is a global runtime dependency in this deployment. It is
+            # fault-independent support, not an observed symptom or oracle root.
+            callers = {src for src, _ in cpp_edges + lua_edges}
+            callers.update(dst for _, dst in cpp_edges + lua_edges)
+            for caller in sorted(callers & services - {"jaeger"}):
+                support_edges.append((caller, "jaeger"))
+                support_evidence.setdefault(f"{caller}->jaeger", []).append(
+                    str(values_path.relative_to(root))
+                )
+    for edge, files in support_evidence.items():
+        evidence.setdefault(edge, []).extend(files)
+
+    edges = _unique_edges(cpp_edges + lua_edges + support_edges)
     entrypoints = [frontend] if frontend and any(src == frontend for src, _ in edges) else []
 
     return ApplicationTopology(

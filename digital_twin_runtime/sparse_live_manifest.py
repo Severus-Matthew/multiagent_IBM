@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from copy import deepcopy
 from dataclasses import dataclass, asdict, field
 from typing import Any, Iterable
 
@@ -27,6 +29,25 @@ class SparseManifestPlan:
         return asdict(self)
 
 
+@dataclass
+class SparseManifestBundle:
+    """Sanitized, namespace-local objects ready for a later apply stage.
+
+    Rendering is read-only.  In particular, this object does not imply that the
+    manifests were applied or that a namespace was created.
+    """
+
+    source_namespace: str
+    target_namespace: str
+    objects: list[dict[str, Any]] = field(default_factory=list)
+    object_refs: list[dict[str, str]] = field(default_factory=list)
+    rejected_refs: list[dict[str, str]] = field(default_factory=list)
+    read_only: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _kubectl_json(args: list[str]) -> dict[str, Any]:
     proc = subprocess.run(
         ["kubectl", *args, "-o", "json"],
@@ -45,6 +66,10 @@ def _kubectl_json(args: list[str]) -> dict[str, Any]:
 def _items(kind: str, namespace: str) -> list[dict[str, Any]]:
     obj = _kubectl_json(["get", kind, "-n", namespace])
     return list(obj.get("items", []) or [])
+
+
+def _object(kind: str, name: str, namespace: str) -> dict[str, Any]:
+    return _kubectl_json(["get", kind, name, "-n", namespace])
 
 
 def _name(obj: dict[str, Any]) -> str:
@@ -304,5 +329,172 @@ def discover_sparse_manifest_plan(
             "note": "source readiness is diagnostic only; sparse Twin manifests are cloned into a separate namespace",
         },
         resource_counts=resource_counts,
+        read_only=True,
+    )
+
+
+_DNS_LABEL = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+_SERVER_METADATA = {
+    "annotations",
+    "creationTimestamp",
+    "deletionGracePeriodSeconds",
+    "deletionTimestamp",
+    "finalizers",
+    "generateName",
+    "generation",
+    "managedFields",
+    "ownerReferences",
+    "resourceVersion",
+    "selfLink",
+    "uid",
+}
+
+
+def _validate_namespace(namespace: str) -> str:
+    value = str(namespace or "").strip()
+    if len(value) > 63 or not _DNS_LABEL.fullmatch(value):
+        raise ValueError(f"invalid target namespace: {namespace!r}")
+    return value
+
+
+def _sanitize_metadata(obj: dict[str, Any], target_namespace: str) -> None:
+    metadata = obj.setdefault("metadata", {})
+    for key in _SERVER_METADATA:
+        metadata.pop(key, None)
+    metadata["namespace"] = target_namespace
+    labels = metadata.setdefault("labels", {})
+    labels["aiopslab.ibm/twin"] = "sparse-live"
+    labels["aiopslab.ibm/managed-by"] = "sparse-live-twin"
+
+
+def _sanitize_for_clone(
+    obj: dict[str, Any], target_namespace: str, source_namespace: str | None = None
+) -> dict[str, Any]:
+    clone = deepcopy(obj)
+    clone.pop("status", None)
+    _sanitize_metadata(clone, target_namespace)
+
+    kind = str(clone.get("kind") or "")
+    spec = clone.get("spec", {}) or {}
+    if kind == "Service":
+        # These fields are allocated by the destination cluster.  Retaining
+        # them can collide with the source Service or create a non-portable
+        # manifest.  External/LB identity is deliberately not cloned.
+        for key in (
+            "clusterIP", "clusterIPs", "healthCheckNodePort", "ipFamilies",
+            "ipFamilyPolicy", "loadBalancerClass", "loadBalancerIP",
+        ):
+            spec.pop(key, None)
+        spec["type"] = "ClusterIP"
+        for port in spec.get("ports", []) or []:
+            if isinstance(port, dict):
+                port.pop("nodePort", None)
+    elif kind == "ServiceAccount":
+        # Bound token secrets are namespace/runtime state, not portable config.
+        clone.pop("secrets", None)
+        spec.pop("secrets", None)
+        spec.pop("imagePullSecrets", None)
+    elif kind in {"Deployment", "StatefulSet"}:
+        spec.pop("progressDeadlineSeconds", None)
+        if kind == "Deployment":
+            spec.pop("revisionHistoryLimit", None)
+        # A sparse Twin starts with one replica per selected logical service;
+        # scale faults are applied later to this clean baseline.
+        spec["replicas"] = 1
+        template_meta = (
+            spec.setdefault("template", {}).setdefault("metadata", {})
+        )
+        for key in _SERVER_METADATA:
+            template_meta.pop(key, None)
+    elif kind == "ConfigMap":
+        clone.pop("immutable", None)
+    elif kind == "Secret":
+        # Service-account tokens are runtime credentials and must never be
+        # copied across namespaces.
+        if str(clone.get("type") or "") == "kubernetes.io/service-account-token":
+            raise ValueError(
+                f"refusing to clone service-account token Secret {_name(clone)!r}"
+            )
+    clone["spec"] = spec if "spec" in clone else clone.get("spec")
+    if clone.get("spec") is None:
+        clone.pop("spec", None)
+    if source_namespace:
+        source_suffix = f".{source_namespace}.svc.cluster.local"
+        target_suffix = f".{target_namespace}.svc.cluster.local"
+
+        def rewrite(value: Any) -> Any:
+            if isinstance(value, str):
+                return value.replace(source_suffix, target_suffix)
+            if isinstance(value, list):
+                return [rewrite(item) for item in value]
+            if isinstance(value, dict):
+                return {key: rewrite(item) for key, item in value.items()}
+            return value
+
+        clone = rewrite(clone)
+    return clone
+
+
+def render_sparse_manifest_bundle(
+    plan: SparseManifestPlan,
+    target_namespace: str,
+) -> SparseManifestBundle:
+    """Read source objects and render portable copies without mutating K8s.
+
+    PVC cloning is intentionally unsupported until a storage policy is chosen;
+    silently pointing a Twin at source storage would violate isolation.
+    Missing or ambiguous discovery results also fail closed.
+    """
+    target = _validate_namespace(target_namespace)
+    if target == plan.source_namespace:
+        raise ValueError("target namespace must differ from source namespace")
+    if plan.missing_selected_controllers or plan.missing_required_refs:
+        raise ValueError("cannot render an incomplete sparse manifest plan")
+    if plan.persistent_volume_claims:
+        raise ValueError("PVC-backed sparse Twins require an explicit storage clone policy")
+
+    refs: list[tuple[str, str]] = []
+    for row in plan.controllers:
+        refs.append((str(row["kind"]), str(row["name"])))
+    refs.extend(("Service", str(row["name"])) for row in plan.service_objects)
+    refs.extend(("ConfigMap", name) for name in plan.configmaps)
+    refs.extend(("Secret", name) for name in plan.secrets)
+    # The destination namespace creates its own default ServiceAccount.
+    refs.extend(
+        ("ServiceAccount", name)
+        for name in plan.service_accounts
+        if name != "default"
+    )
+
+    objects: list[dict[str, Any]] = []
+    object_refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for kind, name in refs:
+        key = (kind, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        raw = _object(kind.lower(), name, plan.source_namespace)
+        clone = _sanitize_for_clone(raw, target, plan.source_namespace)
+        objects.append(clone)
+        object_refs.append({"kind": kind, "name": name})
+
+    order = {
+        "ServiceAccount": 0,
+        "Secret": 1,
+        "ConfigMap": 2,
+        "Service": 3,
+        "Deployment": 4,
+        "StatefulSet": 4,
+    }
+    paired = sorted(
+        zip(objects, object_refs),
+        key=lambda pair: (order.get(pair[1]["kind"], 99), pair[1]["kind"], pair[1]["name"]),
+    )
+    return SparseManifestBundle(
+        source_namespace=plan.source_namespace,
+        target_namespace=target,
+        objects=[pair[0] for pair in paired],
+        object_refs=[pair[1] for pair in paired],
         read_only=True,
     )

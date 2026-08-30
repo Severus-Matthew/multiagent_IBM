@@ -35,7 +35,7 @@ def normalize_command(cmd: str) -> dict[str, Any]:
         return {"action": "rollback_config", "service": None, "raw": raw, "valid": len(parts) >= 3}
 
     if parts[:2] == ["kubectl", "patch"]:
-        svc = _deployment(parts[2:]) or _configmap(parts[2:])
+        svc = _deployment(parts[2:]) or _service(parts[2:]) or _configmap(parts[2:])
         if _looks_like_scheduling_repair(low):
             return {"action": "fix_infra_scheduling", "service": svc, "raw": raw, "valid": bool(svc)}
         return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
@@ -70,6 +70,15 @@ def _configmap(parts: list[str]) -> str | None:
         if p.startswith("configmap/"):
             return p.split("/", 1)[1]
         if p in ("configmap", "cm") and i + 1 < len(parts):
+            return parts[i + 1]
+    return None
+
+
+def _service(parts: list[str]) -> str | None:
+    for i, p in enumerate(parts):
+        if p.startswith("service/") or p.startswith("svc/"):
+            return p.split("/", 1)[1]
+        if p in ("service", "svc") and i + 1 < len(parts):
             return parts[i + 1]
     return None
 
