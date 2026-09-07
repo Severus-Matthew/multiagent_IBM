@@ -52,7 +52,7 @@ unknown
 
 ## Episode structure
 
-One scenario is one episode. Each episode has up to five RCA iterations.
+One scenario is one episode. Each episode has up to seven RCA iterations.
 
 At each iteration:
 
@@ -83,13 +83,30 @@ R_RCA =
   - token_penalty
 ```
 
-The pair score uses:
+The pair score is mechanism-aware, because the live Twin can only reproduce a
+hypothesis that names an injectible mechanism. When the ground-truth label carries
+a mechanism:
 
 ```text
-0.55 * service_exact
-+ 0.30 * fault_type_exact
+0.40 * service_exact
++ 0.20 * fault_type_exact
++ 0.15 * mechanism_exact
++ 0.10 * variant_exact
 + 0.15 * neighborhood_match
 ```
+
+Labels with no mechanism fall back to the earlier two-field form, which keeps old
+offline audits comparable:
+
+```text
+0.45 * service_exact
++ 0.40 * fault_type_exact
++ 0.15 * neighborhood_match
+```
+
+Both forms sum to 1, so `pair_score` stays in `[0, 1]` and the downstream
+factorized returns are unaffected. Multi-fault predictions are matched by exact
+maximum-weight one-to-one assignment, not greedily.
 
 Terminal failure after the iteration budget receives a separate terminal penalty.
 

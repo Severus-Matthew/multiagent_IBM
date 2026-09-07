@@ -54,7 +54,12 @@ rca_policy_return
 action_policy_return
 ```
 
-The RCA return is dominated by RCA-local service/fault quality and counterfactual-twin reproduction, with a smaller downstream recovery contribution. The Action return is dominated by action-local safety/repair/recovery quality, with a moderate system-level contribution.
+The production RCA return is driven by live counterfactual-Twin reproduction,
+public format/retry/iteration costs, and a smaller downstream recovery
+contribution. Ground-truth service/type/mechanism matching and root-count
+mismatch are evaluator diagnostics only; they do not affect the optimizer
+return. The Action return is driven by safe, observed live-Twin recovery, with
+a moderate system-level contribution.
 
 For a GRPO trajectory group, normalization is performed separately:
 
@@ -106,7 +111,7 @@ policy_update_batches.jsonl
 The safe solver contract is:
 
 ```text
-component::fault_mechanism
+service::fault_type::injectible_mechanism[::variant]
 ```
 
 one line per predicted root cause.
@@ -166,14 +171,21 @@ The intended final model layout is:
 
 The base model can be shared in memory, but the adapters and optimizer states are independent.
 
-## Current status before GPU training
+## Current training implementation
 
-The factorized joint rollout/credit path is implemented, but real parameter updates are not yet enabled. Before the final training run we still need:
+`training_pipeline.train_qwen_live_grpo` performs real exact-token Qwen sampling,
+keeps independent `LoRA_RCA` and `LoRA_Action` adapters and optimizers, records old
+token log-probabilities, and publishes both adapter updates atomically at a
+synchronized rollout-batch boundary. The production reward route is the live
+Kubernetes Twin. Hybrid/offline optimizer updates require the explicit
+`--allow_non_live_debug_updates` flag and are not valid for reported experiments.
+Mechanisms or multifault groups without matched positive/negative live
+reproduction controls are also rejected by default. The
+`--allow_uncalibrated_live_reward` override is diagnostic-only and is not valid
+for reported training.
 
-- real Qwen sampling for both trainable policy roles,
-- separate `LoRA_RCA` and `LoRA_Action` adapters,
-- old token log-probabilities for both buffers,
-- two GRPO optimizer steps using `policy_advantage`, synchronized at rollout-batch boundaries,
-- live Kubernetes counterfactual twin execution/recollection for the final strict reward.
-
-The next phase is component and full CPU end-to-end smoke testing of this exact architecture before enabling GPU training.
+The outer `trajectory_group_size` samples multiple complete trajectories from the
+same initial incident and normalizes factorized RCA/Action returns across those
+trajectories. Each retry decision samples one instruction because histories can
+diverge after the first Twin response; the implementation does not claim a
+same-prompt candidate group at every retry.

@@ -1,0 +1,16 @@
+gen_auth_miss_mongodb-analysis-post-storage-mongodb-default
+gen_auth_miss_mongodb-analysis-social-graph-mongodb-default
+gen_auth_miss_mongodb-analysis-user-mongodb-default
+gen_auth_miss_mongodb-analysis-user-timeline-mongodb-default
+gen_auth_miss_mongodb-detection-post-storage-mongodb-default
+gen_auth_miss_mongodb-detection-social-graph-mongodb-default
+gen_auth_miss_mongodb-detection-user-mongodb-default
+gen_auth_miss_mongodb-detection-user-timeline-mongodb-default
+gen_auth_miss_mongodb-localization-post-storage-mongodb-default
+gen_auth_miss_mongodb-localization-social-graph-mongodb-default
+gen_auth_miss_mongodb-localization-user-mongodb-default
+gen_auth_miss_mongodb-localization-user-timeline-mongodb-default
+gen_auth_miss_mongodb-mitigation-post-storage-mongodb-default
+gen_auth_miss_mongodb-mitigation-social-graph-mongodb-default
+gen_auth_miss_mongodb-mitigation-user-mongodb-default
+gen_auth_miss_mongodb-mitigation-user-timeline-mongodb-default

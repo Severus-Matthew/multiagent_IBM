@@ -1,0 +1,155 @@
+{
+  "processed_states": "AIOpsLab/processed_states",
+  "total": 949,
+  "labeled": 916,
+  "unlabeled": 33,
+  "labeled_file": "configs/dataset_split_816_100/labeled_916.txt",
+  "unlabeled_file": "configs/dataset_split_816_100/unlabeled_33.txt",
+  "grouping_policy": "exact_ground_truth_fault_signature",
+  "num_incident_groups": 351,
+  "train_file": "configs/dataset_split_816_100/train_816.txt",
+  "test_file": "configs/dataset_split_816_100/test_100.txt",
+  "seed": 20260901,
+  "missing_examples": [
+    {
+      "scenario_id": "gen_astronomy_shop_ad_service_failure-localization-default",
+      "fault_family": "astronomy_shop_ad_service_failure",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_ad_service_high_cpu-detection-default",
+      "fault_family": "astronomy_shop_ad_service_high_cpu",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_ad_service_high_cpu-localization-default",
+      "fault_family": "astronomy_shop_ad_service_high_cpu",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_ad_service_manual_gc-localization-default",
+      "fault_family": "astronomy_shop_ad_service_manual_gc",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_cart_service_failure-detection-default",
+      "fault_family": "astronomy_shop_cart_service_failure",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_cart_service_failure-localization-default",
+      "fault_family": "astronomy_shop_cart_service_failure",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_image_slow_load-detection-default",
+      "fault_family": "astronomy_shop_image_slow_load",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_image_slow_load-localization-default",
+      "fault_family": "astronomy_shop_image_slow_load",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_kafka_queue_problems-detection-default",
+      "fault_family": "astronomy_shop_kafka_queue_problems",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_kafka_queue_problems-localization-default",
+      "fault_family": "astronomy_shop_kafka_queue_problems",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_kafka_queue_problems-mitigation-default",
+      "fault_family": "astronomy_shop_kafka_queue_problems",
+      "task": "mitigation",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_loadgenerator_flood_homepage-detection-default",
+      "fault_family": "astronomy_shop_loadgenerator_flood_homepage",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_loadgenerator_flood_homepage-localization-default",
+      "fault_family": "astronomy_shop_loadgenerator_flood_homepage",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_payment_service_failure-detection-default",
+      "fault_family": "astronomy_shop_payment_service_failure",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_payment_service_failure-localization-default",
+      "fault_family": "astronomy_shop_payment_service_failure",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_payment_service_unreachable-detection-default",
+      "fault_family": "astronomy_shop_payment_service_unreachable",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_payment_service_unreachable-localization-default",
+      "fault_family": "astronomy_shop_payment_service_unreachable",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_product_catalog_service_failure-detection-default",
+      "fault_family": "astronomy_shop_product_catalog_service_failure",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_product_catalog_service_failure-localization-default",
+      "fault_family": "astronomy_shop_product_catalog_service_failure",
+      "task": "localization",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    },
+    {
+      "scenario_id": "gen_astronomy_shop_recommendation_service_cache_failure-detection-default",
+      "fault_family": "astronomy_shop_recommendation_service_cache_failure",
+      "task": "detection",
+      "faulty_service": null,
+      "expected_faulty_services": []
+    }
+  ]
+}

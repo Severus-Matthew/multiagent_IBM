@@ -1,0 +1,3 @@
+gen_misconfig_app_hotel_res-analysis-geo-default
+gen_auth_miss_mongodb-analysis-post-storage-mongodb-default
+gen_wrong_bin_usage-analysis-frontend-default

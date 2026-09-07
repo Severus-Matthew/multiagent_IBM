@@ -1,0 +1,12 @@
+gen_misconfig_app_hotel_res-analysis-recommendation-default
+gen_misconfig_app_hotel_res-detection-recommendation-default
+gen_misconfig_app_hotel_res-localization-recommendation-default
+gen_misconfig_app_hotel_res-mitigation-recommendation-default
+gen_wrong_bin_usage-analysis-geo-default
+gen_wrong_bin_usage-analysis-search-default
+gen_wrong_bin_usage-detection-geo-default
+gen_wrong_bin_usage-detection-search-default
+gen_wrong_bin_usage-localization-geo-default
+gen_wrong_bin_usage-localization-search-default
+gen_wrong_bin_usage-mitigation-geo-default
+gen_wrong_bin_usage-mitigation-search-default
