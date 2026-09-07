@@ -35,8 +35,8 @@ def main() -> None:
                     help="When RCA twin verification is required, do not generate commands if RCA is unverified.")
     ap.add_argument("--allow_action_if_rca_unverified", action="store_true",
                     help="Override the default skip behavior and still run action even if RCA is unverified.")
-    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
-    ap.add_argument("--max_iterations", type=int, default=5)
+    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.4702)
+    ap.add_argument("--max_iterations", type=int, default=7)
     ap.add_argument("--group_size", type=int, default=4,
                     help="Number of action instruction candidates per state/history group.")
     ap.add_argument("--selection_strategy", choices=["best", "sample0"], default="best",

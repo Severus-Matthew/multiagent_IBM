@@ -84,7 +84,16 @@ def assert_redacted_state_safe(compressed: dict[str, Any], scenario_id: str = ""
 
 def iter_scenarios(processed_states_dir: str | Path, limit: int | None = None,
                    require_safe_redaction: bool = True,
-                   allowed_ids: set[str] | None = None) -> Iterator[ScenarioRecord]:
+                   allowed_ids: set[str] | None = None,
+                   label_corrections: dict[str, dict[str, Any]] | None = None,
+                   ) -> Iterator[ScenarioRecord]:
+    """Yield scenario records.
+
+    ``label_corrections`` maps scenario id to an entry from
+    ``label_corrections.build_manifest``. When given, the private evaluator
+    state of a listed scenario is replaced by its corrected copy before it is
+    yielded; the agent-visible compressed state is never altered.
+    """
     root = Path(processed_states_dir).expanduser()
     if not root.exists():
         raise FileNotFoundError(root)
@@ -105,6 +114,9 @@ def iter_scenarios(processed_states_dir: str | Path, limit: int | None = None,
             continue
         if require_safe_redaction:
             assert_redacted_state_safe(comp, sid)
+        if label_corrections and str(sid) in label_corrections:
+            from .label_corrections import apply_label_correction
+            full = apply_label_correction(full, label_corrections[str(sid)])
         yield ScenarioRecord(sid, d, d / "state_abstraction.json",
                              d / "state_abstraction_compressed.json", full, comp)
 

@@ -11,8 +11,14 @@ the RCA and Action adapters using exact-token factorized GRPO.
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import hashlib
 import json
+import os
+import platform
 from pathlib import Path
+import subprocess
+import sys
+import time
 from typing import Any
 
 
@@ -20,6 +26,84 @@ def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+
+
+def _final_twin_score(trajectory: dict[str, Any]) -> float | None:
+    attempts = ((trajectory.get("rca_result") or {}).get("attempts") or [])
+    if not attempts:
+        return None
+    comps = (attempts[-1] or {}).get("reward_components") or {}
+    score = comps.get("twin_reproduction_score")
+    try:
+        return float(score) if score is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _reward_route_summary(worker_results: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    live_scores: list[float] = []
+    offline_scores: list[float] = []
+    action_invoked = 0
+    skipped_action = 0
+    full_success = 0
+    improved = 0
+    rca_returns: list[float] = []
+    action_returns: list[float] = []
+    for worker_result in worker_results:
+        for trajectory in (worker_result.get("result") or {}).get("trajectories") or []:
+            route = str(trajectory.get("reward_route") or "unknown")
+            counts[route] = counts.get(route, 0) + 1
+            score = _final_twin_score(trajectory)
+            if score is not None:
+                if route == "live":
+                    live_scores.append(score)
+                elif route == "offline":
+                    offline_scores.append(score)
+            action_invoked += int(bool(trajectory.get("action_stage_invoked")))
+            skipped_action += int(bool(trajectory.get("skipped_action")))
+            comps = ((trajectory.get("reward") or {}).get("components") or {})
+            full_success += int(bool(comps.get("full_success") or trajectory.get("trajectory_success")))
+            improved += int(bool(comps.get("observable_improvement")))
+            rca_returns.append(float(trajectory.get("rca_policy_return") or 0.0))
+            action_returns.append(float(trajectory.get("action_policy_return") or 0.0))
+    return {
+        "reward_route_counts": counts,
+        "live_trajectory_count": counts.get("live", 0),
+        "offline_trajectory_count": counts.get("offline", 0),
+        "live_twin_reproduction_mean": (
+            round(sum(live_scores) / len(live_scores), 6) if live_scores else None
+        ),
+        "offline_twin_reproduction_mean": (
+            round(sum(offline_scores) / len(offline_scores), 6) if offline_scores else None
+        ),
+        "action_stage_invoked_count": action_invoked,
+        "skipped_action_count": skipped_action,
+        "full_success_count": full_success,
+        "observable_improvement_count": improved,
+        "rca_policy_return_mean": round(sum(rca_returns) / len(rca_returns), 6) if rca_returns else None,
+        "action_policy_return_mean": round(sum(action_returns) / len(action_returns), 6) if action_returns else None,
+    }
+
+
+def _update_performance_tracker(tracker: Any, worker_results: list[dict[str, Any]]) -> None:
+    """Feed every completed attempt in this batch into the rolling tracker.
+
+    Reads the same ``trajectories`` structure ``_reward_route_summary`` reads;
+    only already-redacted ``reward_components``/``verifier_result`` fields are
+    touched, never ``full_state`` or anything oracle-derived.
+    """
+    for worker_result in worker_results:
+        for trajectory in (worker_result.get("result") or {}).get("trajectories") or []:
+            for attempt in (trajectory.get("rca_result") or {}).get("attempts") or []:
+                tracker.record_rca_attempt(attempt.get("reward_components") or {})
+            action_result = trajectory.get("action_result") or {}
+            for attempt in action_result.get("attempts") or []:
+                tracker.record_action_attempt(
+                    attempt.get("reward") or 0.0,
+                    attempt.get("reward_components") or {},
+                    attempt.get("verifier_result") or {},
+                )
 
 
 def _stamp(
@@ -58,6 +142,18 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--scenario_ids", default=None)
+    ap.add_argument(
+        "--label_corrections", default=None,
+        help="label-correction manifest (training_pipeline.label_corrections); corrects private "
+             "evaluator labels of legacy multi-fault captures whose injector no-op component is provable",
+    )
+    ap.add_argument(
+        "--admit_weak_evidence", action="store_true",
+        help="Admit live-reward records whose only target evidence is service-health flags or "
+             "log error counts (no collected traces, no structural anomaly). Off by default: the "
+             "trainer's own live-training preflight otherwise rejects them even if --scenario_ids "
+             "includes them.",
+    )
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--model", default="Qwen/Qwen3-Coder-30B-A3B-Instruct")
     ap.add_argument(
@@ -79,9 +175,17 @@ def _parser() -> argparse.ArgumentParser:
         "--scenarios_per_update", type=int, default=None,
         help="Frozen-policy scenarios per atomic update; defaults to the worker count.",
     )
-    ap.add_argument("--rca_max_iterations", type=int, default=3)
-    ap.add_argument("--action_max_iterations", type=int, default=3)
-    ap.add_argument("--max_new_tokens", type=int, default=96)
+    ap.add_argument("--rca_max_iterations", type=int, default=7)
+    ap.add_argument("--action_max_iterations", type=int, default=7)
+    ap.add_argument(
+        "--max_new_tokens", type=int, default=800,
+        help=(
+            "Trainable RCA/Action policy completion budget (shared). Raised from 96, then "
+            "224: real trajectories still showed instructions cut off mid-sentence at 224 — "
+            "the Action template's 3-part structure (restate fault+evidence, technical "
+            "reasoning, explicit handoff) routinely needs more than that to complete."
+        ),
+    )
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--learning_rate", type=float, default=5e-6)
@@ -98,18 +202,115 @@ def _parser() -> argparse.ArgumentParser:
             "selected dataset at row zero (for offline-to-live curriculum changes)."
         ),
     )
-    ap.add_argument("--twin_mode", choices=["live", "offline_debug"], default="live")
+    # Every mechanism in the corpus now has a discovery-driven live adapter, so
+    # hybrid routing is no longer needed to keep a batch populated. It remains
+    # selectable for debugging, but it decides live-versus-offline scoring from the
+    # hidden fault mechanism and must not be used for reported results.
+    ap.add_argument("--twin_mode", choices=["live", "hybrid", "offline_debug"], default="live")
+    ap.add_argument(
+        "--allow_non_live_debug_updates", action="store_true",
+        help="Explicitly permit non-live optimizer updates for debugging; never use for reported experiments.",
+    )
+    ap.add_argument(
+        "--allow_uncalibrated_live_reward",
+        action="store_true",
+        help=(
+            "Debug only: permit mechanisms/multifault groups without matched "
+            "positive-negative live reproduction controls to drive updates."
+        ),
+    )
     ap.add_argument("--source_namespace", default="test-social-network")
     ap.add_argument("--application_source_root", default="AIOpsLab/aiopslab-applications/socialNetwork")
     ap.add_argument("--state_abstraction_root", default="state_abstraction_full")
-    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.1)
-    ap.add_argument("--max_serialized_chars", type=int, default=42_000)
+    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.4702)
+    ap.add_argument("--max_serialized_chars", type=int, default=100_000)
     ap.add_argument("--max_system_services", type=int, default=12)
     ap.add_argument("--max_metric_services", type=int, default=64)
     ap.add_argument("--max_log_services", type=int, default=8)
     ap.add_argument("--downstream_rca_tokens", type=int, default=96)
-    ap.add_argument("--downstream_action_tokens", type=int, default=192)
+    ap.add_argument(
+        "--downstream_action_tokens", type=int, default=320,
+        help=(
+            "Frozen Action agent's own output budget. Raised from 192: real trajectories "
+            "showed the last of 4-7 commands routinely truncated mid-argument at 192, which "
+            "corrupted the namespace flag on the final line and caused a spurious "
+            "command_namespace_must_equal_owned_twin rejection independent of command safety."
+        ),
+    )
+    ap.add_argument("--downstream_provider", choices=["openai", "qwen"], default="openai")
+    ap.add_argument(
+        "--openai_rca_model", default="gpt-5.2",
+        help="Frozen downstream RCA reasoner. gpt-5.2 ($1.75/$14 per 1M tokens) is the "
+             "cost-effective default for this bounded-prompt reasoning task; gpt-5.4 ($2.50/$15, "
+             "and roughly double past 272k context) is available for harder cases.",
+    )
+    ap.add_argument(
+        "--openai_action_model", default="gpt-5.2",
+        help="Frozen downstream Action agent; same cost/capability tradeoff as --openai_rca_model.",
+    )
+    ap.add_argument("--openai_timeout_seconds", type=float, default=120.0)
+    ap.add_argument("--openai_max_retries", type=int, default=2)
+    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--max_updates", type=int, default=None)
+    ap.add_argument("--max_runtime_hours", type=float, default=None)
+    ap.add_argument("--checkpoint_every_updates", type=int, default=1)
+    ap.add_argument("--checkpoint_keep_last", type=int, default=50,
+                    help="Number of versioned checkpoints to retain; 0 retains all.")
+    ap.add_argument("--retain_twin_artifacts", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=False)
+    ap.add_argument("--wandb_project", default="aiops-rl")
+    ap.add_argument("--wandb_entity", default="drprofmjha-university-of-illinois-urbana-champaign")
+    ap.add_argument("--wandb_run_name", default=None)
+    ap.add_argument("--wandb_tags", default="")
+    ap.add_argument(
+        "--wandb_run_id", default=None,
+        help=(
+            "Existing W&B run id to resume logging into (wandb.init(id=..., resume='must')) "
+            "instead of creating a new run. If omitted and --resume is set, this is recovered "
+            "automatically from the checkpoint's stored last_update.wandb_run_id when present."
+        ),
+    )
     return ap
+
+
+def _git_value(*args: str) -> str | None:
+    proc = subprocess.run(["git", *args], text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, check=False)
+    return proc.stdout.strip() or None
+
+
+def _write_manifest(path: Path, *, args: argparse.Namespace, records: list[Any],
+                    devices: list[str], torch: Any) -> None:
+    # The CLI has no credentials; token counts are scientific hyperparameters
+    # and must remain in the manifest. Credentials are represented only by a
+    # boolean environment-presence flag below.
+    safe_args = dict(vars(args))
+    manifest = {
+        "format": "qwen_live_grpo_run_manifest_v1", "created_unix": time.time(),
+        "argv": sys.argv, "arguments": safe_args, "python": sys.version,
+        "platform": platform.platform(), "hostname": platform.node(),
+        "git_commit": _git_value("rev-parse", "HEAD"),
+        "git_status": _git_value("status", "--short"),
+        "torch_version": torch.__version__, "cuda_version": torch.version.cuda,
+        "devices": [{"name": torch.cuda.get_device_name(d), "capability": torch.cuda.get_device_capability(d)} for d in devices],
+        "scenario_ids": [r.scenario_id for r in records],
+        "scenario_selection_sha256": hashlib.sha256("\n".join(r.scenario_id for r in records).encode()).hexdigest(),
+        "environment_presence": {"OPENAI_API_KEY": bool(os.environ.get("OPENAI_API_KEY"))},
+    }
+    rendered = json.dumps(manifest, indent=2, sort_keys=True, default=str)
+    path.write_text(rendered, encoding="utf-8")
+    history = path.parent / "run_manifests"
+    history.mkdir(exist_ok=True)
+    run_id = f"run-{int(manifest['created_unix'] * 1000)}-{os.getpid()}"
+    (history / f"{run_id}.json").write_text(rendered, encoding="utf-8")
+
+
+def _prune_checkpoints(directory: Path, keep_last: int) -> None:
+    if keep_last <= 0:
+        return
+    paths = sorted(directory.glob("update-*.pt"))
+    for path in paths[:-keep_last]:
+        path.unlink()
 
 
 def _resolve_devices(args: argparse.Namespace, torch: Any) -> list[str]:
@@ -158,6 +359,8 @@ def _run_worker_rollout(
     policy_version: str,
     bounded: Any,
     run_end_to_end_trajectory_group: Any,
+    rca_recent_performance: dict[str, Any] | None = None,
+    action_recent_performance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     import torch
 
@@ -176,6 +379,8 @@ def _run_worker_rollout(
             policy_version=policy_version,
             min_twin_reproduction_score=args.min_twin_reproduction_score,
             bounded_agent_state_config=bounded,
+            rca_recent_performance=rca_recent_performance,
+            action_recent_performance=action_recent_performance,
         )
     return {
         "worker_index": worker.index,
@@ -188,10 +393,18 @@ def _run_worker_rollout(
 
 def main() -> None:
     args = _parser().parse_args()
+    durable_cache = Path("/mnt/aiops-training/cache/huggingface")
+    if args.model_cache_dir is None and durable_cache.is_dir():
+        args.model_cache_dir = str(durable_cache)
     if args.trajectory_group_size < 2:
         raise ValueError("--trajectory_group_size must be >= 2")
     if args.scenarios_per_update is not None and args.scenarios_per_update < 1:
         raise ValueError("--scenarios_per_update must be >= 1")
+    if args.twin_mode != "live" and not args.allow_non_live_debug_updates:
+        raise ValueError(
+            "non-live reward routes cannot drive optimizer updates unless "
+            "--allow_non_live_debug_updates is explicitly set"
+        )
 
     # Heavy imports stay inside main so --help/config audits work without CUDA.
     import torch
@@ -209,45 +422,118 @@ def main() -> None:
 
     from digital_twin_runtime.sparse_live_verifier import SparseLiveTwinVerifier, SparseLiveVerifierConfig
     from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
-    from digital_twin_runtime.live_capabilities import audit_live_training_records
+    from digital_twin_runtime.live_capabilities import (
+        LIVE_REWARD_CALIBRATION,
+        audit_live_training_records,
+    )
     from .bounded_agent_state import BoundedAgentStateConfig
     from .data_loader import iter_scenarios
     from .end_to_end_loop import run_end_to_end_trajectory_group
     from .factorized_grpo_learner import FactorizedGRPOConfig
+    from .generation_examples import append_examples_jsonl, write_examples_markdown
     from .frozen_qwen_agents import (
         FrozenBaseGenerationConfig, FrozenBaseQwenGenerator,
         FrozenQwenActionAgent, FrozenQwenRCASolver,
     )
+    from .openai_downstream_agents import OpenAIActionAgent, OpenAIRCAAgent
     from .ground_truth import labels_from_full_state
     from .hf_exact_token_sampler import ExactTokenGenerationConfig, HFExactTokenPolicySampler
     from .peft_adapter_control import copy_role_adapter_parameters
     from .qwen_shared_policy_backend import QwenSharedPolicyBackendConfig, load_qwen_shared_policy_backend
     from .split_utils import read_scenario_ids
+    from .label_corrections import load_manifest
     from .streaming_synchronized_grpo_trainer import StreamingSynchronizedFactorizedGRPOTrainer
     from .synchronized_grpo_trainer import SynchronizedGRPOTrainerConfig
     from .trainable_hf_prompt_policies import TrainableHFActionPromptPolicy, TrainableHFRCAInstructionPolicy
+    from .rolling_performance_feedback import RollingPerformanceTracker
+    from .wandb_logger import WandbRunLogger, parse_tags
 
     allowed = read_scenario_ids(args.scenario_ids)
-    records = [r for r in iter_scenarios(args.processed_states, allowed_ids=allowed)
+    corrections = load_manifest(args.label_corrections)
+    records = [r for r in iter_scenarios(args.processed_states, allowed_ids=allowed,
+                                         label_corrections=corrections)
                if labels_from_full_state(r.full_state)]
     if args.limit is not None:
         records = records[:args.limit]
     if not records:
         raise RuntimeError("no labeled scenarios matched the requested training selection")
+    if args.twin_mode == "live" and not args.allow_uncalibrated_live_reward:
+        calibrated_thresholds = {
+            float(row["threshold"]) for row in LIVE_REWARD_CALIBRATION.values()
+        }
+        if not any(
+            abs(float(args.min_twin_reproduction_score) - threshold) <= 1e-9
+            for threshold in calibrated_thresholds
+        ):
+            raise ValueError(
+                "--min_twin_reproduction_score does not match a validated live "
+                f"control threshold: configured={args.min_twin_reproduction_score}, "
+                f"validated={sorted(calibrated_thresholds)}"
+            )
     if args.twin_mode == "live":
-        live_preflight = audit_live_training_records(records)
+        live_preflight = audit_live_training_records(
+            records,
+            admit_weak_evidence=args.admit_weak_evidence,
+            require_reward_calibration=not args.allow_uncalibrated_live_reward,
+        )
         if not live_preflight["all_supported"]:
             preview = live_preflight["unsupported"][:10]
             raise ValueError(
-                "live training selection contains unaudited mechanism/workload pairs; "
-                f"use configs/live_supported_scenarios.txt: {preview}"
+                "live training selection contains unaudited mechanisms, workloads, "
+                f"or reproduction thresholds: {preview}"
             )
 
     out_dir = Path(args.output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.twin_mode == "hybrid":
+        live_preflight = audit_live_training_records(
+            records,
+            admit_weak_evidence=args.admit_weak_evidence,
+            require_reward_calibration=not args.allow_uncalibrated_live_reward,
+        )
+        (out_dir / "live_reward_eligibility.json").write_text(
+            json.dumps(live_preflight, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+        # Pair live-eligible cases with offline-routed cases while both remain.
+        # This prevents a batch of failed live RCA hypotheses from containing no
+        # Action samples, without changing membership or exposing route metadata
+        # to either policy.
+        live_ids = set(live_preflight["supported_scenario_ids"])
+        live_records = [record for record in records if record.scenario_id in live_ids]
+        offline_records = [record for record in records if record.scenario_id not in live_ids]
+        interleaved: list[Any] = []
+        while live_records or offline_records:
+            if live_records:
+                interleaved.append(live_records.pop(0))
+            if offline_records:
+                interleaved.append(offline_records.pop(0))
+        records = interleaved
     checkpoint = out_dir / "latest.pt"
     event_path = out_dir / "training_events.jsonl"
     trajectory_path = out_dir / "joint_trajectories.jsonl"
+    rca_samples_path = out_dir / "rca_policy_samples.jsonl"
+    action_samples_path = out_dir / "action_policy_samples.jsonl"
+    examples_path = out_dir / "generation_examples.jsonl"
+    examples_preview = out_dir / "generation_examples_latest.md"
+    checkpoints_dir = out_dir / "checkpoints"
+    checkpoints_dir.mkdir(exist_ok=True)
+    _write_manifest(out_dir / "run_manifest.json", args=args, records=records,
+                    devices=devices, torch=torch)
+    resolved_wandb_run_id = args.wandb_run_id
+    if not resolved_wandb_run_id and args.resume:
+        try:
+            _peek = torch.load(Path(args.resume).expanduser(), map_location="cpu", weights_only=False)
+            resolved_wandb_run_id = (_peek.get("last_update") or {}).get("wandb_run_id")
+            del _peek
+        except Exception:
+            resolved_wandb_run_id = None
+    wandb_logger = WandbRunLogger(
+        enabled=args.wandb, project=args.wandb_project, entity=args.wandb_entity,
+        run_name=args.wandb_run_name, config=dict(vars(args)),
+        tags=parse_tags(args.wandb_tags), run_id=resolved_wandb_run_id,
+    )
+    wandb_logger.start()
 
     workers: list[_RolloutWorker] = []
     backends: list[Any] = []
@@ -274,21 +560,39 @@ def main() -> None:
             sampler, adapter_name="lora_rca", max_iterations=args.rca_max_iterations
         )
         action_policy = TrainableHFActionPromptPolicy(sampler, adapter_name="lora_action")
-        frozen_generator = FrozenBaseQwenGenerator(
-            model, tokenizer,
-            config=FrozenBaseGenerationConfig(
-                rca_max_new_tokens=args.downstream_rca_tokens,
-                action_max_new_tokens=args.downstream_action_tokens,
-            ),
-            device=device,
-        )
-        if args.twin_mode == "live":
-            twin = SparseLiveTwinVerifier(SparseLiveVerifierConfig(
+        if args.downstream_provider == "qwen":
+            frozen_generator = FrozenBaseQwenGenerator(
+                model, tokenizer,
+                config=FrozenBaseGenerationConfig(
+                    rca_max_new_tokens=args.downstream_rca_tokens,
+                    action_max_new_tokens=args.downstream_action_tokens,
+                ), device=device,
+            )
+            rca_solver = FrozenQwenRCASolver(frozen_generator)
+            action_agent = FrozenQwenActionAgent(frozen_generator)
+        else:
+            audit_path = out_dir / f"openai_calls_worker_{worker_index}.jsonl"
+            common = {"audit_path": audit_path, "timeout_seconds": args.openai_timeout_seconds,
+                      "max_retries": args.openai_max_retries}
+            rca_solver = OpenAIRCAAgent(model=args.openai_rca_model,
+                                       max_output_tokens=args.downstream_rca_tokens, **common)
+            action_agent = OpenAIActionAgent(model=args.openai_action_model,
+                                             max_output_tokens=args.downstream_action_tokens, **common)
+        if args.twin_mode in {"live", "hybrid"}:
+            live_twin = SparseLiveTwinVerifier(SparseLiveVerifierConfig(
                 source_namespace=args.source_namespace,
                 application_source_root=str(Path(args.application_source_root).resolve()),
                 state_abstraction_root=str(Path(args.state_abstraction_root).resolve()),
                 reproduction_threshold=args.min_twin_reproduction_score,
+                require_reward_calibration=not args.allow_uncalibrated_live_reward,
+                artifact_root=(str(out_dir / "twin_artifacts" / f"worker-{worker_index}")
+                               if args.retain_twin_artifacts else None),
             ))
+            if args.twin_mode == "hybrid":
+                from digital_twin_runtime.hybrid_twin_verifier import HybridTwinVerifier
+                twin = HybridTwinVerifier(live_twin, BehavioralTwinVerifier())
+            else:
+                twin = live_twin
         else:
             twin = BehavioralTwinVerifier()
         workers.append(_RolloutWorker(
@@ -296,9 +600,9 @@ def main() -> None:
             device=device,
             model=model,
             rca_policy=rca_policy,
-            rca_solver=FrozenQwenRCASolver(frozen_generator),
+            rca_solver=rca_solver,
             action_policy=action_policy,
-            action_agent=FrozenQwenActionAgent(frozen_generator),
+            action_agent=action_agent,
             twin=twin,
             checkpointing=checkpointing,
         ))
@@ -315,14 +619,16 @@ def main() -> None:
         ), device=learner.device,
     )
     completed = 0
+    epoch_index = 0
+    scenario_cursor = 0
     resume_path = Path(args.resume).expanduser() if args.resume else None
     if resume_path:
         restored = trainer.load_checkpoint(resume_path)
-        completed = (
-            0
-            if args.reset_data_cursor_on_resume
-            else int((restored.get("last_update") or {}).get("scenarios_completed", 0))
-        )
+        last = restored.get("last_update") or {}
+        if not args.reset_data_cursor_on_resume:
+            completed = int(last.get("scenarios_completed", 0))
+            epoch_index = int(last.get("epoch_index", completed // len(records)))
+            scenario_cursor = int(last.get("scenario_cursor", completed % len(records)))
     for replica in workers[1:]:
         copy_role_adapter_parameters(learner.model, replica.model)
 
@@ -332,15 +638,29 @@ def main() -> None:
         max_metric_services=args.max_metric_services,
         max_log_services=args.max_log_services,
     )
-    if completed > len(records):
-        raise ValueError("checkpoint scenario cursor exceeds the selected dataset")
+    if args.epochs < 1 or args.checkpoint_every_updates < 1:
+        raise ValueError("--epochs and --checkpoint_every_updates must be >= 1")
 
     updates = trainer.bundle_update_step
-    while completed < len(records):
+    started_monotonic = time.monotonic()
+    stop_reason: str | None = None
+    performance_tracker = RollingPerformanceTracker()
+    while epoch_index < args.epochs:
+        if args.max_updates is not None and updates >= args.max_updates:
+            stop_reason = "MAX_UPDATES"
+            break
+        if args.max_runtime_hours is not None and time.monotonic() - started_monotonic >= args.max_runtime_hours * 3600:
+            stop_reason = "MAX_RUNTIME"
+            break
         sync_id = f"live-update-{updates:06d}"
-        batch_count = min(scenarios_per_update, len(records) - completed)
-        batch_records = records[completed:completed + batch_count]
+        batch_count = min(scenarios_per_update, len(records) - scenario_cursor)
+        batch_records = records[scenario_cursor:scenario_cursor + batch_count]
         rollout_policy_version = trainer.current_policy_version
+        # One snapshot per batch: every worker in this synchronized batch sees
+        # the same aggregate feedback, computed from every attempt completed
+        # up to (not during) this batch.
+        rca_recent_performance = performance_tracker.rca_summary()
+        action_recent_performance = performance_tracker.action_summary()
         worker_results: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=min(len(workers), batch_count)) as pool:
             futures = {
@@ -353,23 +673,34 @@ def main() -> None:
                     policy_version=rollout_policy_version,
                     bounded=bounded,
                     run_end_to_end_trajectory_group=run_end_to_end_trajectory_group,
+                    rca_recent_performance=rca_recent_performance,
+                    action_recent_performance=action_recent_performance,
                 ): offset
                 for offset, rec in enumerate(batch_records)
             }
             for future in as_completed(futures):
                 worker_results.append(future.result())
         worker_results.sort(key=lambda row: int(row["batch_offset"]))
+        _update_performance_tracker(performance_tracker, worker_results)
 
         batch_rca: list[dict[str, Any]] = []
         batch_action: list[dict[str, Any]] = []
+        batch_examples: list[dict[str, Any]] = []
         for worker_result in worker_results:
             result = worker_result["result"]
+            examples = list(result.get("generation_examples") or [])
+            for example in examples:
+                example["sync_batch_id"] = sync_id
+                example["policy_version"] = rollout_policy_version
+                example["worker_index"] = worker_result["worker_index"]
+            batch_examples.extend(examples)
             _append_jsonl(trajectory_path, {
                 "scenario_id": worker_result["scenario_id"],
                 "sync_batch_id": sync_id,
                 "policy_version": rollout_policy_version,
                 "worker_index": worker_result["worker_index"],
                 "worker_device": worker_result["worker_device"],
+                "generation_examples": examples,
                 "trajectories": result.get("trajectories"),
             })
             batch_rca.extend(
@@ -380,41 +711,69 @@ def main() -> None:
                 _stamp(x, sync_batch_id=sync_id, adapter_id="lora_action", optimizer_role="action_policy")
                 for x in result.get("action_grpo_samples", [])
             )
+        for row in batch_rca:
+            _append_jsonl(rca_samples_path, row)
+        for row in batch_action:
+            _append_jsonl(action_samples_path, row)
+        if batch_examples:
+            append_examples_jsonl(examples_path, batch_examples)
+            write_examples_markdown(examples_preview, batch_examples)
         completed += batch_count
-        if not batch_rca or not batch_action:
-            raise RuntimeError("joint batch lacks RCA or Action optimizer rows; inspect live gate failures")
+        scenario_cursor += batch_count
+        if scenario_cursor >= len(records):
+            epoch_index += 1
+            scenario_cursor = 0
+        if not batch_rca:
+            raise RuntimeError("joint batch lacks RCA optimizer rows; inspect rollout failures")
         update = trainer.update_joint_batch(batch_rca, batch_action)
         updates = trainer.bundle_update_step
         copied_adapter_tensors = 0
         for replica in workers[1:]:
             copied_adapter_tensors += copy_role_adapter_parameters(learner.model, replica.model)
         update["scenarios_completed"] = completed
+        update["epoch_index"] = epoch_index
+        update["scenario_cursor"] = scenario_cursor
+        update["wandb_run_id"] = wandb_logger.run_id
         update["twin_mode"] = args.twin_mode
+        update.update(_reward_route_summary(worker_results))
         update["gradient_checkpointing"] = {
             worker.device: worker.checkpointing for worker in workers
         }
         update["rollout_devices"] = devices
         update["parallel_rollout_workers"] = len(workers)
-        update["scenarios_in_update"] = batch_count
         update["replica_adapter_tensors_copied"] = copied_adapter_tensors
+        update["scenarios_in_update"] = batch_count
+        update["generation_examples_written"] = len(batch_examples)
+        update["generation_examples_jsonl"] = str(examples_path)
+        update["generation_examples_preview"] = str(examples_preview)
         trainer.save_checkpoint(checkpoint, last_update=update)
+        if updates % args.checkpoint_every_updates == 0:
+            trainer.save_checkpoint(checkpoints_dir / f"update-{updates:08d}.pt", last_update=update)
+            _prune_checkpoints(checkpoints_dir, args.checkpoint_keep_last)
         _append_jsonl(event_path, update)
+        wandb_logger.log_training_update(updates, update)
         print(json.dumps(update, sort_keys=True, default=str))
 
     summary = {
-        "status": "COMPLETE", "scenarios_completed": completed,
+        "status": "COMPLETE" if stop_reason is None else f"STOPPED_{stop_reason}",
+        "scenarios_completed": completed, "epochs_completed": epoch_index,
+        "scenario_cursor": scenario_cursor,
         "bundle_updates": trainer.bundle_update_step,
         "policy_version": trainer.current_policy_version,
         "checkpoint": str(checkpoint), "twin_mode": args.twin_mode,
         "reward_mode": "factorized_joint_pipeline_v2_no_double_count",
-        "frozen_downstream_agents": True, "exact_token_rollouts": True,
+        "frozen_downstream_agents": True, "downstream_provider": args.downstream_provider,
+        "exact_token_rollouts": True,
         "atomic_two_adapter_updates": True,
+        "uses_real_training_update": True,
         "rollout_devices": devices,
         "parallel_rollout_workers": len(workers),
         "scenarios_per_update": scenarios_per_update,
         "parallelism_mode": "synchronous_same-policy_multi-gpu_rollout_single-learner",
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True))
+    wandb_logger.log_summary(summary, out_dir)
+    wandb_logger.finish()
     print(json.dumps(summary, indent=2, sort_keys=True))
 
 

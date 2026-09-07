@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .kubectl_command_shape import positional_args, resource_target, split_command
+
 
 def action_reward(
     commands: list[str],
@@ -28,17 +30,36 @@ def action_reward(
     has_verify = any("rollout status" in c or "kubectl get" in c or "helm status" in c for c in commands)
     has_mutation = any(_is_mutating_command(c) for c in commands)
 
+    reward_route = str(verifier_result.get("reward_route") or "unknown")
+    telemetry_incomplete = bool(verifier_result.get("telemetry_incomplete"))
+    after_state_observed = verifier_result.get("after_state_observed")
+    if after_state_observed is None:
+        after_state_observed = (verifier_result.get("resolution") or {}).get("after_state_observed")
+    observable_improvement = bool(
+        target_reduction > 0.0 or global_reduction > 0.0
+        or target_sla_restored or sla_restored
+    )
+    credit_eligible = bool(
+        reward_route == "live"
+        and not telemetry_incomplete
+        and after_state_observed is True
+        and safe
+        and has_mutation
+        and observable_improvement
+    )
+
     reward = 0.0
-    reward += 0.40 if safe else -1.25
-    reward += 0.25 if has_verify else -0.10
-    reward += 0.20 if has_mutation else -0.20
-    reward += 0.75 if action_repairs else -0.35
-    reward += 1.25 * target_reduction
-    reward += 1.00 * global_reduction
-    reward += 1.00 if target_sla_restored else 0.00
-    reward += 1.25 if twin_resolved else 0.00
-    reward += 1.50 if sla_restored else 0.00
-    reward += 1.00 if resolved else 0.00
+    reward += -1.25 if not safe else 0.0
+    reward += -0.10 if not has_verify else 0.0
+    reward += -0.20 if not has_mutation else 0.0
+    if credit_eligible:
+        reward += 0.75 if action_repairs else 0.0
+        reward += 1.25 * target_reduction
+        reward += 1.00 * global_reduction
+        reward += 1.00 if target_sla_restored else 0.00
+        reward += 1.25 if twin_resolved else 0.00
+        reward += 1.50 if sla_restored else 0.00
+        reward += 1.00 if resolved else 0.00
     reward -= 0.04 * len(commands)
     reward -= 0.001 * max(0, instruction_tokens - 120)
     reward -= 0.10 * iteration_index
@@ -48,7 +69,7 @@ def action_reward(
     if safety.get("unsafe"):
         reward -= 0.25 * len(safety.get("unsafe", []))
 
-    success = bool(safe and resolved and twin_resolved and (target_sla_restored or sla_restored))
+    success = bool(credit_eligible and resolved and twin_resolved)
 
     components = {
         "resolved": resolved,
@@ -65,6 +86,11 @@ def action_reward(
         "has_mutating_command": has_mutation,
         "instruction_tokens": instruction_tokens,
         "iteration_index": iteration_index,
+        "reward_route": reward_route,
+        "telemetry_incomplete": telemetry_incomplete,
+        "after_state_observed": after_state_observed,
+        "observable_improvement": observable_improvement,
+        "positive_credit_eligible": credit_eligible,
         "verifier_reason": verifier_result.get("reason"),
         "before_sla": verifier_result.get("before_sla"),
         "after_sla": verifier_result.get("after_sla"),
@@ -95,7 +121,7 @@ def feedback(safety: dict[str, Any], verifier_result: dict[str, Any], commands: 
     return "Commands were valid but did not improve the behavioral twin/SLA symptoms."
 
 
-def terminal_action_failure_penalty(num_iterations: int = 5) -> dict[str, Any]:
+def terminal_action_failure_penalty(num_iterations: int = 7) -> dict[str, Any]:
     return {
         "reward": -2.0,
         "success": False,
@@ -113,16 +139,36 @@ def _clamp01(value: Any) -> float:
 
 
 def _is_mutating_command(command: str) -> bool:
-    raw = str(command or "").lower()
-    return any(
-        token in raw
-        for token in [
-            "kubectl patch",
-            "kubectl rollout restart",
-            "kubectl scale",
-            "kubectl delete pod",
-            "kubectl delete pods",
-            "helm rollback",
-            "mongosh",
-        ]
-    )
+    """True for a command that actually mutates twin state.
+
+    Parses the command rather than substring-matching "kubectl patch" etc. —
+    a global flag placed before the verb (``kubectl -n ns patch ...``, valid
+    kubectl syntax the agents routinely use) breaks a fixed-prefix substring
+    check just as badly as it breaks fixed-index parsing.
+    """
+    raw = str(command or "")
+    if "mongosh" in raw.lower():
+        return True
+    parts = split_command(raw)
+    if not parts:
+        return False
+    program = parts[0].lower()
+    positional = positional_args(parts, 1)
+    if not positional:
+        return False
+    verb = positional[0].lower()
+    if program == "kubectl":
+        if verb in {"patch", "scale"}:
+            return True
+        if verb == "rollout" and len(positional) > 1 and positional[1].lower() == "restart":
+            return True
+        if verb == "delete":
+            target = resource_target(positional)
+            kind = target[0] if target else ""
+            return kind in {
+                "pod", "pods", "networkchaos", "podchaos", "stresschaos",
+            }
+        return False
+    if program == "helm" and verb == "rollback":
+        return True
+    return False

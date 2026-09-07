@@ -51,17 +51,56 @@ def end_to_end_reward(
     verifier = action_attempt.get("verifier_result", {}) or {}
     gate = action_result.get("public_rca_twin_gate") or action_result.get("rca_twin_gate") or {}
 
+    # Only measurements produced by the live Kubernetes verifier may affect an
+    # optimizer return. Offline/hybrid routing remains useful for diagnostics,
+    # but mixing those scores into the same GRPO baseline changes the objective
+    # according to a hidden environment route.
+    reward_route = str(
+        gate.get("reward_route")
+        or verifier.get("reward_route")
+        or rca_components.get("reward_route")
+        or action_components.get("reward_route")
+        or "unknown"
+    )
+    live_reward = reward_route == "live"
+    live_reward_calibrated = bool(
+        gate.get(
+            "live_reward_calibrated",
+            rca_components.get("live_reward_calibrated", False),
+        )
+    )
+    uncalibrated_reward_override = bool(
+        gate.get(
+            "uncalibrated_reward_override_used",
+            rca_components.get("uncalibrated_reward_override_used", False),
+        )
+    )
+    live_reward_allowed = bool(
+        live_reward_calibrated or uncalibrated_reward_override
+    )
+
     # RCA intrinsic signal. Positive weights sum to one.
     pair_score = _clamp01(rca_components.get("pair_score", 0.0))
     exact_set_match = bool(rca_components.get("exact_set_match", False))
-    twin_score = _clamp01(
+    twin_score_raw = _clamp01(
         gate.get("reproduction_score", rca_components.get("twin_reproduction_score", 0.0))
     )
-    rca_intrinsic = _clamp01(
-        0.40 * pair_score
-        + 0.20 * float(exact_set_match)
-        + 0.40 * twin_score
+    telemetry_incomplete = bool(
+        gate.get("telemetry_incomplete")
+        or verifier.get("telemetry_incomplete")
+        or rca_components.get("telemetry_incomplete")
+        or action_components.get("telemetry_incomplete")
     )
+    twin_score = (
+        twin_score_raw
+        if live_reward and live_reward_allowed and not telemetry_incomplete
+        else 0.0
+    )
+    # Ground-truth pair/exact scores are retained below as evaluator diagnostics,
+    # but the trainable RCA policy is optimized only by live counterfactual
+    # reproduction. This keeps the verifier, rather than the hidden label, as the
+    # causal learning signal.
+    rca_intrinsic = twin_score
 
     invalid_format = bool(rca_components.get("invalid_format", False))
     count_mismatch = max(0.0, float(rca_components.get("count_mismatch", 0.0) or 0.0))
@@ -73,7 +112,6 @@ def end_to_end_reward(
 
     rca_penalty = (
         0.20 * float(invalid_format)
-        + 0.10 * count_mismatch_rate
         + 0.05 * float(repeated_wrong_guess)
         + 0.03 * _clamp01(rca_iteration / 4.0)
         + 0.02 * _clamp01(max(0.0, rca_instruction_tokens - 120.0) / 240.0)
@@ -101,29 +139,43 @@ def end_to_end_reward(
     num_commands = max(0.0, float(action_components.get("num_commands", 0.0) or 0.0))
     action_iteration = max(0.0, float(action_components.get("iteration_index", 0.0) or 0.0))
 
-    # Recovery quality contains no free reward for merely being safe. Safety and
-    # an actual mutation are gates. Thus a safe no-op cannot receive positive
-    # system credit simply because it avoided damage.
-    recovery_quality = _clamp01(
-        0.25 * target_reduction
-        + 0.25 * global_reduction
-        + 0.15 * float(target_sla_restored)
-        + 0.15 * float(sla_restored)
-        + 0.20 * float(resolved)
-    )
-    system_quality = recovery_quality if (safe and has_mutation) else 0.0
+    # After-state silence is not improvement. score_resolution fail-closes to 0
+    # reduction, but an explicit observed flag still blocks credit if present.
+    after_state_observed = verifier.get("after_state_observed")
+    if after_state_observed is None:
+        after_state_observed = (verifier.get("resolution") or {}).get("after_state_observed")
+    if telemetry_incomplete or after_state_observed is not True or not live_reward:
+        target_reduction = 0.0
+        global_reduction = 0.0
+        target_sla_restored = False
+        sla_restored = False
+        resolved = False
 
-    # Action intrinsic quality keeps safety and repair compatibility as dense
-    # shaping. Positive weights sum to one before penalties.
-    action_intrinsic = _clamp01(
-        0.10 * float(safe)
-        + 0.15 * float(action_repairs)
-        + 0.25 * target_reduction
-        + 0.15 * global_reduction
-        + 0.15 * float(target_sla_restored)
-        + 0.10 * float(sla_restored)
-        + 0.10 * float(resolved)
+    improvement_credit = max(target_reduction, global_reduction)
+    observable_improvement = bool(improvement_credit > 0.0 or target_sla_restored or sla_restored)
+    full_success = bool(
+        safe
+        and has_mutation
+        and resolved
+        and (target_sla_restored or sla_restored)
+        and after_state_observed is True
     )
+
+    # Recovery and Action returns are positive only when the Twin actually got
+    # better or the incident was fully cleared. Safety and mutation are gates,
+    # not rewards: a safe no-op or a mutate-that-changed-nothing scores 0.
+    recovery_quality = _clamp01(
+        0.50 * improvement_credit
+        + 0.50 * float(full_success)
+    ) if (safe and has_mutation and (observable_improvement or full_success)) else 0.0
+    system_quality = recovery_quality
+
+    action_intrinsic = _clamp01(
+        0.40 * improvement_credit
+        + 0.35 * float(full_success)
+        + 0.15 * float(action_repairs and (observable_improvement or full_success))
+        + 0.10 * float(target_sla_restored or sla_restored)
+    ) if safe and (observable_improvement or full_success) else 0.0
 
     action_penalty = (
         0.35 * float(not safe)
@@ -147,6 +199,12 @@ def end_to_end_reward(
         (1.0 - action_system_weight) * action_local_score
         + action_system_weight * system_quality
     )
+    optimizer_credit_eligible = bool(
+        live_reward and live_reward_allowed and not telemetry_incomplete
+    )
+    if not optimizer_credit_eligible:
+        rca_policy_return = 0.0
+        action_policy_return = 0.0
 
     # System reward is diagnostic/model-selection only and does not contain the
     # private RCA exact-match signal.
@@ -160,12 +218,7 @@ def end_to_end_reward(
         - empty_rca_system_penalty
     )
 
-    success = bool(
-        safe
-        and has_mutation
-        and resolved
-        and (target_sla_restored or sla_restored)
-    )
+    success = full_success
 
     rca_local_raw = float(rca_attempt.get("reward", 0.0) or 0.0)
     action_local_raw = float(action_attempt.get("reward", 0.0) or 0.0)
@@ -186,7 +239,21 @@ def end_to_end_reward(
             "rca_local_score": round(rca_local_score, 6),
             "pair_score": round(pair_score, 6),
             "private_rca_exact_set_match": exact_set_match,
+            "private_rca_scores_diagnostic_only": True,
+            "private_rca_count_mismatch_diagnostic_only": True,
             "counterfactual_twin_reproduction_score": round(twin_score, 6),
+            "counterfactual_twin_reproduction_score_raw": round(twin_score_raw, 6),
+            "reward_route": reward_route,
+            "live_reward_route_required": True,
+            "live_reward_calibrated": live_reward_calibrated,
+            "uncalibrated_reward_override_used": uncalibrated_reward_override,
+            "telemetry_incomplete": telemetry_incomplete,
+            "optimizer_credit_eligible": optimizer_credit_eligible,
+            "rca_public_progress": round(twin_score, 6),
+            "rca_twin_verified": bool(
+                rca_components.get("rca_twin_verified")
+                or rca_components.get("predicted_fault_injection_checked")
+            ) and twin_score > 0.0,
             "count_mismatch_rate": round(count_mismatch_rate, 6),
             "rca_downstream_credit_weight": round(rca_downstream_weight, 6),
             "action_local_reward_raw_diagnostic_only": round(action_local_raw, 6),
@@ -201,7 +268,12 @@ def end_to_end_reward(
             "target_sla_restored": target_sla_restored,
             "sla_restored": sla_restored,
             "resolved": resolved,
+            "after_state_observed": after_state_observed,
+            "improvement_credit": round(improvement_credit, 6),
+            "observable_improvement": observable_improvement,
+            "full_success": full_success,
             "recovery_quality": round(recovery_quality, 6),
+            "positive_action_requires_improvement_or_success": True,
             "system_quality_requires_safe_mutation": True,
             "skipped_action": skipped_action,
             "has_rca_prediction": has_rca_prediction,
@@ -213,6 +285,7 @@ def end_to_end_reward(
         },
         "note": (
             "Joint execution with separate, non-duplicated RCA/Action returns. "
-            "System credit requires observable recovery from a safe mutating action."
+            "Action/system credit is positive only when symptoms improved or the "
+            "incident fully resolved after a safe mutating action."
         ),
     }

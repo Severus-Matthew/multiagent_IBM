@@ -38,7 +38,7 @@ def main() -> None:
     ap.add_argument("--fault", action="append", required=True)
     ap.add_argument("--application_source_root", default=None)
     ap.add_argument("--upstream_hops", type=int, default=2)
-    ap.add_argument("--downstream_support_hops", type=int, default=2)
+    ap.add_argument("--downstream_support_hops", type=int, default=1)
     ap.add_argument("--max_entry_path_hops", type=int, default=8)
     ap.add_argument("--timeout_seconds", type=float, default=180.0)
     args = ap.parse_args()

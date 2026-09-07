@@ -108,8 +108,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
 
     ap.add_argument("--trajectory_group_size", type=int, default=4)
-    ap.add_argument("--rca_max_iterations", type=int, default=3)
-    ap.add_argument("--action_max_iterations", type=int, default=3)
+    ap.add_argument("--rca_max_iterations", type=int, default=7)
+    ap.add_argument("--action_max_iterations", type=int, default=7)
     ap.add_argument("--policy_version", default="factorized-joint-v2")
     ap.add_argument(
         "--update_batch_scenarios",
@@ -141,7 +141,7 @@ def main() -> None:
     ap.add_argument("--action_llm_model", default=None)
     ap.add_argument("--max_commands", type=int, default=15)
 
-    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
+    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.4702)
     ap.add_argument(
         "--rca_downstream_credit_weight",
         type=float,

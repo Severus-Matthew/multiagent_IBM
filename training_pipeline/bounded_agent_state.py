@@ -27,7 +27,9 @@ from .agent_input_safety import agent_input_safety_report
 class BoundedAgentStateConfig:
     # Character limit is a tokenizer-independent structural guard.  The companion
     # audit checks the exact Qwen chat-template token count.
-    max_serialized_chars: int = 42_000
+    # Calibrated over all 16 currently supported live scenarios: the largest
+    # projection is 72,869 chars / 26,085 Qwen chat-template tokens.
+    max_serialized_chars: int = 100_000
     # These are rich-detail limits, not service-visibility limits.  Every system
     # service keeps a compact health summary; every selected metric/log service
     # keeps its compact aggregate signal.  Rich deployment/event or text evidence
@@ -421,6 +423,19 @@ def _compact_observability_metadata(value: Any, cfg: BoundedAgentStateConfig) ->
         section_out: dict[str, Any] = {}
         for key, child in sorted(data.items(), key=lambda kv: str(kv[0])):
             key_s = str(key)
+            if key_s == "collection_status" and isinstance(child, dict):
+                # ok_collections/failed_collections map {file: literal shell
+                # command used to collect it}, and that command string embeds
+                # the real source namespace (e.g. "kubectl get pods -n
+                # test-social-network") — never diagnostic signal, must never
+                # reach an agent prompt. Only the counts are.
+                section_out[key_s] = {
+                    "num_ok": child.get("num_ok"),
+                    "num_failed": child.get("num_failed"),
+                    "ok_collection_count": len(child.get("ok_collections") or {}),
+                    "failed_collection_count": len(child.get("failed_collections") or {}),
+                }
+                continue
             if key_s in {"files_seen", "empty_files", "files_used", "pods_wide", "pod_to_service"}:
                 if isinstance(child, (list, dict)):
                     section_out[f"{key_s}_count"] = len(child)
@@ -505,6 +520,36 @@ def _compact_model_table(value: Any) -> Any:
     return _compact_value(value, list_examples=1, string_chars=120, max_depth=2)
 
 
+def _compact_graph(value: Any, cfg: BoundedAgentStateConfig) -> dict[str, Any]:
+    """Preserve the complete observable topology used to build the Twin.
+
+    Generic list compaction retained only the first four edges, so the policy and
+    verifier reasoned over different graphs. Edge attributes can be verbose, but
+    endpoint pairs are small and are never truncated.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out = {
+        str(key): _compact_value(child, list_examples=2, string_chars=cfg.max_string_chars, max_depth=2)
+        for key, child in sorted(value.items(), key=lambda kv: str(kv[0]))
+        if str(key) != "edges"
+    }
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in value.get("edges", []) or []:
+        if not isinstance(row, dict):
+            continue
+        src, dst = str(row.get("src") or ""), str(row.get("dst") or "")
+        if not src or not dst or (src, dst) in seen:
+            continue
+        seen.add((src, dst))
+        edges.append({"src": src, "dst": dst})
+    out["edges"] = edges
+    out["edge_count"] = len(edges)
+    out["edges_truncated"] = False
+    return out
+
+
 def build_bounded_agent_state(
     sanitized_state: dict[str, Any],
     *,
@@ -535,7 +580,7 @@ def build_bounded_agent_state(
     }
 
     # Small structural/global context.
-    for key in ("timestamp", "workload", "services", "clusters", "graph", "traces", "sla", "redaction"):
+    for key in ("timestamp", "workload", "services", "clusters", "traces", "sla", "redaction"):
         if key in sanitized_state:
             out[key] = _compact_value(
                 sanitized_state[key],
@@ -543,6 +588,8 @@ def build_bounded_agent_state(
                 string_chars=cfg.max_string_chars,
                 max_depth=3,
             )
+    if "graph" in sanitized_state:
+        out["graph"] = _compact_graph(sanitized_state["graph"], cfg)
 
     if "service_health" in sanitized_state:
         out["service_health"] = _compact_value(

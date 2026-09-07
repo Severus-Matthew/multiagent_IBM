@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
-from statistics import mean, pstdev
 from typing import Any, Protocol
 
+from .agent_input_safety import agent_input_safety_report, sanitize_agent_state
+from .grpo_math import group_relative_advantages
 from .ground_truth import ground_truth_summary, labels_from_full_state
 from .rca_reward import rca_reward, terminal_rca_failure_penalty
 from .schemas import GRPORolloutSample, RCAAttempt, approx_token_count, parse_fault_lines
@@ -19,6 +21,7 @@ class RCAInstructionPolicy(Protocol):
         iteration: int,
         sample_index: int = 0,
         group_id: str | None = None,
+        recent_performance: dict[str, Any] | None = None,
     ) -> str: ...
 
 
@@ -36,6 +39,7 @@ class HeuristicRCAInstructionPolicy:
         iteration: int,
         sample_index: int = 0,
         group_id: str | None = None,
+        recent_performance: dict[str, Any] | None = None,
     ) -> str:
         retry = " Avoid repeating previous unsuccessful guesses." if history else ""
         variants = [
@@ -159,15 +163,24 @@ def build_rca_policy_prompt(
     history: list[dict[str, Any]],
     iteration: int,
     max_iterations: int,
+    *,
+    recent_performance: dict[str, Any] | None = None,
 ) -> str:
     """Prompt text for the trainable instruction policy.
 
     `compressed_state` must be the agent-facing state, not the evaluator/private
     state. The training-safe runner passes a candidate/oracle-stripped state here.
+
+    ``recent_performance`` is an optional rolling summary (see
+    ``rolling_performance_feedback.RollingPerformanceTracker``) of how the
+    solver has verified across recent, different incidents. It is aggregate,
+    self-referential feedback, not evidence about this specific incident, and
+    is omitted entirely (not even an empty key) when not supplied, so existing
+    callers/audits that compare exact prompt strings are unaffected.
     """
     payload = {
         "task": "Generate an RCA instruction prompt for a fixed RCA solver.",
-        "solver_output_contract": "The solver must output one component::fault_mechanism line per root cause.",
+        "solver_output_contract": "The solver must output one service::fault_type::injectible_mechanism line per root cause.",
         "iteration": iteration,
         "max_iterations": max_iterations,
         "redacted_state": compressed_state,
@@ -180,6 +193,12 @@ def build_rca_policy_prompt(
             "Keep the instruction concise.",
         ],
     }
+    if recent_performance:
+        payload["recent_own_performance_across_other_incidents"] = recent_performance
+        payload["instruction_requirements"].append(
+            "If recent_own_performance_across_other_incidents shows a high invalid-format or "
+            "repeated-wrong-guess rate, adjust the instruction style to address it."
+        )
     return json.dumps(payload, sort_keys=True, default=str)
 
 
@@ -193,6 +212,8 @@ def _safe_history_entry(attempt: RCAAttempt) -> dict[str, Any]:
         "feedback": attempt.feedback,
         "public_verifier_summary": {
             "twin_reproduction_score": c.get("twin_reproduction_score"),
+            "rca_twin_verified": c.get("rca_twin_verified"),
+            "predicted_fault_injection_checked": c.get("predicted_fault_injection_checked"),
             "invalid_format": c.get("invalid_format"),
             "repeated_wrong_guess": c.get("repeated_wrong_guess"),
             "terminal_failure": c.get("terminal_failure", False),
@@ -200,31 +221,76 @@ def _safe_history_entry(attempt: RCAAttempt) -> dict[str, Any]:
     }
 
 
+def _hypothesis_key(labels) -> str:
+    return "\n".join(sorted(x.hypothesis_key() for x in labels))
+
+
+def _stamp_reward_route(twin_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Record live vs offline scoring on evaluator outputs only.
+
+    The route is never written into agent-visible history. It exists so training
+    summaries can report live-twin and offline-proxy results separately instead
+    of averaging them into one number that looks like the live Twin verified
+    every scenario.
+    """
+    if not isinstance(twin_result, dict):
+        return twin_result
+    if twin_result.get("reward_route"):
+        return twin_result
+    mode = str(twin_result.get("mode") or "")
+    if "sparse_live" in mode:
+        twin_result["reward_route"] = "live"
+        twin_result.setdefault("live_reward_eligible", True)
+    elif mode:
+        twin_result["reward_route"] = "offline"
+        twin_result.setdefault("live_reward_eligible", False)
+    return twin_result
+
+
+def _public_twin_verified(twin_result: dict[str, Any] | None, min_score: float) -> bool:
+    """Return True only when a real Twin check reproduced the incident above τ.
+
+    A verifier flag is not allowed to bypass the numeric threshold. Offline
+    behavioral overlap without ``predicted_fault_injection_checked`` or
+    ``rca_twin_verified`` is not a public live stop.
+    """
+    if not isinstance(twin_result, dict):
+        return False
+    checked = bool(
+        twin_result.get("predicted_fault_injection_checked")
+        or twin_result.get("rca_twin_verified")
+    )
+    if not checked:
+        return False
+    try:
+        score = float(twin_result.get("reproduction_score", 0.0) or 0.0)
+    except Exception:
+        score = 0.0
+    return score >= float(min_score)
+
+
 def _compute_group_advantages(samples: list[GRPORolloutSample]) -> None:
-    rewards = [float(s.reward) for s in samples]
-    if not rewards:
+    if not samples:
         return
-    mu = mean(rewards)
-    sigma = pstdev(rewards) if len(rewards) > 1 else 0.0
-    denom = sigma if sigma > 1e-8 else 1.0
-    for s in samples:
-        s.group_reward_mean = round(mu, 6)
-        s.group_reward_std = round(sigma, 6)
-        s.advantage = round((float(s.reward) - mu) / denom, 6)
+    result = group_relative_advantages([float(s.reward) for s in samples], scale_by_std=True)
+    for sample, advantage in zip(samples, result.advantages):
+        sample.group_reward_mean = round(result.mean, 6)
+        sample.group_reward_std = round(result.std, 6)
+        sample.advantage = round(float(advantage), 6)
 
 
 def _recompute_dict_group_advantages(samples: list[dict[str, Any]], group_id: str) -> None:
     group = [s for s in samples if s.get("group_id") == group_id]
-    rewards = [float(s.get("reward", 0.0)) for s in group]
-    if not rewards:
+    if not group:
         return
-    mu = mean(rewards)
-    sigma = pstdev(rewards) if len(rewards) > 1 else 0.0
-    denom = sigma if sigma > 1e-8 else 1.0
-    for s in group:
-        s["group_reward_mean"] = round(mu, 6)
-        s["group_reward_std"] = round(sigma, 6)
-        s["advantage"] = round((float(s.get("reward", 0.0)) - mu) / denom, 6)
+    result = group_relative_advantages(
+        [float(s.get("reward", 0.0) or 0.0) for s in group],
+        scale_by_std=True,
+    )
+    for sample, advantage in zip(group, result.advantages):
+        sample["group_reward_mean"] = round(result.mean, 6)
+        sample["group_reward_std"] = round(result.std, 6)
+        sample["advantage"] = round(float(advantage), 6)
 
 
 def _select_sample(samples: list[tuple[GRPORolloutSample, RCAAttempt]], strategy: str) -> tuple[GRPORolloutSample, RCAAttempt]:
@@ -275,47 +341,86 @@ def run_rca_grpo_episode(
     instruction_policy: RCAInstructionPolicy,
     solver: RCASolver,
     twin_validator=None,
-    max_iterations: int = 5,
+    max_iterations: int = 7,
     group_size: int = 4,
     selection_strategy: str = "best",
     policy_model_name: str = "debug-heuristic-policy",
     policy_version: str = "v0",
     agent_state: dict[str, Any] | None = None,
-    agent_input_mode: str = "legacy",
+    agent_input_mode: str = "training_safe",
     agent_input_safety: dict[str, Any] | None = None,
     sample_index_offset: int = 0,
     stop_on_local_success: bool = True,
+    stop_on_public_twin_verified: bool = False,
+    min_twin_reproduction_score: float = 0.5,
+    recent_performance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run one RCA episode and produce GRPO-ready samples."""
+    """Run one RCA episode and produce GRPO-ready samples.
+
+    Joint training must not stop on private exact-label success. It may stop on
+    the public live-Twin verification signal, which is exactly the counterfactual
+    the policy is allowed to observe.
+    """
     gt_labels = labels_from_full_state(full_state)
     scenario_id = full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown_scenario"
-    agent_state = agent_state if agent_state is not None else compressed_state
+    if agent_state is None:
+        if agent_input_mode == "training_safe":
+            agent_state = sanitize_agent_state(compressed_state, mode="training_safe")
+        else:
+            agent_state = compressed_state
+    if agent_input_safety is None and agent_input_mode == "training_safe":
+        agent_input_safety = agent_input_safety_report(agent_state)
+        if not agent_input_safety.get("safe_for_training_agent"):
+            raise ValueError(f"agent-facing RCA state failed safety audit: {agent_input_safety}")
     attempts: list[RCAAttempt] = []
     grpo_samples: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
     seen: set[str] = set()
+    twin_result_cache: dict[str, dict[str, Any]] = {}
 
     for iteration in range(max_iterations):
         group_id = f"rca:{scenario_id}:iter{iteration}"
-        policy_prompt = build_rca_policy_prompt(agent_state, history, iteration, max_iterations)
+        policy_prompt = build_rca_policy_prompt(
+            agent_state, history, iteration, max_iterations, recent_performance=recent_performance
+        )
         group_pairs: list[tuple[GRPORolloutSample, RCAAttempt]] = []
 
         for local_sample_index in range(max(1, group_size)):
             sample_index = int(sample_index_offset) + local_sample_index
             instruction = instruction_policy.generate_instruction(
-                agent_state, history, iteration, sample_index=sample_index, group_id=group_id
+                agent_state, history, iteration, sample_index=sample_index, group_id=group_id,
+                recent_performance=recent_performance,
             )
             policy_info = _policy_info_from_policy(instruction_policy)
             old_logprob_sum, old_logprobs, completion_token_ids, ref_logprobs = _rollout_token_info(policy_info)
 
             prediction_text = solver.solve(agent_state, instruction)
             pred_labels = parse_fault_lines(prediction_text)
-            pred_key = "\n".join(sorted(x.canonical_key() for x in pred_labels))
+            pred_key = _hypothesis_key(pred_labels)
             repeated = bool(pred_key) and pred_key in seen
 
             twin_result = None
+            reused_identical_hypothesis = False
             if twin_validator is not None and pred_labels:
-                twin_result = twin_validator.validate_rca_prediction(full_state, compressed_state, pred_labels)
+                cache_key = pred_key
+                cached = twin_result_cache.get(cache_key) if cache_key else None
+                if cached is not None:
+                    twin_result = copy.deepcopy(cached)
+                    twin_result["reused_identical_hypothesis"] = True
+                    reused_identical_hypothesis = True
+                else:
+                    twin_result = twin_validator.validate_rca_prediction(
+                        full_state, compressed_state, pred_labels
+                    )
+                    twin_result = _stamp_reward_route(
+                        dict(twin_result) if isinstance(twin_result, dict) else twin_result
+                    )
+                    if isinstance(twin_result, dict) and cache_key:
+                        stored = copy.deepcopy(twin_result)
+                        stored["reused_identical_hypothesis"] = False
+                        twin_result_cache[cache_key] = stored
+                        twin_result = copy.deepcopy(stored)
+            twin_result = _stamp_reward_route(twin_result)
 
             reward_obj = rca_reward(
                 full_state,
@@ -327,6 +432,25 @@ def run_rca_grpo_episode(
                 invalid_format=not pred_labels,
                 repeated_wrong_guess=repeated,
             )
+            if isinstance(twin_result, dict):
+                comps = dict(reward_obj["components"])
+                comps["predicted_fault_injection_checked"] = bool(
+                    twin_result.get("predicted_fault_injection_checked")
+                )
+                comps["rca_twin_verified"] = bool(twin_result.get("rca_twin_verified"))
+                comps["twin_mode"] = twin_result.get("mode")
+                comps["reward_route"] = twin_result.get("reward_route")
+                comps["live_reward_calibrated"] = bool(
+                    twin_result.get("live_reward_calibrated")
+                )
+                comps["uncalibrated_reward_override_used"] = bool(
+                    twin_result.get("uncalibrated_reward_override_used")
+                )
+                comps["reused_identical_hypothesis"] = bool(
+                    twin_result.get("reused_identical_hypothesis") or reused_identical_hypothesis
+                )
+                comps["uses_oracle_labels"] = bool(twin_result.get("uses_oracle_labels"))
+                reward_obj["components"] = comps
 
             sample_id = f"{group_id}:sample{sample_index}"
             attempt = RCAAttempt(
@@ -377,6 +501,8 @@ def run_rca_grpo_episode(
                     "agent_input_safety": agent_input_safety,
                     "selection_strategy": selection_strategy,
                     "twin_enabled": twin_validator is not None,
+                    "reward_route": twin_result.get("reward_route") if isinstance(twin_result, dict) else None,
+                    "reused_identical_hypothesis": bool(reused_identical_hypothesis),
                     "policy_info": policy_info,
                     "sample_index_offset": int(sample_index_offset),
                     "old_logprobs_contract": "per_generated_completion_token_sum_matches_old_logprob_sum",
@@ -397,15 +523,45 @@ def run_rca_grpo_episode(
                 s.metadata["selected_for_episode_history"] = False
             grpo_samples.append(s.to_dict())
 
-        selected_key = "\n".join(sorted(x.canonical_key() for x in selected_attempt.predicted_faults))
+        selected_key = _hypothesis_key(selected_attempt.predicted_faults)
         if selected_key:
             seen.add(selected_key)
+        public_twin_ok = _public_twin_verified(
+            {
+                "rca_twin_verified": selected_attempt.reward_components.get("rca_twin_verified"),
+                "predicted_fault_injection_checked": selected_attempt.reward_components.get(
+                    "predicted_fault_injection_checked"
+                ),
+                "reproduction_score": selected_attempt.reward_components.get("twin_reproduction_score"),
+            },
+            min_twin_reproduction_score,
+        )
+        if stop_on_public_twin_verified and public_twin_ok:
+            break
         if stop_on_local_success and selected_attempt.success:
             break
 
     local_success = bool(attempts and attempts[-1].success)
-    terminal = None if local_success else terminal_rca_failure_penalty(max_iterations)
-    if terminal is not None:
+    public_success = bool(
+        attempts
+        and _public_twin_verified(
+            {
+                "rca_twin_verified": attempts[-1].reward_components.get("rca_twin_verified"),
+                "predicted_fault_injection_checked": attempts[-1].reward_components.get(
+                    "predicted_fault_injection_checked"
+                ),
+                "reproduction_score": attempts[-1].reward_components.get("twin_reproduction_score"),
+            },
+            min_twin_reproduction_score,
+        )
+    )
+    succeeded = (
+        (stop_on_local_success and local_success)
+        or (stop_on_public_twin_verified and public_success)
+    )
+    terminal = None
+    if (stop_on_local_success or stop_on_public_twin_verified) and not succeeded:
+        terminal = terminal_rca_failure_penalty(max_iterations)
         _apply_terminal_failure_penalty(attempts, grpo_samples, terminal)
 
     return {
@@ -418,6 +574,9 @@ def run_rca_grpo_episode(
         "grpo_samples": grpo_samples,
         "agent_input_mode": agent_input_mode,
         "agent_input_safety": agent_input_safety,
+        "reward_route": (
+            (attempts[-1].reward_components or {}).get("reward_route") if attempts else None
+        ),
         "grpo_metadata": {
             "group_size": max(1, group_size),
             "max_iterations": max_iterations,
@@ -426,6 +585,8 @@ def run_rca_grpo_episode(
             "policy_version": policy_version,
             "sample_index_offset": int(sample_index_offset),
             "stop_on_local_success": bool(stop_on_local_success),
+            "stop_on_public_twin_verified": bool(stop_on_public_twin_verified),
+            "min_twin_reproduction_score": float(min_twin_reproduction_score),
         },
     }
 
@@ -436,7 +597,7 @@ def run_rca_self_prompting_loop(
     instruction_policy: RCAInstructionPolicy,
     solver: RCASolver,
     twin_validator=None,
-    max_iterations: int = 5,
+    max_iterations: int = 7,
 ) -> dict[str, Any]:
     result = run_rca_grpo_episode(
         full_state,
@@ -460,7 +621,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--output", default=None)
     ap.add_argument("--group_size", type=int, default=1)
-    ap.add_argument("--max_iterations", type=int, default=5)
+    ap.add_argument("--max_iterations", type=int, default=7)
     args = ap.parse_args()
     rows = []
     policy = HeuristicRCAInstructionPolicy(); solver = HeuristicRCASolver()

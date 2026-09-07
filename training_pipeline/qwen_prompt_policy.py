@@ -39,7 +39,9 @@ class QwenRCAInstructionPolicy:
         iteration: int,
         sample_index: int = 0,
         group_id: str | None = None,
+        recent_performance: dict[str, Any] | None = None,
     ) -> str:
+        del recent_performance  # legacy dry-run/unimplemented policy; not on the live training path
         if self.dry_run:
             return self._dry_run_instruction(compressed_state, history, iteration, sample_index)
         return self._generate_with_qwen(compressed_state, history, iteration, sample_index)
@@ -81,7 +83,10 @@ class QwenRCAInstructionPolicy:
         compressed_state: dict[str, Any],
         history: list[dict[str, Any]],
         iteration: int,
-        max_iterations: int = 5,
+        max_iterations: int = 7,
+        recent_performance: dict[str, Any] | None = None,
     ) -> str:
         """Expose the exact prompt that real Qwen will later condition on."""
-        return build_rca_policy_prompt(compressed_state, history, iteration, max_iterations)
+        return build_rca_policy_prompt(
+            compressed_state, history, iteration, max_iterations, recent_performance=recent_performance
+        )

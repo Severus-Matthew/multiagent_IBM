@@ -29,6 +29,7 @@ class WandbRunLogger:
         run_name: str | None = None,
         config: dict[str, Any] | None = None,
         tags: list[str] | None = None,
+        run_id: str | None = None,
     ):
         self.enabled = bool(enabled)
         self.project = project
@@ -36,6 +37,13 @@ class WandbRunLogger:
         self.run_name = run_name
         self.config = config or {}
         self.tags = tags or []
+        # When set, start() resumes this exact W&B run instead of creating a new
+        # one — required for a checkpoint --resume to continue the same run's
+        # history rather than fragmenting it across multiple run IDs. There is
+        # no way to merge two already-created runs after the fact (confirmed
+        # against W&B's own docs/issue tracker), so this must be set *before*
+        # wandb.init() is ever called for a given training lineage.
+        self.run_id = run_id
         self._wandb = None
         self._run = None
 
@@ -55,14 +63,26 @@ class WandbRunLogger:
 
         try:
             self._wandb = wandb
-            self._run = wandb.init(
+            init_kwargs: dict[str, Any] = dict(
                 project=self.project,
                 entity=self.entity,
                 name=self.run_name,
                 config=self.config,
                 tags=self.tags,
             )
-            print(f"[W&B] logging enabled: project={self.project} entity={self.entity} run={self.run_name}")
+            if self.run_id:
+                # resume="must" fails loudly if the run_id turns out not to
+                # exist, rather than silently starting a fresh run under that
+                # id — exactly the failure mode that produced this fragmentation
+                # in the first place.
+                init_kwargs["id"] = self.run_id
+                init_kwargs["resume"] = "must"
+            self._run = wandb.init(**init_kwargs)
+            self.run_id = self._run.id
+            print(
+                f"[W&B] logging enabled: project={self.project} entity={self.entity} "
+                f"run={self.run_name} run_id={self.run_id}"
+            )
         except Exception as e:
             print(f"[W&B] disabled: wandb.init failed ({e})")
             self.enabled = False
@@ -112,7 +132,12 @@ class WandbRunLogger:
             type="rollout",
             metadata=summary,
         )
-        for fname in ["summary.json", "rollouts.jsonl", "grpo_samples.jsonl", "reward_audit.json"]:
+        for fname in [
+            "summary.json", "run_manifest.json", "training_events.jsonl",
+            "joint_trajectories.jsonl", "rca_policy_samples.jsonl",
+            "action_policy_samples.jsonl", "openai_calls_worker_0.jsonl",
+            "openai_calls_worker_1.jsonl",
+        ]:
             path = output_path / fname
             if path.exists():
                 artifact.add_file(str(path), name=fname)
@@ -131,6 +156,111 @@ class WandbRunLogger:
             self._run.log_artifact(text_artifact)
         except Exception as e:
             print(f"[W&B] warning: could not write text summary artifact ({e})")
+
+    def _log_role(self, row: dict[str, Any], prefix: str, role: dict[str, Any]) -> None:
+        """Surface every diagnostic the synchronized trainer already computes.
+
+        ``role`` is the per-role dict returned by
+        ``StreamingSynchronizedFactorizedGRPOTrainer._update_role``: ``signal``
+        carries the group-relative-advantage zero-signal gate, ``optimizer``
+        carries the token-level PPO ratio/clip/KL/grad-norm diagnostics. Both
+        are computed unconditionally; only the update itself is skipped when
+        ``has_policy_gradient_signal`` is False.
+        """
+        row[f"train/{prefix}_updated"] = int(bool(role.get("updated")))
+        skip_reason = role.get("skip_reason")
+        if skip_reason:
+            row[f"train/{prefix}_skip_reason"] = str(skip_reason)
+        signal = role.get("signal", {}) or {}
+        for key in (
+            "nonzero_advantage_groups", "zero_advantage_groups",
+            "nonzero_advantage_trajectories",
+        ):
+            if key in signal:
+                row[f"train/{prefix}_{key}"] = int(signal[key])
+        if "has_policy_gradient_signal" in signal:
+            row[f"train/{prefix}_has_policy_gradient_signal"] = int(bool(signal["has_policy_gradient_signal"]))
+        optimizer = role.get("optimizer", {}) or {}
+        for key, cast in (
+            ("loss", float), ("grad_norm_before_clip", float),
+            ("mean_clip_fraction", float), ("mean_ratio", float),
+            ("mean_sampled_kl", float), ("ratio_min", float), ("ratio_max", float),
+            ("num_rows", int), ("num_completion_tokens", float),
+        ):
+            if key in optimizer and optimizer[key] is not None:
+                row[f"train/{prefix}_{key}"] = cast(optimizer[key])
+
+    def log_training_update(self, step: int, update: dict[str, Any]) -> None:
+        if not self.active:
+            return
+        rca = update.get("rca", {}) or {}
+        action = update.get("action", {}) or {}
+        row = {
+            "train/bundle_update": int(update.get("bundle_update_step", step) or step),
+            "train/scenarios_completed": int(update.get("scenarios_completed", 0) or 0),
+            "train/scenarios_in_update": int(update.get("scenarios_in_update", 0) or 0),
+            "train/epoch_index": int(update.get("epoch_index", 0) or 0),
+            "train/scenario_cursor": int(update.get("scenario_cursor", 0) or 0),
+            "train/twin_mode": str(update.get("twin_mode") or ""),
+            "train/policy_version": str(update.get("policy_version") or ""),
+            "train/replica_adapter_tensors_copied": int(update.get("replica_adapter_tensors_copied", 0) or 0),
+            "train/parallel_rollout_workers": int(update.get("parallel_rollout_workers", 0) or 0),
+        }
+        self._log_role(row, "rca", rca)
+        self._log_role(row, "action", action)
+
+        # Rollout/reward-route summary: computed once per batch in
+        # _reward_route_summary and merged flat into `update`; surface it as-is
+        # rather than re-deriving it here.
+        for key, cast, wandb_key in (
+            ("live_trajectory_count", int, "rollout/live_trajectory_count"),
+            ("offline_trajectory_count", int, "rollout/offline_trajectory_count"),
+            ("action_stage_invoked_count", int, "rollout/action_stage_invoked_count"),
+            ("skipped_action_count", int, "rollout/skipped_action_count"),
+            ("full_success_count", int, "rollout/full_success_count"),
+            ("observable_improvement_count", int, "rollout/observable_improvement_count"),
+            ("generation_examples_written", int, "rollout/generation_examples_written"),
+        ):
+            value = update.get(key)
+            if value is not None:
+                row[wandb_key] = cast(value)
+        scenarios_in_update = max(1, int(update.get("scenarios_in_update", 0) or 0))
+        if "full_success_count" in update:
+            row["rollout/trajectory_success_rate"] = float(update["full_success_count"]) / scenarios_in_update
+        if "skipped_action_count" in update:
+            row["rollout/skipped_action_rate"] = float(update["skipped_action_count"]) / scenarios_in_update
+        for key, wandb_key in (
+            ("live_twin_reproduction_mean", "twin/live_reproduction_score_mean"),
+            ("offline_twin_reproduction_mean", "twin/offline_reproduction_score_mean"),
+            ("rca_policy_return_mean", "train/rca_policy_return_mean"),
+            ("action_policy_return_mean", "train/action_policy_return_mean"),
+        ):
+            value = update.get(key)
+            if value is not None:
+                row[wandb_key] = float(value)
+        route_counts = update.get("reward_route_counts") or {}
+        for route, count in route_counts.items():
+            row[f"rollout/reward_route_count/{route}"] = int(count)
+
+        # GPU memory: cheap, always-available signal for whether the current
+        # config still fits (bounded-state/tail-logit/streaming-backward all
+        # exist specifically to keep this under the device budget).
+        try:
+            import torch  # noqa: PLC0415
+            if torch.cuda.is_available():
+                for index in range(torch.cuda.device_count()):
+                    row[f"gpu/{index}_allocated_gib"] = torch.cuda.memory_allocated(index) / (1024 ** 3)
+                    row[f"gpu/{index}_reserved_gib"] = torch.cuda.memory_reserved(index) / (1024 ** 3)
+                    row[f"gpu/{index}_peak_allocated_gib"] = torch.cuda.max_memory_allocated(index) / (1024 ** 3)
+        except Exception:
+            pass
+
+        # wandb defaults commit=False whenever an explicit step= is passed (only
+        # step=None defaults to commit=True) — without this, a row sits as the
+        # run's "pending" state and is only flushed once a LATER call advances
+        # past it, or lost outright if the process dies first. This call is the
+        # only log() per update, so there is no accumulation use case to defer.
+        self._wandb.log(row, step=int(step), commit=True)
 
     def finish(self) -> None:
         if self.active:

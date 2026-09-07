@@ -27,10 +27,13 @@ from typing import Any
 
 import torch
 
+from digital_twin_runtime.live_capabilities import LIVE_MECHANISM_CAPABILITIES
+from .schemas import INJECTIBLE_FAULT_MECHANISMS
+
 
 @dataclass(frozen=True)
 class FrozenBaseGenerationConfig:
-    max_prompt_tokens: int = 22_000
+    max_prompt_tokens: int = 32_768
     rca_max_new_tokens: int = 64
     action_max_new_tokens: int = 128
     chat_role: str = "user"
@@ -244,12 +247,16 @@ class FrozenQwenRCASolver:
                 "service::fault_type::injectible_mechanism[::variant] format, "
                 "one line per root cause. Do not add prose, labels, confidence, or explanations."
             ),
-            "public_injectible_mechanisms": [
-                "assign_to_non_existent_node", "delete_pod", "scale_replicas_zero",
-                "container_kill", "network_delay", "network_loss", "cpu_stress",
-                "memory_stress", "mongodb_auth_missing", "mongodb_auth_revoked",
-                "target_port_misconfig", "application_config_misconfig",
-            ],
+            "public_injectible_mechanisms": sorted(INJECTIBLE_FAULT_MECHANISMS),
+            "currently_live_replayable_mechanisms": sorted(
+                mechanism for mechanism, capability in LIVE_MECHANISM_CAPABILITIES.items()
+                if capability.live_reward_eligible
+            ),
+            "public_variant_contract": {
+                "scale_replicas_zero": ["scale_0", "scale_2", "scale_3"],
+                "network_delay": ["delay_100ms", "delay_300ms", "delay_1000ms"],
+                "network_loss": ["loss_5pct", "loss_20pct", "loss_50pct"],
+            },
             "reasoning_requirements": [
                 "Use only evidence present in redacted_state.",
                 "Distinguish a causal root service from downstream victims.",

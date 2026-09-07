@@ -98,12 +98,17 @@ def _augment_with_static_topology(compressed_state: dict, application_source_roo
         merged.append({"src": key[0], "dst": key[1], "features": {"source": "scenario_state"}})
 
     static_added = 0
+    startup = {(str(a), str(b)) for a, b in topology.startup_edges}
     for src, dst in topology.edges:
         key = (str(src), str(dst))
         if key in seen:
+            for row in merged:
+                if (str(row.get("src")), str(row.get("dst"))) == key and key in startup:
+                    row["startup_required"] = True
             continue
         seen.add(key)
-        merged.append({"src": key[0], "dst": key[1], "features": {"source": topology.source_mode}})
+        merged.append({"src": key[0], "dst": key[1], "features": {"source": topology.source_mode},
+                       "startup_required": key in startup})
         static_added += 1
 
     graph["edges"] = merged

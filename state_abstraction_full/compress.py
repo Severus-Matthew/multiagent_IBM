@@ -300,7 +300,7 @@ def build_llm_view(compressed):
         if sig.get("error_count", 0) > 0 or sig.get("log_anomaly_score", 0) > 0.3:
             top_log_error_services.append({"service": svc, "error_count": sig.get("error_count", 0), "dominant_error_type": sig.get("dominant_error_type"), "error_families": l.get("error_families", {}), "dependency_error_counts": l.get("dependency_error_counts", {}), "evidence": l.get("evidence_lines_top", [])[:2]})
     top_log_error_services = sorted(top_log_error_services, key=lambda x: x["error_count"], reverse=True)[:15]
-    return {"scenario_id": compressed.get("scenario_id"), "top_log_error_services": top_log_error_services, "trace_summary": compressed.get("traces", {}).get("summary", {}), "service_clusters": compressed.get("clusters", {})}
+    return {"top_log_error_services": top_log_error_services, "trace_summary": compressed.get("traces", {}).get("summary", {}), "service_clusters": compressed.get("clusters", {})}
 
 
 def compress_state(state):
@@ -318,7 +318,6 @@ def compress_state(state):
             "safe_for_rca_agent": True,
         },
         "namespace": fault_ctx.get("target_namespace"),
-        "task": fault_ctx.get("task"),
         "services": state.get("services", []),
     }
     compressed["metrics"] = compress_metrics(state.get("metrics", {}))

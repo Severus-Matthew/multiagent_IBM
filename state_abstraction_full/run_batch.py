@@ -97,17 +97,34 @@ def main():
                     help="Max scenarios to process (useful for testing)")
     ap.add_argument("--resume", action="store_true",
                     help="Skip scenarios that already have state_summary.json")
+    ap.add_argument("--scenario_ids", default=None,
+                    help="Optional file with one scenario_id per line; only those dirs are processed")
     args = ap.parse_args()
 
     telemetry_dir = Path(args.telemetry_dir)
     output_base   = Path(args.output_base) if args.output_base else telemetry_dir.parent / "processed_states"
     ensure_dir(output_base)
 
+    allowed = None
+    if args.scenario_ids:
+        allowed = {
+            line.strip()
+            for line in Path(args.scenario_ids).read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+
     # Discover scenario dirs — only those with a DONE.json (completed scenarios)
     scenario_dirs = sorted(
         d for d in telemetry_dir.iterdir()
         if d.is_dir() and (d / "DONE.json").exists()
+        and (allowed is None or d.name in allowed)
     )
+    if allowed is not None:
+        missing = sorted(allowed - {d.name for d in scenario_dirs})
+        if missing:
+            print(f"[WARN] {len(missing)} scenario_ids not found under telemetry_dir with DONE.json")
+            for name in missing[:20]:
+                print(f"       missing: {name}")
 
     if args.resume:
         before = len(scenario_dirs)

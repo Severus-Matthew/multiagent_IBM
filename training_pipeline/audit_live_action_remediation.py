@@ -60,7 +60,7 @@ def main() -> None:
     rec = _find_scenario(args.processed_states, args.scenario_id)
     app_root = _default_application_source_root(args.processed_states)
     planner_state, _ = _augment_with_static_topology(rec.compressed_state, Path(app_root))
-    spec = build_sparse_live_twin_spec(planner_state, faults, downstream_support_hops=2)
+    spec = build_sparse_live_twin_spec(planner_state, faults, downstream_support_hops=1)
     plan = discover_sparse_manifest_plan(args.source_namespace, spec.services_to_keep)
     session = SparseLiveTwinSession(render_sparse_manifest_bundle(plan, args.target_namespace))
 

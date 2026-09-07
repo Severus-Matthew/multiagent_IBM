@@ -14,7 +14,7 @@ class TrainableHFRCAInstructionPolicy:
         sampler: HFExactTokenPolicySampler,
         *,
         adapter_name: str = "lora_rca",
-        max_iterations: int = 5,
+        max_iterations: int = 7,
     ) -> None:
         self.sampler = sampler
         self.adapter_name = adapter_name
@@ -45,14 +45,19 @@ class TrainableHFRCAInstructionPolicy:
         iteration: int,
         sample_index: int = 0,
         group_id: str | None = None,
+        recent_performance: dict[str, Any] | None = None,
     ) -> str:
         # The canonical RCA loop constructs this same prompt.  The driver must set
-        # max_iterations consistently with the episode configuration.
+        # max_iterations consistently with the episode configuration, and must
+        # pass the identical recent_performance object the loop used for its own
+        # copy of this prompt, or the stored training-record prompt would no
+        # longer match what this policy actually conditioned on.
         prompt = build_rca_policy_prompt(
             compressed_state,
             history,
             iteration,
             self.max_iterations,
+            recent_performance=recent_performance,
         )
         return self.generate_from_prompt(
             prompt,
@@ -105,6 +110,7 @@ class TrainableHFActionPromptPolicy:
             history=context.get("previous_attempts", []) or [],
             iteration=int(context.get("iteration", 0) or 0),
             max_iterations=int(context.get("max_iterations", 1) or 1),
+            recent_performance=context.get("recent_performance"),
         )
         return self.generate_from_prompt(
             prompt,

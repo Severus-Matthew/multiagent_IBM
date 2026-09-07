@@ -3,6 +3,8 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from .kubectl_command_shape import positional_args, resource_target
+
 SUPPORTED_PREFIXES = ("kubectl", "helm", "mongosh")
 
 # Broad denylist for commands that are destructive, cluster-wide, interactive, or
@@ -60,6 +62,10 @@ DANGEROUS_DELETE_RESOURCES = {
     "serviceaccount", "serviceaccounts",
 }
 
+SENSITIVE_READ_RESOURCES = {
+    "secret", "secrets",
+}
+
 ALLOWED_KUBECTL_VERBS = {"get", "describe", "logs", "rollout", "scale", "patch", "delete"}
 ALLOWED_HELM_VERBS = {"rollback", "status", "history"}
 
@@ -79,19 +85,26 @@ def _has_shell_metacharacters(raw: str) -> bool:
 
 def _kubectl_safety(parts: list[str], raw: str) -> list[str]:
     reasons: list[str] = []
-    if len(parts) < 2:
+    positional = positional_args(parts, 1)
+    if not positional:
         return ["kubectl_missing_verb"]
-    verb = parts[1]
+    verb = positional[0]
     if verb in DENY_KUBECTL_VERBS:
         reasons.append(f"kubectl_denied_verb:{verb}")
     if verb not in ALLOWED_KUBECTL_VERBS:
         reasons.append(f"kubectl_unsupported_verb:{verb}")
     if verb == "delete":
-        resource = parts[2].lower() if len(parts) > 2 else ""
+        target = resource_target(positional)
+        resource = target[0] if target else ""
         if resource in DANGEROUS_DELETE_RESOURCES:
             reasons.append(f"kubectl_dangerous_delete:{resource}")
         if "--all" in parts or "--all-namespaces" in parts or "-A" in parts:
             reasons.append("kubectl_delete_broad_scope")
+    if verb in {"get", "describe"}:
+        target = resource_target(positional)
+        resource = target[0] if target else ""
+        if resource in SENSITIVE_READ_RESOURCES:
+            reasons.append(f"kubectl_sensitive_read:{resource}")
     if verb == "patch":
         low = raw.lower()
         if "--type=json" not in low and "--type='json'" not in low and '--type="json"' not in low:
@@ -103,9 +116,10 @@ def _kubectl_safety(parts: list[str], raw: str) -> list[str]:
 
 def _helm_safety(parts: list[str]) -> list[str]:
     reasons: list[str] = []
-    if len(parts) < 2:
+    positional = positional_args(parts, 1)
+    if not positional:
         return ["helm_missing_verb"]
-    verb = parts[1]
+    verb = positional[0]
     if verb in DENY_HELM_VERBS:
         reasons.append(f"helm_denied_verb:{verb}")
     if verb not in ALLOWED_HELM_VERBS:

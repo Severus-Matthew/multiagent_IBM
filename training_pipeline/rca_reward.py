@@ -223,7 +223,7 @@ def non_leaking_feedback(c: dict[str, Any]) -> str:
     """Policy-visible feedback derived only from public/self/twin signals."""
     parts = []
     if c.get("invalid_format"):
-        parts.append("Output format invalid; use one service::fault_type per line.")
+        parts.append("Output format invalid; use one service::fault_type::injectible_mechanism per line.")
 
     twin_score = float(c.get("twin_reproduction_score", 0.0) or 0.0)
     if twin_score < 0.20:
@@ -238,7 +238,7 @@ def non_leaking_feedback(c: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def terminal_rca_failure_penalty(num_iterations: int = 5) -> dict[str, Any]:
+def terminal_rca_failure_penalty(num_iterations: int = 7) -> dict[str, Any]:
     return {
         "reward": -2.0,
         "success": False,

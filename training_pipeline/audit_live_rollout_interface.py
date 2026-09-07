@@ -42,6 +42,13 @@ class RecordingLiveVerifier:
             "global_symptom_reduction": 1.0,
             "target_symptom_reduction": 1.0,
             "action_repairs_fault_type": True,
+            # A real SparseLiveTwinVerifier always sets these two: reward_route
+            # via _with_live_route(), and after_state_observed nested under
+            # resolution (score_resolution's own return value). action_reward
+            # and end_to_end_reward both gate positive credit on them, so a mock
+            # that omits them exercises a code path no live rollout ever takes.
+            "reward_route": "live",
+            "resolution": {"after_state_observed": True},
         }
 
 

@@ -22,7 +22,7 @@ def main() -> None:
                     help="Comma-separated policies: heuristic,operator,qwen_stub")
     ap.add_argument("--use_behavioral_twin", action="store_true")
     ap.add_argument("--group_size", type=int, default=4)
-    ap.add_argument("--max_iterations", type=int, default=5)
+    ap.add_argument("--max_iterations", type=int, default=7)
     ap.add_argument("--selection_strategy", choices=["best", "sample0"], default="best")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--rca_solver", choices=["heuristic"], default="heuristic")

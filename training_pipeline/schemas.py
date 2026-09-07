@@ -16,6 +16,8 @@ FAULT_TYPE_ALIASES = {
     "auth": "auth_failure",
     "revoke_auth": "auth_failure",
     "auth_miss_mongodb": "auth_failure",
+    "user_unregistered_mongodb": "auth_failure",
+    "storage_user_unregistered": "auth_failure",
     "mongodb": "dependency_failure",
     "mongo": "dependency_failure",
     "network_delay": "latency_degradation",
@@ -25,6 +27,8 @@ FAULT_TYPE_ALIASES = {
     "k8s_target_port": "config_error",
     "misconfig": "config_error",
     "config": "config_error",
+    "wrong_bin_usage": "config_error",
+    "flower_node_stop": "infra_failure",
 }
 
 CANONICAL_FAULT_TYPES = {
@@ -47,6 +51,11 @@ INJECTIBLE_FAULT_MECHANISMS = {
     "mongodb_auth_revoked": "auth_failure",
     "target_port_misconfig": "config_error",
     "application_config_misconfig": "config_error",
+    "wrong_binary": "config_error",
+    "mongodb_user_unregistered": "auth_failure",
+    "pod_failure": "infra_failure",
+    "pod_kill": "infra_failure",
+    "container_stop": "infra_failure",
 }
 
 _FAULT_FAMILY_MECHANISM_MARKERS = (
@@ -68,6 +77,12 @@ _FAULT_FAMILY_MECHANISM_MARKERS = (
     ("memory_stress", "memory_stress"),
     ("misconfig_app", "application_config_misconfig"),
     ("application_config_misconfig", "application_config_misconfig"),
+    ("wrong_bin_usage", "wrong_binary"),
+    ("user_unregistered_mongodb", "mongodb_user_unregistered"),
+    ("storage_user_unregistered", "mongodb_user_unregistered"),
+    ("pod_failure", "pod_failure"),
+    ("pod_kill", "pod_kill"),
+    ("flower_node_stop", "container_stop"),
 )
 
 
@@ -91,6 +106,18 @@ class FaultLabel:
 
     def canonical_key(self) -> str:
         return f"{self.service}::{normalize_fault_type(self.fault_type or self.fault_family)}"
+
+    def hypothesis_key(self) -> str:
+        """Identity used for retry/repeat detection.
+
+        Generic two-field labels stay ``service::type``. Injectible labels include
+        mechanism and variant so distinct live-Twin counterfactuals are not
+        collapsed into one repeated guess.
+        """
+        mechanism = normalize_fault_mechanism(self.fault_mechanism)
+        if mechanism:
+            return f"{self.canonical_key()}::{mechanism}::{self.variant_name or 'default'}"
+        return self.canonical_key()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

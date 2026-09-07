@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 from collections import defaultdict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -52,10 +53,15 @@ def _action_result(
     resolved: bool,
     mutation: bool = True,
     verify: bool = True,
+    twin_score: float = 0.5,
 ) -> dict[str, Any]:
     return {
         "skipped_action": False,
-        "public_rca_twin_gate": {"reproduction_score": 0.5},
+        "public_rca_twin_gate": {
+            "reproduction_score": twin_score,
+            "reward_route": "live",
+            "live_reward_calibrated": True,
+        },
         "attempts": [{
             "reward": -999.0,  # deliberately absurd: must remain diagnostic only
             "reward_components": {
@@ -73,6 +79,8 @@ def _action_result(
                 "instruction_tokens": 80,
             },
             "verifier_result": {
+                "reward_route": "live",
+                "after_state_observed": True,
                 "target_symptom_reduction": target_reduction,
                 "global_symptom_reduction": global_reduction,
                 "target_sla_restored": target_sla,
@@ -153,9 +161,16 @@ def audit_factorized_reward() -> dict[str, Any]:
     good_rca = _rca_result(1.0, True, 1.0)
     bad_rca = _rca_result(0.0, False, 0.0)
 
+    good_action["public_rca_twin_gate"]["reproduction_score"] = 1.0
+    bad_action["public_rca_twin_gate"]["reproduction_score"] = 1.0
     good_r_bad_a = end_to_end_reward(good_rca, bad_action)
-    bad_r_good_a = end_to_end_reward(bad_rca, good_action)
+    bad_rca_good_action = _action_result(
+        safe=True, repairs=True, target_reduction=1.0, global_reduction=1.0,
+        target_sla=True, sla=True, resolved=True, twin_score=0.0,
+    )
+    bad_r_good_a = end_to_end_reward(bad_rca, bad_rca_good_action)
     good_both = end_to_end_reward(good_rca, good_action)
+    bad_action["public_rca_twin_gate"]["reproduction_score"] = 0.0
     bad_both = end_to_end_reward(bad_rca, bad_action)
 
     if not (good_r_bad_a["rca_policy_return"] > good_r_bad_a["action_policy_return"]):
@@ -173,6 +188,26 @@ def audit_factorized_reward() -> dict[str, Any]:
     sys_bad_rca = end_to_end_reward(bad_rca, good_action)["system_reward"]
     _assert_close(float(sys_good_rca), float(sys_bad_rca), tol=1e-12,
                   message="system reward leaked private RCA correctness")
+
+    # The optimizer-facing RCA return must likewise be invariant to private
+    # exact/pair/count labels when the public Twin result and self-observable
+    # format/history costs are unchanged.
+    private_variant = deepcopy(good_rca)
+    private_components = private_variant["attempts"][0]["reward_components"]
+    private_components["pair_score"] = 0.0
+    private_components["exact_set_match"] = False
+    private_components["count_mismatch"] = 5
+    private_components["num_gt"] = 1
+    public_return = end_to_end_reward(good_rca, good_action)["rca_policy_return"]
+    private_variant_return = end_to_end_reward(
+        private_variant, good_action
+    )["rca_policy_return"]
+    _assert_close(
+        float(public_return),
+        float(private_variant_return),
+        tol=1e-12,
+        message="RCA policy return leaked private evaluator labels",
+    )
 
     # Raw local scalar rewards are intentionally extreme in fixtures; factorized
     # returns must remain bounded and therefore cannot be reusing those raw values.
@@ -197,13 +232,35 @@ def audit_factorized_reward() -> dict[str, Any]:
     if no_op_reward["success"]:
         raise AssertionError("safe no-op must not be an end-to-end success")
 
+    offline = _action_result(
+        safe=True, repairs=True, target_reduction=1.0, global_reduction=1.0,
+        target_sla=True, sla=True, resolved=True,
+    )
+    offline["public_rca_twin_gate"]["reward_route"] = "offline"
+    offline["attempts"][0]["verifier_result"]["reward_route"] = "offline"
+    offline_reward = end_to_end_reward(good_rca, offline)
+    if offline_reward["rca_policy_return"] or offline_reward["action_policy_return"]:
+        raise AssertionError("offline verifier results must not produce optimizer credit")
+
+    incomplete = _action_result(
+        safe=True, repairs=True, target_reduction=1.0, global_reduction=1.0,
+        target_sla=True, sla=True, resolved=True,
+    )
+    incomplete["public_rca_twin_gate"]["telemetry_incomplete"] = True
+    incomplete_reward = end_to_end_reward(good_rca, incomplete)
+    if incomplete_reward["rca_policy_return"] or incomplete_reward["action_policy_return"]:
+        raise AssertionError("incomplete telemetry must not produce optimizer credit")
+
     return {
         "good_rca_bad_action": good_r_bad_a,
         "bad_rca_good_action": bad_r_good_a,
         "good_both": good_both,
         "bad_both": bad_both,
         "safe_noop": no_op_reward,
+        "offline_zero_credit": offline_reward,
+        "telemetry_incomplete_zero_credit": incomplete_reward,
         "system_reward_private_rca_independence": True,
+        "rca_policy_return_private_label_independence": True,
         "raw_local_reward_not_reused": True,
     }
 

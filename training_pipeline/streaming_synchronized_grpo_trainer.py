@@ -33,7 +33,7 @@ class StreamingSynchronizedFactorizedGRPOTrainer(SynchronizedFactorizedGRPOTrain
                 "role": role,
                 "adapter": adapter_name,
                 "updated": False,
-                "skip_reason": "zero_policy_advantage_signal",
+                "skip_reason": signal.get("skip_reason") or "zero_policy_advantage_signal",
                 "signal": signal,
                 "kl_only_update_blocked": bool(self.config.grpo.kl_coeff > 0.0),
                 "streaming_row_backward": True,

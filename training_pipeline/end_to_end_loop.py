@@ -6,9 +6,24 @@ from .action_loop import run_action_prompt_optimizer_loop
 from .agent_input_safety import agent_input_safety_report, sanitize_agent_state
 from .bounded_agent_state import BoundedAgentStateConfig, build_bounded_agent_state
 from .end_to_end_reward import end_to_end_reward
-from .grpo_math import group_relative_advantages
+from .generation_examples import examples_from_group_result
+from .grpo_math import drop_undersized_optimizer_groups, group_relative_advantages
 from .rca_loop import run_rca_grpo_episode
 from .schemas import parse_fault_lines
+
+
+def _reward_route_from_episode(rca_result: dict[str, Any], action_result: dict[str, Any]) -> str:
+    for source in (action_result, rca_result):
+        if not isinstance(source, dict):
+            continue
+        route = source.get("reward_route")
+        if route:
+            return str(route)
+        for attempt in reversed(source.get("attempts") or []):
+            comps = (attempt or {}).get("reward_components") or {}
+            if comps.get("reward_route"):
+                return str(comps["reward_route"])
+    return "unknown"
 
 
 def _group_normalize(
@@ -19,16 +34,32 @@ def _group_normalize(
     std_key: str,
     advantage_key: str,
     zero_variance_key: str,
+    participants: list[dict[str, Any]] | None = None,
 ) -> None:
+    """Normalize a role return across the trajectories that role actually acted in.
+
+    ``participants`` restricts the baseline to trajectories that produced a
+    decision for this role. A trajectory whose action stage was skipped, for
+    example because the live gate rejected the RCA hypothesis, still carries an
+    action return, but it is not a sample from the action policy and must not
+    shift the mean or standard deviation used to normalize the trajectories that
+    did act. Non-participants keep a zero advantage and contribute no rows.
+    """
+    scored = trajectories if participants is None else participants
     result = group_relative_advantages(
-        [float(t.get(value_key, 0.0) or 0.0) for t in trajectories],
+        [float(t.get(value_key, 0.0) or 0.0) for t in scored],
         scale_by_std=True,
     )
-    for trajectory, advantage in zip(trajectories, result.advantages):
+    advantages = {id(t): a for t, a in zip(scored, result.advantages)}
+    participating = {id(t) for t in scored}
+    for trajectory in trajectories:
+        member = id(trajectory) in participating
         trajectory[mean_key] = round(result.mean, 6)
         trajectory[std_key] = round(result.std, 6)
-        trajectory[advantage_key] = round(float(advantage), 6)
+        trajectory[advantage_key] = round(float(advantages.get(id(trajectory), 0.0)), 6)
         trajectory[zero_variance_key] = bool(result.zero_variance)
+        trajectory[f"{advantage_key}_participant"] = member
+        trajectory[f"{advantage_key}_group_size"] = len(scored)
         trajectory[f"{advantage_key}_std_correction"] = result.std_correction
         trajectory[f"{advantage_key}_normalization_epsilon"] = result.normalization_epsilon
 
@@ -50,6 +81,7 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         advantage_key="rca_policy_advantage",
         zero_variance_key="rca_group_zero_variance",
     )
+    action_participants = [t for t in trajectories if t.get("action_stage_invoked")]
     _group_normalize(
         trajectories,
         value_key="action_policy_return",
@@ -57,6 +89,7 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         std_key="action_group_return_std",
         advantage_key="action_policy_advantage",
         zero_variance_key="action_group_zero_variance",
+        participants=action_participants,
     )
 
 
@@ -160,17 +193,19 @@ def run_end_to_end_trajectory_group(
     action_agent,
     twin_verifier,
     trajectory_group_size: int = 4,
-    rca_max_iterations: int = 3,
-    action_max_iterations: int = 3,
+    rca_max_iterations: int = 7,
+    action_max_iterations: int = 7,
     rca_policy_model_name: str = "debug-rca-policy",
     action_policy_model_name: str = "structured-action-policy",
     policy_version: str = "v0",
     agent_input_mode: str = "training_safe",
     reward_mode: str = "factorized_joint_pipeline_v2_no_double_count",
-    min_twin_reproduction_score: float = 0.0,
+    min_twin_reproduction_score: float = 0.5,
     rca_downstream_credit_weight: float = 0.15,
     action_system_credit_weight: float = 0.25,
     bounded_agent_state_config: BoundedAgentStateConfig | None = None,
+    rca_recent_performance: dict[str, Any] | None = None,
+    action_recent_performance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate complete joint trajectories with factorized role-specific credit.
 
@@ -196,7 +231,11 @@ def run_end_to_end_trajectory_group(
             "a singleton group has zero relative advantage"
         )
 
-    agent_state = sanitize_agent_state(compressed_state, mode="training_safe")
+    public_agent_state = getattr(twin_verifier, "public_agent_state", None)
+    policy_source_state = (
+        public_agent_state(compressed_state) if callable(public_agent_state) else compressed_state
+    )
+    agent_state = sanitize_agent_state(policy_source_state, mode="training_safe")
     if bounded_agent_state_config is not None:
         agent_state = build_bounded_agent_state(
             agent_state,
@@ -209,6 +248,9 @@ def run_end_to_end_trajectory_group(
     scenario_id = str(full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown")
     trajectory_group_id = f"e2e:{scenario_id}"
     trajectories: list[dict[str, Any]] = []
+    prepare_scenario = getattr(twin_verifier, "prepare_scenario", None)
+    if callable(prepare_scenario):
+        prepare_scenario(full_state, compressed_state)
     live_mode = bool(getattr(twin_verifier, "is_live", False))
 
     for trajectory_index in range(int(trajectory_group_size)):
@@ -234,6 +276,9 @@ def run_end_to_end_trajectory_group(
                 agent_input_safety=safety,
                 sample_index_offset=trajectory_index,
                 stop_on_local_success=False,
+                stop_on_public_twin_verified=True,
+                min_twin_reproduction_score=min_twin_reproduction_score,
+                recent_performance=rca_recent_performance,
             )
             rca_samples = list(rca_result.get("grpo_samples", []) or [])
             rca_faults = parse_fault_lines(rca_result.get("final_prediction", ""))
@@ -264,6 +309,7 @@ def run_end_to_end_trajectory_group(
                 agent_input_safety=safety,
                 sample_index_offset=trajectory_index,
                 require_upstream_label_success_for_gate=False,
+                recent_performance=action_recent_performance,
             )
             action_samples = list(action_result.get("grpo_samples", []) or [])
 
@@ -283,6 +329,9 @@ def run_end_to_end_trajectory_group(
                 "action_policy_return": reward_obj["action_policy_return"],
                 "trajectory_success": reward_obj["success"],
                 "reward": reward_obj,
+                "reward_route": _reward_route_from_episode(rca_result, action_result),
+                "action_stage_invoked": bool(action_samples) and not bool(action_result.get("skipped_action")),
+                "skipped_action": bool(action_result.get("skipped_action")),
                 "rca_result": {k: v for k, v in rca_result.items() if k != "grpo_samples"},
                 "action_result": {k: v for k, v in action_result.items() if k != "grpo_samples"},
                 "_policy_samples": rca_samples + action_samples,
@@ -312,8 +361,17 @@ def run_end_to_end_trajectory_group(
         rca_policy_samples.extend(rca_rows)
         action_policy_samples.extend(action_rows)
 
+    action_policy_samples, dropped_action_groups = drop_undersized_optimizer_groups(action_policy_samples)
     all_policy_samples = rca_policy_samples + action_policy_samples
     projection = agent_state.get("projection") if isinstance(agent_state, dict) else None
+    route_counts: dict[str, int] = {}
+    for trajectory in trajectories:
+        route = str(trajectory.get("reward_route") or "unknown")
+        route_counts[route] = route_counts.get(route, 0) + 1
+    generation_examples = examples_from_group_result(
+        {"scenario_id": scenario_id, "trajectories": trajectories},
+        scenario_id=scenario_id,
+    )
 
     return {
         "scenario_id": scenario_id,
@@ -327,6 +385,7 @@ def run_end_to_end_trajectory_group(
         "credit_assignment_mode": "joint_rollout_factorized_policy_returns_v2",
         "update_schedule": "batch_synchronized_separate_policy_updates",
         "trajectories": trajectories,
+        "generation_examples": generation_examples,
         "rca_grpo_samples": rca_policy_samples,
         "action_grpo_samples": action_policy_samples,
         "joint_grpo_samples": all_policy_samples,
@@ -338,6 +397,9 @@ def run_end_to_end_trajectory_group(
         "action_group_return_std": trajectories[0].get("action_group_return_std") if trajectories else None,
         "rca_group_zero_variance": trajectories[0].get("rca_group_zero_variance") if trajectories else None,
         "action_group_zero_variance": trajectories[0].get("action_group_zero_variance") if trajectories else None,
+        "reward_route_counts": route_counts,
+        "dropped_action_optimizer_groups": dropped_action_groups,
+        "num_action_stage_trajectories": sum(1 for t in trajectories if t.get("action_stage_invoked")),
         "num_successful_trajectories": sum(1 for t in trajectories if t.get("trajectory_success")),
         "uses_hidden_rca_success_for_action_transition": False,
         "uses_real_training_update": False,
@@ -347,6 +409,8 @@ def run_end_to_end_trajectory_group(
             "system_advantage": "diagnostic_only",
             "advantage_normalization": "per_incident_complete_trajectory_group_sample_std_plus_1e-4",
             "trajectory_group_baseline_scope": "same_initial_incident",
+            "action_baseline_scope": "trajectories_that_produced_action_decisions",
+            "undersized_action_groups_dropped": dropped_action_groups,
             "decision_prompt_equivalence": "not_assumed_after_history_diverges",
             "rca_downstream_credit_weight": float(rca_downstream_credit_weight),
             "action_system_credit_weight": float(action_system_credit_weight),

@@ -33,7 +33,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="Maximum selected scenarios to run after filtering.")
     ap.add_argument("--scenario_ids", default=None, help="Optional file with one allowed scenario_id per line.")
     ap.add_argument("--include_unlabeled", action="store_true", help="Include scenarios without oracle labels. Not recommended for reward training.")
-    ap.add_argument("--agent_input_mode", choices=["legacy", "training_safe"], default="legacy",
+    ap.add_argument("--agent_input_mode", choices=["legacy", "training_safe"], default="training_safe",
                     help="training_safe removes oracle/candidate-root-cause menus before the policy/solver sees the state.")
     ap.add_argument("--allow_candidate_sweep_audit", action="store_true",
                     help="Required when --llm_model candidate_sweep is used. Candidate sweep is audit-only, not training.")
@@ -48,9 +48,9 @@ def main() -> None:
                     help="Compute the RCA twin gate for the final attempt. Blocking behavior is controlled by --rca_twin_gate_mode.")
     ap.add_argument("--rca_twin_gate_mode", choices=["diagnostic", "strict"], default="diagnostic",
                     help="diagnostic logs twin reproduction without changing RCA success; strict blocks label successes that fail the twin gate.")
-    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0,
+    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.4702,
                     help="Minimum RCA twin reproduction score for the gate.")
-    ap.add_argument("--max_iterations", type=int, default=5)
+    ap.add_argument("--max_iterations", type=int, default=7)
     ap.add_argument("--group_size", type=int, default=4, help="Number of instruction candidates per state/history group.")
     ap.add_argument("--selection_strategy", choices=["best", "sample0"], default="best",
                     help="Use best for verifier-guided data generation; use sample0 for stricter on-policy debugging/training smoke tests.")

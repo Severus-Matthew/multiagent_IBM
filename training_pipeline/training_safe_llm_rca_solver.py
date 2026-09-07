@@ -19,17 +19,17 @@ Infer the most likely upstream root cause from the telemetry. Separate root
 causes from downstream cascade victims.
 
 Output ONLY lines in this form:
-component::fault_mechanism
+service::fault_type::injectible_mechanism[::variant]
 
 Rules:
 - Default to ONE root-cause line. Use a second line only when there are two
   clearly independent evidence clusters that cannot be explained by one upstream
   cause.
-- Use component names that appear in telemetry evidence.
-- Use a specific mechanism when possible: auth, config, network, latency, infra,
-  dependency, resource, crash, scheduling.
-- Do not use unknown unless the component is clearly abnormal but the mechanism
-  cannot be inferred from the redacted evidence.
+- Use service names that appear in telemetry evidence.
+- fault_type must be one of: infra_failure, auth_failure, dependency_failure,
+  resource_exhaustion, latency_degradation, network_failure, config_error, unknown
+- injectible_mechanism must be a public Twin capability inferred from telemetry,
+  never from a scenario ID or hidden label.
 - Do not blame generic observability/helper components or high-fanout downstream
   victims unless they have direct local evidence.
 - Do not output explanations, markdown, JSON, bullets, or rankings.
@@ -132,7 +132,7 @@ class TrainingSafeLLMRCASolver:
             "mechanism_instruction": "Prefer specific mechanisms over unknown when the evidence supports them.",
             "agent_input_safety": safety,
             "redacted_telemetry_state": agent_state,
-            "output_contract": "Return only component::fault_mechanism lines. No prose.",
+            "output_contract": "Return only service::fault_type::injectible_mechanism lines. No prose.",
         }
         return json.dumps(payload, sort_keys=True, default=str)
 

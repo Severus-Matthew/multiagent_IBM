@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable, Sequence
 
 
 @dataclass(frozen=True)
@@ -153,3 +153,30 @@ def schulman_reverse_kl_estimate(policy_logprob: float, reference_logprob: float
     if estimate < 0.0:
         raise AssertionError(f"KL estimator became negative: {estimate}")
     return estimate
+
+
+def drop_undersized_optimizer_groups(
+    rows: Sequence[dict[str, Any]],
+    *,
+    min_trajectories: int = 2,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep only optimizer groups that contain a valid GRPO baseline.
+
+    A live RCA gate can leave a trajectory with no Action decisions. Those
+    leftover singleton groups are not samples from the Action policy and must
+    not enter the optimizer; dropping them is the fail-closed alternative to
+    raising on ``G < 2``.
+    """
+    grouped: dict[str, set[str]] = {}
+    for row in rows:
+        gid = str(row.get("optimizer_group_id") or "")
+        tid = str(row.get("trajectory_id") or "")
+        grouped.setdefault(gid, set()).add(tid)
+    keep = {
+        gid
+        for gid, tids in grouped.items()
+        if gid and all(tids) and len(tids) >= int(min_trajectories)
+    }
+    dropped = sorted(gid for gid in grouped if gid not in keep)
+    kept = [row for row in rows if str(row.get("optimizer_group_id") or "") in keep]
+    return kept, dropped

@@ -53,7 +53,7 @@ def main() -> None:
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--scenario_id", default=None)
     ap.add_argument("--model", default=DEFAULT_QWEN_MODEL)
-    ap.add_argument("--max_serialized_chars", type=int, default=42_000)
+    ap.add_argument("--max_serialized_chars", type=int, default=100_000)
     ap.add_argument(
         "--max_system_services",
         type=int,
@@ -72,7 +72,7 @@ def main() -> None:
         default=8,
         help="Maximum services receiving bounded raw log text examples; all log services keep signal/count summaries.",
     )
-    ap.add_argument("--target_prompt_tokens", type=int, default=16_000)
+    ap.add_argument("--target_prompt_tokens", type=int, default=32_768)
     args = ap.parse_args()
 
     rec = _find_scenario(args.processed_states, args.scenario_id)

@@ -3,8 +3,17 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from .kubectl_command_shape import positional_args, positional_indices, resource_target
+
 
 def normalize_command(cmd: str) -> dict[str, Any]:
+    """Classify a single command's remediation action.
+
+    Dispatches on the verb's actual position (``positional_indices``) rather
+    than a fixed ``parts[:N]`` prefix — a global flag placed before the verb
+    (``kubectl -n ns patch ...``, valid kubectl syntax) previously made every
+    branch below fall through to "unknown".
+    """
     raw = str(cmd or "").strip()
     try:
         parts = shlex.split(raw)
@@ -14,38 +23,57 @@ def normalize_command(cmd: str) -> dict[str, Any]:
         return {"action": "invalid", "raw": raw, "valid": False}
 
     low = raw.lower()
+    program = parts[0]
+    indices = positional_indices(parts, 1)
 
-    if parts[:3] == ["kubectl", "rollout", "restart"]:
-        svc = _deployment(parts[3:])
-        return {"action": "restart_service", "service": svc, "raw": raw, "valid": bool(svc)}
+    if program == "kubectl" and indices:
+        verb = parts[indices[0]]
+        if verb == "rollout" and len(indices) > 1:
+            subverb = parts[indices[1]]
+            rest = parts[indices[1] + 1:]
+            if subverb == "restart":
+                svc = _deployment(rest)
+                return {"action": "restart_service", "service": svc, "raw": raw, "valid": bool(svc)}
+            if subverb == "undo":
+                svc = _deployment(rest)
+                return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
+            if subverb == "status":
+                svc = _deployment(rest)
+                return {"action": "verify", "service": svc, "raw": raw, "valid": True}
+        rest = parts[indices[0] + 1:]
+        if verb == "scale":
+            svc = _deployment(rest)
+            return {"action": "scale_service", "service": svc, "raw": raw, "valid": bool(svc)}
+        if verb == "patch":
+            svc = _deployment(rest) or _service(rest) or _configmap(rest)
+            if _looks_like_scheduling_repair(low):
+                return {"action": "fix_infra_scheduling", "service": svc, "raw": raw, "valid": bool(svc)}
+            return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
+        if verb == "delete":
+            target = resource_target([verb, *rest])
+            if target and target[0] in {
+                "networkchaos", "podchaos", "stresschaos",
+            }:
+                return {
+                    "action": "remove_fault_resource",
+                    "service": None,
+                    "resource_kind": target[0],
+                    "resource_name": target[1],
+                    "raw": raw,
+                    "valid": bool(target[1]),
+                }
+            svc = _pod_owner_hint(rest) or _selector_service_hint(parts) or _deployment(rest)
+            return {"action": "recreate_pod", "service": svc, "raw": raw, "valid": bool(svc)}
+        if verb == "get":
+            return {"action": "verify", "raw": raw, "valid": True}
 
-    if parts[:3] == ["kubectl", "rollout", "undo"]:
-        svc = _deployment(parts[3:])
-        return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
-
-    if parts[:3] == ["kubectl", "rollout", "status"]:
-        svc = _deployment(parts[3:])
-        return {"action": "verify", "service": svc, "raw": raw, "valid": True}
-
-    if parts[:2] == ["kubectl", "scale"]:
-        svc = _deployment(parts[2:])
-        return {"action": "scale_service", "service": svc, "raw": raw, "valid": bool(svc)}
-
-    if parts[:2] == ["helm", "rollback"]:
-        return {"action": "rollback_config", "service": None, "raw": raw, "valid": len(parts) >= 3}
-
-    if parts[:2] == ["kubectl", "patch"]:
-        svc = _deployment(parts[2:]) or _service(parts[2:]) or _configmap(parts[2:])
-        if _looks_like_scheduling_repair(low):
-            return {"action": "fix_infra_scheduling", "service": svc, "raw": raw, "valid": bool(svc)}
-        return {"action": "rollback_config", "service": svc, "raw": raw, "valid": bool(svc)}
-
-    if parts[:2] == ["kubectl", "delete"]:
-        svc = _pod_owner_hint(parts) or _selector_service_hint(parts) or _deployment(parts[2:])
-        return {"action": "recreate_pod", "service": svc, "raw": raw, "valid": bool(svc)}
-
-    if parts[:2] == ["kubectl", "get"]:
-        return {"action": "verify", "raw": raw, "valid": True}
+    if program == "helm" and indices:
+        verb = parts[indices[0]]
+        if verb == "rollback":
+            return {
+                "action": "rollback_config", "service": None, "raw": raw,
+                "valid": len(parts) >= indices[0] + 2,
+            }
 
     return {"action": "unknown", "raw": raw, "valid": False}
 
@@ -60,8 +88,10 @@ def _deployment(parts: list[str]) -> str | None:
             return p.split("/", 1)[1]
         if p.startswith("deploy/"):
             return p.split("/", 1)[1]
-    if parts and parts[0] in ("deployment", "deploy") and len(parts) > 1:
-        return parts[1]
+    # A flag (e.g. -n ns) may precede "deployment"/"deploy" in this slice too.
+    positional = positional_args(parts, 0)
+    if len(positional) >= 2 and positional[0] in ("deployment", "deploy"):
+        return positional[1]
     return None
 
 
@@ -83,15 +113,15 @@ def _service(parts: list[str]) -> str | None:
     return None
 
 
-def _pod_owner_hint(parts: list[str]) -> str | None:
-    for p in parts:
+def _pod_owner_hint(rest: list[str]) -> str | None:
+    """``rest`` is the tokens after the "delete" verb (see call site)."""
+    for p in rest:
         if p.startswith("pod/"):
             name = p.split("/", 1)[1]
             return _service_from_pod_name(name)
-    if len(parts) > 2 and parts[2] in ("pod", "pods", "po") and len(parts) > 3:
-        candidate = parts[3]
-        if not candidate.startswith("-"):
-            return _service_from_pod_name(candidate)
+    positional = positional_args(rest, 0)
+    if len(positional) >= 2 and positional[0] in ("pod", "pods", "po"):
+        return _service_from_pod_name(positional[1])
     return None
 
 

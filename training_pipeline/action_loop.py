@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from statistics import mean, pstdev
 from typing import Any, Protocol
 
 from digital_twin_runtime.sla_verifier import sla_verdict_from_state
@@ -13,6 +12,7 @@ from .action_reward import action_reward, terminal_action_failure_penalty
 from .agent_input_safety import agent_input_safety_report, sanitize_agent_state
 from .command_normalizer import normalize_commands
 from .command_safety import check_command_safety
+from .grpo_math import group_relative_advantages
 from .schemas import ActionAttempt, FaultLabel, GRPORolloutSample, approx_token_count, normalize_fault_type
 
 
@@ -139,14 +139,24 @@ def _public_rca_result(rca_result: dict[str, Any], rca_faults: list[FaultLabel])
 
 
 def _public_rca_gate(gate: dict[str, Any]) -> dict[str, Any]:
-    """Expose only prediction-derived twin feedback to the Action policy."""
+    """Expose only prediction-derived twin feedback to the Action policy.
+
+    ``mode`` is deliberately withheld. Under hybrid routing its value distinguishes
+    the live verifier from the offline proxy, and that routing decision is made
+    from the hidden fault mechanism, so forwarding it would hand the Action policy
+    a bit of ground truth about the true fault class.
+    """
     return {
-        "mode": gate.get("mode"),
         "reproduction_score": gate.get("reproduction_score"),
         "same_error_pattern_score": gate.get("same_error_pattern_score"),
         "counterfactual_replay_checked": gate.get("counterfactual_replay_checked"),
         "predicted_fault_injection_checked": gate.get("predicted_fault_injection_checked"),
         "same_error_pattern_verified": gate.get("same_error_pattern_verified"),
+        # These objects were created from the RCA agent's own predicted
+        # counterfactual inside its opaque Twin namespace. They are not oracle
+        # data; exposing their exact names lets the ActionAgent remove a
+        # NetworkChaos/PodChaos fault without broad or selector-based deletion.
+        "actionable_fault_resources": gate.get("actionable_fault_resources") or [],
     }
 
 
@@ -239,10 +249,10 @@ def run_action_prompt_optimizer_loop(
     prompt_policy: ActionPromptPolicy,
     action_agent: ActionAgentLike,
     twin_verifier,
-    max_iterations: int = 5,
+    max_iterations: int = 7,
     require_rca_twin_verification: bool = False,
     skip_action_if_rca_unverified: bool = True,
-    min_twin_reproduction_score: float = 0.0,
+    min_twin_reproduction_score: float = 0.5,
     rca_twin_gate: dict[str, Any] | None = None,
     group_size: int = 4,
     selection_strategy: str = "best",
@@ -253,6 +263,7 @@ def run_action_prompt_optimizer_loop(
     agent_input_safety: dict[str, Any] | None = None,
     sample_index_offset: int = 0,
     require_upstream_label_success_for_gate: bool = True,
+    recent_performance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the action-prompt loop and emit GRPO-ready samples."""
     if agent_state is None:
@@ -302,6 +313,7 @@ def run_action_prompt_optimizer_loop(
             history=history,
             iteration=iteration,
             max_iterations=max_iterations,
+            recent_performance=recent_performance,
         )
         group_pairs: list[tuple[GRPORolloutSample, ActionAttempt]] = []
 
@@ -319,10 +331,12 @@ def run_action_prompt_optimizer_loop(
                 "current_sla": current_sla,
                 "redacted_state": agent_state,
                 "previous_attempts": history,
+                "recent_performance": recent_performance,
                 "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm/mongosh commands.",
                 "action_requirements": [
                     "Use only scoped namespace commands.",
                     "Prefer the minimal remediation matching the predicted RCA fault type.",
+                    "If rca_twin_gate.actionable_fault_resources is non-empty, delete only the listed exact resource.",
                     "Include at least one verification command such as kubectl rollout status, kubectl get, or helm status.",
                     "Do not use exec, apply, replace, shell pipelines, broad deletes, or cluster-wide flags.",
                 ],
@@ -474,10 +488,38 @@ def _build_action_policy_prompt(
     history: list[dict[str, Any]],
     iteration: int,
     max_iterations: int,
+    *,
+    recent_performance: dict[str, Any] | None = None,
 ) -> str:
+    """Prompt text for the trainable Action instruction policy.
+
+    This function's output is what the trainable ``lora_action`` policy
+    conditions on to write *guidance* for the frozen ActionAgent. It must not
+    read like a request for the policy to emit commands itself — the
+    ActionAgent (a separate, fixed model called afterward with this policy's
+    text embedded as ``policy_instruction``) is the one contractually required
+    to output kubectl/helm/mongosh lines. Earlier wording here put that
+    contract in the policy's own prompt without saying whose output it
+    described, and the policy — a coding-specialized base model — resolved
+    that ambiguity by writing commands itself instead of strategy.
+    """
     payload = {
-        "task": "Generate an action instruction prompt for a fixed ActionAgent.",
-        "agent_output_contract": "ActionAgent must output kubectl/helm/mongosh commands only, one per line.",
+        "task": (
+            "Write remediation STRATEGY guidance, in prose, for a separate, fixed ActionAgent "
+            "that will read your guidance and then issue the exact kubectl/helm/mongosh commands. "
+            "Structure your guidance in three parts, in order: "
+            "(1) restate the predicted fault (service, fault type, mechanism) and name the specific "
+            "redacted_state field/value that supports it; "
+            "(2) reason step by step, technically — what to check first, what the corrected field/value "
+            "or action should be, and why that specifically addresses this fault mechanism; "
+            "(3) end with an explicit handoff instruction telling the ActionAgent to now issue the exact "
+            "commands implementing that fix, including a verification step afterward."
+        ),
+        "who_outputs_commands": (
+            "The ActionAgent outputs the actual kubectl/helm/mongosh commands, not you. "
+            "Your output is read as instructions/guidance the ActionAgent will follow — "
+            "write prose describing the remediation approach and reasoning, not command lines."
+        ),
         "iteration": iteration,
         "max_iterations": max_iterations,
         "predicted_rca": public_rca_result,
@@ -486,12 +528,27 @@ def _build_action_policy_prompt(
         "redacted_state": agent_state,
         "previous_attempts_non_leaking": history,
         "instruction_requirements": [
+            "Do not write kubectl/helm/mongosh command lines yourself; describe the strategy in prose.",
+            "Start by restating the predicted fault (service, fault type, mechanism) and cite the "
+            "specific redacted_state field/value that supports it.",
             "Use only the predicted RCA targets, not downstream victims.",
-            "Choose a safe minimal remediation family that matches the predicted RCA fault type.",
-            "Include verification commands.",
-            "Avoid unsafe, broad, cluster-wide, or shell-executing commands.",
+            "Reason step by step, technically: what field/resource is misconfigured, what the "
+            "corrected value or action should be, and why that fixes this specific fault mechanism.",
+            "Name the safe minimal remediation family matching the predicted fault type and exactly "
+            "which field/resource it should touch.",
+            "If counterfactual_twin_feedback.actionable_fault_resources is non-empty, tell the "
+            "ActionAgent to delete only the listed exact resource.",
+            "End with an explicit handoff: tell the ActionAgent to now issue the exact commands "
+            "implementing this fix, including a verification step after any mutation.",
+            "Avoid suggesting unsafe, broad, cluster-wide, or shell-executing operations.",
         ],
     }
+    if recent_performance:
+        payload["recent_own_performance_across_other_incidents"] = recent_performance
+        payload["instruction_requirements"].append(
+            "If recent_own_performance_across_other_incidents shows commands are frequently rejected or "
+            "unresolved for a similar reason, steer the ActionAgent away from that pattern explicitly."
+        )
     return json.dumps(payload, sort_keys=True, default=str)
 
 
@@ -509,30 +566,27 @@ def _select_action_sample(
 
 
 def _compute_group_advantages(samples: list[GRPORolloutSample]) -> None:
-    rewards = [float(s.reward) for s in samples]
-    if not rewards:
+    if not samples:
         return
-    mu = mean(rewards)
-    sigma = pstdev(rewards) if len(rewards) > 1 else 0.0
-    denom = sigma if sigma > 1e-8 else 1.0
-    for s in samples:
-        s.group_reward_mean = round(mu, 6)
-        s.group_reward_std = round(sigma, 6)
-        s.advantage = round((float(s.reward) - mu) / denom, 6)
+    result = group_relative_advantages([float(s.reward) for s in samples], scale_by_std=True)
+    for sample, advantage in zip(samples, result.advantages):
+        sample.group_reward_mean = round(result.mean, 6)
+        sample.group_reward_std = round(result.std, 6)
+        sample.advantage = round(float(advantage), 6)
 
 
 def _recompute_dict_group_advantages(samples: list[dict[str, Any]], group_id: str) -> None:
     group = [s for s in samples if s.get("group_id") == group_id]
-    rewards = [float(s.get("reward", 0.0)) for s in group]
-    if not rewards:
+    if not group:
         return
-    mu = mean(rewards)
-    sigma = pstdev(rewards) if len(rewards) > 1 else 0.0
-    denom = sigma if sigma > 1e-8 else 1.0
-    for s in group:
-        s["group_reward_mean"] = round(mu, 6)
-        s["group_reward_std"] = round(sigma, 6)
-        s["advantage"] = round((float(s.get("reward", 0.0)) - mu) / denom, 6)
+    result = group_relative_advantages(
+        [float(s.get("reward", 0.0) or 0.0) for s in group],
+        scale_by_std=True,
+    )
+    for sample, advantage in zip(group, result.advantages):
+        sample["group_reward_mean"] = round(result.mean, 6)
+        sample["group_reward_std"] = round(result.std, 6)
+        sample["advantage"] = round(float(advantage), 6)
 
 
 def _apply_terminal_action_penalty(
@@ -574,8 +628,6 @@ def _safe_action_history_entry(attempt: ActionAttempt) -> dict[str, Any]:
     return {
         "iteration": attempt.iteration,
         "commands": attempt.commands,
-        "reward": attempt.reward,
-        "success": attempt.success,
         "feedback": attempt.feedback,
         "public_reward_summary": {
             "resolved": c.get("resolved"),
