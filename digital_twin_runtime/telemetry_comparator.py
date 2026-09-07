@@ -436,6 +436,31 @@ def score_prediction_reproduction(state: dict[str, Any], predicted_faults: list[
     }
 
 
+def observed_channels(state: dict[str, Any]) -> dict[str, bool]:
+    """Which evidence channels a capture actually collected.
+
+    An abstraction distinguishes "collected and found nothing" from "never
+    collected" only implicitly: a Jaeger export that returned no spans yields
+    ``traces.summary.num_edges == 0`` and an empty ``per_edge``, exactly like a
+    collected-but-healthy system would not. A collected trace channel always
+    carries at least the request edges of the workload, so zero edges means the
+    channel was never observed. Scoring an unobserved channel against a Twin that
+    did observe it would penalize the Twin for evidence the incident never had a
+    chance to record.
+    """
+    traces = state.get("traces") or {}
+    per_edge = traces.get("per_edge") if isinstance(traces, dict) else None
+    summary = traces.get("summary") if isinstance(traces, dict) else None
+    trace_edges = len(per_edge) if isinstance(per_edge, dict) else 0
+    if isinstance(summary, dict):
+        trace_edges = max(trace_edges, int(_safe_float(summary.get("num_edges"))))
+    return {
+        "system": bool(state.get("system")),
+        "traces": trace_edges > 0,
+        "logs": bool(state.get("logs")),
+    }
+
+
 def compare_symptoms(original_state: dict[str, Any], twin_state: dict[str, Any]) -> dict[str, Any]:
     orig = symptom_signature(original_state)
     twin = symptom_signature(twin_state)
@@ -457,6 +482,7 @@ def compare_symptoms_scoped(
     original_state: dict[str, Any],
     twin_state: dict[str, Any],
     selected_services: list[str] | set[str],
+    target_services: list[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """Compare a sparse Twin only over its principled common service scope.
 
@@ -467,6 +493,12 @@ def compare_symptoms_scoped(
     scope = {_norm_service(x) for x in selected_services if _norm_service(x)}
     orig = symptom_signature(original_state)
     twin = symptom_signature(twin_state)
+    # Channels the incident never collected are excluded from scoring rather
+    # than scored as "no failed edges": the Twin is compared only on evidence the
+    # original capture could have recorded.
+    original_channels = observed_channels(original_state)
+    unobserved = sorted(name for name, seen in original_channels.items() if not seen)
+    trace_channel_scorable = original_channels["traces"]
 
     def services(values: list[str]) -> set[str]:
         return {_norm_service(x) for x in values if _norm_service(x) in scope}
@@ -488,10 +520,65 @@ def compare_symptoms_scoped(
     twin_logs = services(twin["top_error_services"])
     orig_edges = edges(orig["failed_edges"])
     twin_edges = edges(twin["failed_edges"])
-    degraded_score = _jaccard(orig_degraded, twin_degraded)
-    edge_score = _jaccard(orig_edges, twin_edges)
-    log_score = _jaccard(orig_logs, twin_logs)
-    score = 0.45 * degraded_score + 0.35 * edge_score + 0.20 * log_score
+
+    normalized_targets = {
+        _norm_service(x) for x in (target_services or []) if _norm_service(x)
+    }
+
+    def deployment_tokens(state: dict[str, Any]) -> set[str]:
+        tokens: set[str] = set()
+        for service, info in (state.get("system", {}) or {}).items():
+            normalized = _norm_service(service)
+            if normalized not in scope or not isinstance(info, dict):
+                continue
+            if normalized_targets and normalized not in normalized_targets:
+                continue
+            deployment = info.get("deployment", {}) or {}
+            endpoints = info.get("endpoints", {}) or {}
+            health = info.get("health", {}) or {}
+            for key in (
+                "replicas_desired", "replicas_current", "replicas_ready",
+                "replicas_available", "replicas_unavailable",
+            ):
+                if key in deployment:
+                    tokens.add(f"{normalized}:{key}={deployment.get(key)}")
+            if "ready_endpoint_count" in endpoints:
+                tokens.add(f"{normalized}:ready_endpoint_count={endpoints.get('ready_endpoint_count')}")
+            if health.get("status"):
+                tokens.add(f"{normalized}:health_status={health.get('status')}")
+        return tokens
+
+    orig_deployment = deployment_tokens(original_state)
+    twin_deployment = deployment_tokens(twin_state)
+
+    # Empty-empty Jaccard is 1, which would award a perfect reproduction score
+    # merely because neither the original incident nor the sparse Twin produced
+    # evidence in a channel. Live verification requires positive original
+    # symptoms in scope; silent channels are dropped and the remaining weights
+    # are renormalized. If the original incident has no scoped symptoms at all,
+    # the comparison fails closed instead of treating missing bystanders as a
+    # match.
+    weighted: list[tuple[float, float]] = []
+    if orig_deployment or twin_deployment:
+        weighted.append((0.35, _jaccard(orig_deployment, twin_deployment)))
+    if orig_degraded or twin_degraded:
+        weighted.append((0.25, _jaccard(orig_degraded, twin_degraded)))
+    trace_channel_active = bool(trace_channel_scorable and (orig_edges or twin_edges))
+    if trace_channel_active:
+        weighted.append((0.25, _jaccard(orig_edges, twin_edges)))
+    if orig_logs or twin_logs:
+        weighted.append((0.15, _jaccard(orig_logs, twin_logs)))
+    orig_has_scoped_symptoms = bool(orig_deployment or orig_degraded or orig_edges or orig_logs)
+    if not orig_has_scoped_symptoms:
+        score = 0.0
+        score_reason = "no_original_symptoms_in_sparse_scope"
+    elif not weighted:
+        score = 0.0
+        score_reason = "no_comparable_scoped_channels"
+    else:
+        total_w = sum(w for w, _ in weighted)
+        score = sum(w * s for w, s in weighted) / total_w
+        score_reason = "positive_scoped_channel_overlap"
     outside = {
         "degraded_services": sorted(set(orig["degraded_services"]) - scope),
         "top_error_services": sorted(set(orig["top_error_services"]) - scope),
@@ -500,10 +587,26 @@ def compare_symptoms_scoped(
     return {
         "reproduction_score": round(score, 4),
         "comparison_scope": sorted(scope),
-        "scope_policy": "selected_sparse_common_scope_v1",
-        "degraded_service_overlap": round(degraded_score, 4),
-        "trace_edge_overlap": round(edge_score, 4),
-        "log_error_service_overlap": round(log_score, 4),
+        "scope_policy": "selected_sparse_common_scope_v3_target_structural_state",
+        "channel_policy": "score_only_channels_observed_in_original_capture_v1",
+        "original_observed_channels": original_channels,
+        "channels_unobserved_in_original": unobserved,
+        "trace_channel_scored": trace_channel_active,
+        "score_reason": score_reason,
+        "active_channel_weights": {
+            "deployment_state": 0.35 if orig_deployment or twin_deployment else 0.0,
+            "degraded": 0.25 if orig_degraded or twin_degraded else 0.0,
+            "trace_edges": 0.25 if trace_channel_active else 0.0,
+            "logs": 0.15 if orig_logs or twin_logs else 0.0,
+        },
+        "deployment_state_overlap": round(
+            _jaccard(orig_deployment, twin_deployment)
+            if orig_deployment or twin_deployment else 0.0, 4
+        ),
+        "deployment_state_target_services": sorted(normalized_targets),
+        "degraded_service_overlap": round(_jaccard(orig_degraded, twin_degraded) if orig_degraded or twin_degraded else 0.0, 4),
+        "trace_edge_overlap": round(_jaccard(orig_edges, twin_edges) if trace_channel_active else 0.0, 4),
+        "log_error_service_overlap": round(_jaccard(orig_logs, twin_logs) if orig_logs or twin_logs else 0.0, 4),
         "original_scoped_signature": {
             "degraded_services": sorted(orig_degraded),
             "failed_edges": sorted(orig_edges),
@@ -519,15 +622,44 @@ def compare_symptoms_scoped(
     }
 
 
+def _state_was_observed(state: dict[str, Any]) -> bool:
+    """Whether an abstraction carries any evidence channel at all.
+
+    An after-state that was never collected looks exactly like a fully repaired
+    one to symptom counting, so resolution must not be granted on its silence.
+    """
+    if not isinstance(state, dict) or not state:
+        return False
+    return any(
+        state.get(channel)
+        for channel in ("system", "service_health", "traces", "logs", "metrics")
+    )
+
+
 def score_resolution(before_state: dict[str, Any], after_state: dict[str, Any]) -> dict[str, Any]:
     before = symptom_signature(before_state)
     after = symptom_signature(after_state)
     before_count = len(before["degraded_services"]) + len(before["failed_edges"]) + len(before["top_error_services"])
     after_count = len(after["degraded_services"]) + len(after["failed_edges"]) + len(after["top_error_services"])
-    reduction = 1.0 if before_count == 0 and after_count == 0 else max(0.0, min(1.0, (before_count - after_count) / max(before_count, 1)))
+    if not _state_was_observed(after_state):
+        reduction = 0.0
+        resolved = False
+        reason = "after_state_not_observed_fail_closed"
+    elif before_count == 0:
+        # Empty-empty must not count as a repaired incident. A Twin that never
+        # manifested the original symptoms cannot claim SLA restoration.
+        reduction = 0.0
+        resolved = False
+        reason = "no_before_symptoms_fail_closed"
+    else:
+        reduction = max(0.0, min(1.0, (before_count - after_count) / max(before_count, 1)))
+        resolved = after_count == 0 or reduction >= 0.95
+        reason = "after_symptoms_cleared" if resolved else "symptoms_remain"
     return {
         "symptom_reduction": round(reduction, 4),
         "before_signature": before,
         "after_signature": after,
-        "resolved": after_count == 0 or reduction >= 0.95,
+        "resolved": resolved,
+        "score_reason": reason,
+        "after_state_observed": _state_was_observed(after_state),
     }

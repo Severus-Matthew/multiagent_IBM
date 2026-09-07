@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Iterable
@@ -9,6 +10,11 @@ from typing import Iterable
 @dataclass
 class ApplicationTopology:
     edges: list[tuple[str, str]] = field(default_factory=list)
+    # Subset of ``edges`` that a service resolves in its process entrypoint
+    # before it serves requests (e.g. a datastore dialed in ``main``). A Twin
+    # that deploys the caller without these targets produces a crash-looping
+    # pod, not a sparse replica. Derived from source only; fault-independent.
+    startup_edges: list[tuple[str, str]] = field(default_factory=list)
     entrypoints: list[str] = field(default_factory=list)
     source_files_scanned: int = 0
     cpp_services_discovered: int = 0
@@ -19,6 +25,7 @@ class ApplicationTopology:
     def to_dict(self) -> dict:
         out = asdict(self)
         out["edges"] = [{"src": s, "dst": d} for s, d in self.edges]
+        out["startup_edges"] = [{"src": s, "dst": d} for s, d in self.startup_edges]
         return out
 
 
@@ -128,6 +135,77 @@ def _lua_frontend_edges(app_root: Path, observable_services: set[str]) -> tuple[
     return edges, evidence, files_scanned, len(edges), frontend
 
 
+def _go_dependency_edges(
+    app_root: Path, observable_services: set[str]
+) -> tuple[list[tuple[str, str]], dict[str, list[str]], int, list[tuple[str, str]]]:
+    """Extract HotelReservation client and datastore edges from Go source.
+
+    Also returns the edges resolved in ``cmd/<service>/main.go`` before the
+    server starts (datastores dialed and the registry joined in ``main``); the
+    process exits when those targets are absent, so they are startup-required.
+    """
+    edges: list[tuple[str, str]] = []
+    startup: list[tuple[str, str]] = []
+    evidence: dict[str, list[str]] = {}
+    files_scanned = 0
+    services_root = app_root / "services"
+    if not services_root.exists():
+        return edges, evidence, files_scanned, startup
+    config_values: dict[str, str] = {}
+    config_path = app_root / "config.json"
+    if config_path.exists():
+        try:
+            config_values = {
+                str(key): str(value) for key, value in json.loads(config_path.read_text()).items()
+                if isinstance(value, str)
+            }
+        except Exception:
+            config_values = {}
+    for path in sorted(services_root.glob("*/server.go")):
+        caller = path.parent.name
+        if caller not in observable_services:
+            continue
+        try:
+            text = path.read_text(errors="ignore")
+        except Exception:
+            continue
+        files_scanned += 1
+        # Generated gRPC clients are constructed as package.New<Name>Client.
+        for dep in sorted(set(re.findall(r"\b([a-z][a-z0-9_-]*)\.New[A-Za-z0-9]+Client\s*\(", text))):
+            if dep in observable_services and dep != caller:
+                edges.append((caller, dep))
+                evidence.setdefault(f"{caller}->{dep}", []).append(str(path.relative_to(app_root)))
+        mongo = f"mongodb-{caller}"
+        if mongo in observable_services and (".DB(" in text or "mgo.Dial" in text):
+            edges.append((caller, mongo))
+            evidence.setdefault(f"{caller}->{mongo}", []).append(str(path.relative_to(app_root)))
+        main_path = app_root / "cmd" / caller / "main.go"
+        if main_path.exists():
+            try:
+                main_text = main_path.read_text(errors="ignore")
+            except Exception:
+                main_text = ""
+            if "registry.NewClient" in main_text or "consuladdr" in main_text:
+                edges.append((caller, "consul"))
+                startup.append((caller, "consul"))
+                evidence.setdefault(f"{caller}->consul", []).append(str(main_path.relative_to(app_root)))
+            for config_key, value in config_values.items():
+                if config_key not in main_text:
+                    continue
+                dependency = value.split(":", 1)[0]
+                # Runtime support services can be absent from a fault-focused
+                # state abstraction. The hostname is taken from application
+                # config actually referenced by this binary, not guessed from
+                # the fault label or scenario identifier.
+                if dependency in observable_services and dependency != caller:
+                    edges.append((caller, dependency))
+                    startup.append((caller, dependency))
+                    evidence.setdefault(f"{caller}->{dependency}", []).extend([
+                        str(main_path.relative_to(app_root)), str(config_path.relative_to(app_root)),
+                    ])
+    return edges, evidence, files_scanned, startup
+
+
 def discover_application_topology(
     application_source_root: str | Path,
     observable_services: Iterable[str],
@@ -147,9 +225,12 @@ def discover_application_topology(
 
     cpp_edges, cpp_evidence, cpp_files, cpp_callers = _cpp_dependency_edges(root, services)
     lua_edges, lua_evidence, lua_files, lua_count, frontend = _lua_frontend_edges(root, services)
+    go_edges, go_evidence, go_files, go_startup = _go_dependency_edges(root, services)
 
     evidence = dict(cpp_evidence)
     for edge, files in lua_evidence.items():
+        evidence.setdefault(edge, []).extend(files)
+    for edge, files in go_evidence.items():
         evidence.setdefault(edge, []).extend(files)
 
     support_edges: list[tuple[str, str]] = []
@@ -173,13 +254,14 @@ def discover_application_topology(
     for edge, files in support_evidence.items():
         evidence.setdefault(edge, []).extend(files)
 
-    edges = _unique_edges(cpp_edges + lua_edges + support_edges)
+    edges = _unique_edges(cpp_edges + lua_edges + go_edges + support_edges)
     entrypoints = [frontend] if frontend and any(src == frontend for src, _ in edges) else []
 
     return ApplicationTopology(
         edges=edges,
+        startup_edges=_unique_edges(go_startup),
         entrypoints=entrypoints,
-        source_files_scanned=cpp_files + lua_files,
+        source_files_scanned=cpp_files + lua_files + go_files,
         cpp_services_discovered=cpp_callers,
         lua_frontend_edges_discovered=lua_count,
         evidence={k: sorted(set(v)) for k, v in sorted(evidence.items())},

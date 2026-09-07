@@ -82,6 +82,46 @@ def _graph_edges(state: dict[str, Any]) -> list[tuple[str, str]]:
     return _graph_edge_records(state)[0]
 
 
+def _startup_required_edges(state: dict[str, Any]) -> list[tuple[str, str]]:
+    """Edges the source topology marked as resolved in the callee's entrypoint."""
+    out: list[tuple[str, str]] = []
+    for edge in (state.get("graph", {}) or {}).get("edges", []) or []:
+        if isinstance(edge, dict) and edge.get("startup_required"):
+            src = edge.get("src") or edge.get("source")
+            dst = edge.get("dst") or edge.get("target")
+            if src and dst:
+                out.append((str(src), str(dst)))
+    return out
+
+
+def _startup_closure(
+    keep: set[str], startup_edges: list[tuple[str, str]], allowed: set[str]
+) -> dict[str, set[str]]:
+    """Dependencies every kept service needs merely to boot, to a fixpoint.
+
+    A service deployed without a target it dials in its entrypoint crash-loops,
+    which makes the clean baseline unattainable and pollutes every symptom
+    channel with a failure the predicted fault did not cause. The closure adds
+    only startup-required targets of services already in scope; it never adds
+    request-time dependencies, so ordinary sparsity is preserved.
+    """
+    forward, _ = _adjacency(startup_edges)
+    added: dict[str, set[str]] = {}
+    scope = set(keep)
+    for _ in range(len(allowed) + 1):
+        new: dict[str, set[str]] = {}
+        for svc in sorted(scope):
+            for dep in sorted(forward.get(svc, set()) & allowed):
+                if dep not in scope:
+                    new.setdefault(dep, set()).add(svc)
+        if not new:
+            break
+        for dep, callers in new.items():
+            added.setdefault(dep, set()).update(callers)
+            scope.add(dep)
+    return added
+
+
 def _adjacency(edges: list[tuple[str, str]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     forward: dict[str, set[str]] = {}
     reverse: dict[str, set[str]] = {}
@@ -220,7 +260,7 @@ def build_sparse_live_twin_spec(
     predicted_faults: list[FaultLabel],
     *,
     upstream_hops: int = 2,
-    downstream_support_hops: int = 2,
+    downstream_support_hops: int = 1,
     symptom_hops: int = 2,
     max_entry_path_hops: int = 8,
 ) -> TwinSpec:
@@ -231,6 +271,11 @@ def build_sparse_live_twin_spec(
     path. Observable degraded services are retained as diagnostics only unless
     they already lie on that causal scaffold. This prevents unrelated/stale
     unready pods in historical captures from inflating the Twin.
+
+    ``downstream_support_hops`` defaults to one direct hop. The dependency graph
+    of a microservice application saturates quickly, so a larger budget does not
+    add fidelity, it just deploys the whole application and erases the resource
+    reduction the sparse Twin exists to demonstrate.
 
     Hidden labels, fault_context, scenario-name hints and injection manifests are
     never consulted here.
@@ -284,12 +329,9 @@ def build_sparse_live_twin_spec(
     for svc in sorted(impact - roots):
         reason.setdefault(svc, []).append("bounded_upstream_impact")
 
-    support = _bounded_reachable(roots, forward, downstream_support_hops, all_services) - roots
-    for svc in sorted(support):
-        reason.setdefault(svc, []).append("bounded_downstream_support")
-
     selected_paths: list[list[str]] = []
     path_services: set[str] = set()
+    unreachable_roots: list[str] = []
     for root in sorted(roots):
         path = _shortest_path(entrypoints, root, forward, all_services, max_entry_path_hops)
         if path:
@@ -297,6 +339,45 @@ def build_sparse_live_twin_spec(
             path_services.update(path)
             for svc in path:
                 reason.setdefault(svc, []).append(f"minimal_entry_path_to_{root}")
+        else:
+            unreachable_roots.append(root)
+
+    # A Twin with no executable request path to the predicted root cannot exercise
+    # the fault, so its telemetry could never reproduce the incident. Returning a
+    # deployable spec here is what produced the original single-service Twin, so
+    # this fails closed rather than shipping an unexercisable subgraph.
+    if unreachable_roots:
+        summary = {
+            "total_application_services": len(all_services),
+            "kept_services": 0,
+            "pruned_services": len(all_services),
+            "service_reduction_fraction": 1.0,
+            "service_reduction_percent": 100.0,
+            "invalid_predicted_root": False,
+            "invalid_topology": False,
+            "unreachable_predicted_roots": unreachable_roots,
+            "entrypoint_services": sorted(entrypoints),
+            "max_entry_path_hops": int(max_entry_path_hops),
+            **topology_counts,
+        }
+        return _invalid_spec(
+            compressed_state, predicted_faults, all_services, entrypoints,
+            mode="rca_predicted_sparse_live_unreachable_root", summary=summary,
+        )
+
+    # Runtime dependencies are only needed by the services that must actually
+    # execute: the predicted roots and the minimal entry path. Upstream impact
+    # services are kept so propagation is observable, but pulling in *their*
+    # dependencies as well turns the closure into the whole application. On the
+    # SocialNetwork graph, seeding from the full causal scope reaches every
+    # service within three hops, which reduced the Twin to an 11% saving and
+    # silently defeated the sparse-Twin claim.
+    support_seeds = roots | path_services
+    support = _bounded_reachable(
+        support_seeds, forward, downstream_support_hops, all_services
+    ) - support_seeds - impact
+    for svc in sorted(support):
+        reason.setdefault(svc, []).append("bounded_runtime_dependency")
 
     causal_scope = (roots | impact | support | path_services) & all_services
 
@@ -309,7 +390,12 @@ def build_sparse_live_twin_spec(
     for svc in sorted(degraded_on_scope):
         reason.setdefault(svc, []).append("observable_degraded_on_causal_scope")
 
-    keep = causal_scope
+    keep = set(causal_scope)
+    startup_added = _startup_closure(keep, _startup_required_edges(compressed_state), all_services)
+    for dep, callers in sorted(startup_added.items()):
+        keep.add(dep)
+        for caller in sorted(callers):
+            reason.setdefault(dep, []).append(f"startup_required_dependency_of_{caller}")
     prune = all_services - keep
 
     total = len(all_services)
@@ -343,6 +429,8 @@ def build_sparse_live_twin_spec(
             "invalid_predicted_root": False,
             "invalid_topology": False,
             "symptoms_expand_deployment_scope": False,
+            "startup_required_dependencies_added": sorted(startup_added),
+            "causal_scope_before_startup_closure": len(causal_scope),
             "observable_degraded_services": sorted(degraded),
             "observable_degraded_on_causal_scope": sorted(degraded_on_scope),
             "observable_degraded_outside_causal_scope": sorted(degraded_outside_scope),

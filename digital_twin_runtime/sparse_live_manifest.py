@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import yaml
 from copy import deepcopy
 from dataclasses import dataclass, asdict, field
 from typing import Any, Iterable
@@ -209,7 +210,7 @@ def discover_sparse_manifest_plan(
     selection is intentionally handled upstream by the fault-conditioned Twin
     planner; this module must not widen service scope on its own.
     """
-    selected = sorted({str(x) for x in selected_services if str(x).strip()})
+    requested_selected = sorted({str(x) for x in selected_services if str(x).strip()})
 
     deployments = _items("deployments", source_namespace)
     statefulsets = _items("statefulsets", source_namespace)
@@ -218,6 +219,16 @@ def discover_sparse_manifest_plan(
     secrets = {_name(x): x for x in _items("secrets", source_namespace)}
     pvcs = {_name(x): x for x in _items("persistentvolumeclaims", source_namespace)}
     serviceaccounts = {_name(x): x for x in _items("serviceaccounts", source_namespace)}
+
+    # Service-scope selection belongs exclusively to the causal Twin planner.
+    # Do not infer extra workloads by scanning mounted ConfigMaps here: benchmark
+    # applications commonly mount one shared service registry that names every
+    # service, even though each process uses only a small subset. Closing over
+    # those names expanded every SocialNetwork Twin from the planner's sparse
+    # set back to all 27 services. Required startup dependencies are already
+    # represented explicitly by ``startup_required`` topology edges and closed
+    # by ``build_sparse_live_twin_spec``.
+    selected = list(requested_selected)
 
     selected_controllers: list[tuple[str, dict[str, Any], str]] = []
     missing_controllers: list[str] = []
@@ -293,6 +304,8 @@ def discover_sparse_manifest_plan(
                 missing_refs.append({"kind": kind, "name": name})
 
     resource_counts = {
+        "requested_logical_services": len(requested_selected),
+        "manifest_dependency_services_added": len(set(selected) - set(requested_selected)),
         "selected_logical_services": len(selected),
         "controllers": len(controller_rows),
         "service_objects": len(selected_service_objects),
@@ -408,6 +421,30 @@ def _sanitize_for_clone(
             template_meta.pop(key, None)
     elif kind == "ConfigMap":
         clone.pop("immutable", None)
+        # Sparse Twins run short counterfactual windows. Production probabilistic
+        # sampling (1% in the current benchmark) makes an otherwise identical
+        # rollout randomly export zero spans. If a ConfigMap contains a standard
+        # tracer sampler block, force always-on sampling only in the isolated
+        # clone; the source namespace is never changed.
+        data = clone.get("data", {}) or {}
+        for key, value in list(data.items()):
+            if not isinstance(value, str) or "sampler" not in value:
+                continue
+            try:
+                parsed = yaml.safe_load(value)
+            except Exception:
+                continue
+            sampler = parsed.get("sampler") if isinstance(parsed, dict) else None
+            if not isinstance(sampler, dict) or "type" not in sampler:
+                continue
+            sampler["type"] = "const"
+            sampler["param"] = 1
+            data[key] = (
+                json.dumps(parsed, indent=2) + "\n"
+                if value.lstrip().startswith("{")
+                else yaml.safe_dump(parsed, sort_keys=False)
+            )
+        clone["data"] = data
     elif kind == "Secret":
         # Service-account tokens are runtime credentials and must never be
         # copied across namespaces.
@@ -415,6 +452,11 @@ def _sanitize_for_clone(
             raise ValueError(
                 f"refusing to clone service-account token Secret {_name(clone)!r}"
             )
+    elif kind == "PersistentVolumeClaim":
+        # This is an isolated empty claim, never a reference or snapshot of the
+        # source volume. The destination provisioner binds a new PV.
+        for key in ("volumeName", "dataSource", "dataSourceRef", "selector"):
+            spec.pop(key, None)
     clone["spec"] = spec if "spec" in clone else clone.get("spec")
     if clone.get("spec") is None:
         clone.pop("spec", None)
@@ -438,11 +480,13 @@ def _sanitize_for_clone(
 def render_sparse_manifest_bundle(
     plan: SparseManifestPlan,
     target_namespace: str,
+    *,
+    pvc_policy: str = "reject",
 ) -> SparseManifestBundle:
     """Read source objects and render portable copies without mutating K8s.
 
-    PVC cloning is intentionally unsupported until a storage policy is chosen;
-    silently pointing a Twin at source storage would violate isolation.
+    ``ephemeral_empty`` creates new namespace-local claims with the same storage
+    request but no volume identity or data source. It never mounts source data.
     Missing or ambiguous discovery results also fail closed.
     """
     target = _validate_namespace(target_namespace)
@@ -450,7 +494,9 @@ def render_sparse_manifest_bundle(
         raise ValueError("target namespace must differ from source namespace")
     if plan.missing_selected_controllers or plan.missing_required_refs:
         raise ValueError("cannot render an incomplete sparse manifest plan")
-    if plan.persistent_volume_claims:
+    if pvc_policy not in {"reject", "ephemeral_empty"}:
+        raise ValueError(f"unknown PVC policy: {pvc_policy!r}")
+    if plan.persistent_volume_claims and pvc_policy == "reject":
         raise ValueError("PVC-backed sparse Twins require an explicit storage clone policy")
 
     refs: list[tuple[str, str]] = []
@@ -459,6 +505,8 @@ def render_sparse_manifest_bundle(
     refs.extend(("Service", str(row["name"])) for row in plan.service_objects)
     refs.extend(("ConfigMap", name) for name in plan.configmaps)
     refs.extend(("Secret", name) for name in plan.secrets)
+    if pvc_policy == "ephemeral_empty":
+        refs.extend(("PersistentVolumeClaim", name) for name in plan.persistent_volume_claims)
     # The destination namespace creates its own default ServiceAccount.
     refs.extend(
         ("ServiceAccount", name)
@@ -483,9 +531,10 @@ def render_sparse_manifest_bundle(
         "ServiceAccount": 0,
         "Secret": 1,
         "ConfigMap": 2,
-        "Service": 3,
-        "Deployment": 4,
-        "StatefulSet": 4,
+        "PersistentVolumeClaim": 3,
+        "Service": 4,
+        "Deployment": 5,
+        "StatefulSet": 5,
     }
     paired = sorted(
         zip(objects, object_refs),

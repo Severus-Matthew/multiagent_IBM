@@ -99,15 +99,59 @@ class SparseLiveTwinSession:
     def apply_manifests(self) -> None:
         if not self.created:
             raise RuntimeError("Twin namespace has not been created")
+        controllers = [
+            obj for obj in self.bundle.objects
+            if obj.get("kind") in {"Deployment", "StatefulSet"}
+        ]
+        support = [obj for obj in self.bundle.objects if obj not in controllers]
+
+        # Instrumented workloads in several benchmark applications initialize
+        # their exporter only once. If the trace backend is started in the same
+        # bulk apply, they can permanently disable tracing after a startup race.
+        # Discover telemetry backends by their standard exposed ports and bring
+        # their selected controller up before application controllers. This is a
+        # protocol capability rule, not an application/service-name rule.
+        telemetry_ports = {4317, 4318, 14268, 16686}
+        selectors = []
+        for obj in support:
+            if obj.get("kind") != "Service":
+                continue
+            ports = (obj.get("spec", {}) or {}).get("ports", []) or []
+            if any(int(row.get("port", 0) or 0) in telemetry_ports for row in ports):
+                selectors.append((obj.get("spec", {}) or {}).get("selector", {}) or {})
+
+        def labels(obj: dict[str, Any]) -> dict[str, Any]:
+            return (((obj.get("spec", {}) or {}).get("template", {}) or {}).get("metadata", {}) or {}).get("labels", {}) or {}
+
+        telemetry_controllers = [
+            obj for obj in controllers
+            if any(selector and all(str(labels(obj).get(k)) == str(v) for k, v in selector.items()) for selector in selectors)
+        ]
+        application_controllers = [obj for obj in controllers if obj not in telemetry_controllers]
+
         manifest_list = {
             "apiVersion": "v1",
             "kind": "List",
-            "items": self.bundle.objects,
+            "items": support + telemetry_controllers,
         }
         _require_success(
             _kubectl(["apply", "-f", "-"], input_obj=manifest_list),
             "apply sparse Twin manifests",
         )
+        for obj in telemetry_controllers:
+            kind = str(obj.get("kind") or "").lower()
+            name = str((obj.get("metadata", {}) or {}).get("name") or "")
+            _require_success(
+                _kubectl(["rollout", "status", f"{kind}/{name}", "-n", self.namespace, "--timeout=120s"]),
+                "wait for Twin telemetry backend",
+            )
+        if application_controllers:
+            _require_success(
+                _kubectl(["apply", "-f", "-"], input_obj={
+                    "apiVersion": "v1", "kind": "List", "items": application_controllers,
+                }),
+                "apply sparse Twin application controllers",
+            )
         self.applied = True
 
     def _baseline_snapshot(self) -> SparseTwinBaselineResult:

@@ -7,6 +7,11 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from training_pipeline.command_safety import check_command_safety
+from training_pipeline.kubectl_command_shape import (
+    namespace_flag as _namespace,
+    positional_args as _positional_args,
+    resource_target as _resource_target,
+)
 
 from .sparse_live_session import SparseLiveTwinSession
 
@@ -41,38 +46,12 @@ class LiveActionExecutionResult:
         }
 
 
-def _namespace(parts: list[str]) -> str | None:
-    for index, part in enumerate(parts):
-        if part in {"-n", "--namespace"} and index + 1 < len(parts):
-            return parts[index + 1]
-        if part.startswith("--namespace="):
-            return part.split("=", 1)[1]
-    return None
-
-
-def _resource_target(parts: list[str]) -> tuple[str, str] | None:
-    if len(parts) < 3:
-        return None
-    verb = parts[1]
-    if verb == "rollout":
-        if len(parts) < 4:
-            return None
-        token = parts[3]
-    else:
-        token = parts[2]
-    if "/" in token:
-        kind, name = token.split("/", 1)
-        return kind.lower(), name
-    if len(parts) >= 4 and not parts[3].startswith("-"):
-        return token.lower(), parts[3]
-    return token.lower(), ""
-
-
 def execute_twin_commands(
     session: SparseLiveTwinSession,
     commands: list[str],
     *,
     timeout_seconds: float = 150.0,
+    owned_runtime_objects: list[dict[str, str]] | None = None,
 ) -> LiveActionExecutionResult:
     """Execute preflighted commands without a shell in one owned Twin only."""
     safety = check_command_safety(commands)
@@ -84,6 +63,14 @@ def execute_twin_commands(
     selected = {
         str(row.get("name")) for row in session.bundle.object_refs
         if row.get("kind") in {"Deployment", "StatefulSet", "Service"}
+    }
+    runtime_refs = {
+        (
+            str(row.get("kind") or "").strip().lower(),
+            str(row.get("name") or "").strip(),
+        )
+        for row in (owned_runtime_objects or [])
+        if row.get("kind") and row.get("name")
     }
     parsed: list[tuple[str, list[str]]] = []
     for command in commands:
@@ -97,15 +84,20 @@ def execute_twin_commands(
             continue
         if _namespace(parts) != session.namespace:
             reasons.append("command_namespace_must_equal_owned_twin")
-        target = _resource_target(parts)
-        verb = parts[1] if len(parts) > 1 else ""
-        if verb in {"patch", "scale", "delete"}:
+        positional = _positional_args(parts, 1)
+        target = _resource_target(positional)
+        verb = positional[0] if positional else ""
+        if verb in {"patch", "scale"}:
             if not target or not target[1] or target[1] not in selected:
-                # Selector-based pod deletion is intentionally not enabled in
-                # the first live executor; it requires a separate owner audit.
                 reasons.append("mutation_target_not_selected_exact_resource")
-            if verb == "delete" and target and target[0] not in {"pod", "pods"}:
-                reasons.append("live_delete_restricted_to_selected_pods")
+        if verb == "delete":
+            target_kind = str(target[0] if target else "").strip().lower()
+            target_name = str(target[1] if target else "").strip()
+            if (target_kind, target_name) not in runtime_refs:
+                # Selector-based or arbitrary deletion is intentionally not
+                # enabled. The only deletions allowed here are exact runtime
+                # fault resources registered by the live verifier.
+                reasons.append("delete_target_not_owned_runtime_fault_resource")
         parsed.append((command, parts))
 
     if reasons:

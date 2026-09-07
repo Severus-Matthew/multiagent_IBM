@@ -37,6 +37,8 @@ class BehavioralTwinVerifier:
         result["uses_hidden_injection_manifest_for_score"] = False
         result["counterfactual_prediction_replayed"] = True
         result["predicted_fault_injection_checked"] = False
+        result["reward_route"] = "offline"
+        result["live_reward_eligible"] = False
         return result
 
     def apply_action_and_score(
