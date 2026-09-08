@@ -68,6 +68,7 @@ def _reward_route_summary(worker_results: list[dict[str, Any]]) -> dict[str, Any
             rca_returns.append(float(trajectory.get("rca_policy_return") or 0.0))
             action_returns.append(float(trajectory.get("action_policy_return") or 0.0))
     return {
+        "trajectory_count": sum(counts.values()),
         "reward_route_counts": counts,
         "live_trajectory_count": counts.get("live", 0),
         "offline_trajectory_count": counts.get("offline", 0),

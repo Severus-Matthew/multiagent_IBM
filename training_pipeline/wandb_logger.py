@@ -169,8 +169,9 @@ class WandbRunLogger:
         """
         row[f"train/{prefix}_updated"] = int(bool(role.get("updated")))
         skip_reason = role.get("skip_reason")
-        if skip_reason:
-            row[f"train/{prefix}_skip_reason"] = str(skip_reason)
+        # Clear a previous skip reason when the role updates again; W&B summary
+        # otherwise retains the last nonempty value from an older update.
+        row[f"train/{prefix}_skip_reason"] = str(skip_reason or "")
         signal = role.get("signal", {}) or {}
         for key in (
             "nonzero_advantage_groups", "zero_advantage_groups",
@@ -202,7 +203,8 @@ class WandbRunLogger:
             "train/epoch_index": int(update.get("epoch_index", 0) or 0),
             "train/scenario_cursor": int(update.get("scenario_cursor", 0) or 0),
             "train/twin_mode": str(update.get("twin_mode") or ""),
-            "train/policy_version": str(update.get("policy_version") or ""),
+            "train/policy_version": str(update.get("published_policy_version") or update.get("policy_version") or ""),
+            "train/rollout_policy_version": str(update.get("rollout_policy_version") or ""),
             "train/replica_adapter_tensors_copied": int(update.get("replica_adapter_tensors_copied", 0) or 0),
             "train/parallel_rollout_workers": int(update.get("parallel_rollout_workers", 0) or 0),
         }
@@ -224,11 +226,20 @@ class WandbRunLogger:
             value = update.get(key)
             if value is not None:
                 row[wandb_key] = cast(value)
-        scenarios_in_update = max(1, int(update.get("scenarios_in_update", 0) or 0))
-        if "full_success_count" in update:
-            row["rollout/trajectory_success_rate"] = float(update["full_success_count"]) / scenarios_in_update
-        if "skipped_action_count" in update:
-            row["rollout/skipped_action_rate"] = float(update["skipped_action_count"]) / scenarios_in_update
+        # Counts above are per trajectory. Each scenario can produce a group
+        # of several trajectories, including unscorable/unknown routes.
+        # Legacy update records can recover the total from all route counts.
+        trajectory_count = update.get("trajectory_count")
+        if trajectory_count is None and "reward_route_counts" in update:
+            trajectory_count = sum(int(n) for n in (update["reward_route_counts"] or {}).values())
+        if trajectory_count is not None:
+            trajectory_count = int(trajectory_count)
+            row["rollout/trajectory_count"] = trajectory_count
+            if trajectory_count > 0:
+                if "full_success_count" in update:
+                    row["rollout/trajectory_success_rate"] = float(update["full_success_count"]) / trajectory_count
+                if "skipped_action_count" in update:
+                    row["rollout/skipped_action_rate"] = float(update["skipped_action_count"]) / trajectory_count
         for key, wandb_key in (
             ("live_twin_reproduction_mean", "twin/live_reproduction_score_mean"),
             ("offline_twin_reproduction_mean", "twin/offline_reproduction_score_mean"),

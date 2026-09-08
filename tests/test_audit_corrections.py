@@ -28,11 +28,61 @@ from training_pipeline.action_loop import _namespace
 from training_pipeline.end_to_end_loop import run_end_to_end_trajectory_group
 from training_pipeline.grpo_math import group_relative_advantages
 from training_pipeline.schemas import FaultLabel
+from training_pipeline.train_qwen_live_grpo import _reward_route_summary
+from training_pipeline.wandb_logger import WandbRunLogger
 from digital_twin_runtime.live_capabilities import assess_live_reward_calibration, LIVE_REWARD_CALIBRATION
 
 
 FIELDS = ("trace_id", "span_id", "parent_span", "service_name",
           "operation_name", "duration", "response", "has_error")
+
+
+class TrainingMetricTests(unittest.TestCase):
+    def log_update(self, update):
+        logger = WandbRunLogger(enabled=False)
+        logger._run = object()
+        rows = []
+        logger._wandb = SimpleNamespace(log=lambda row, **kwargs: rows.append(row))
+        logger.log_training_update(1, update)
+        return rows[0]
+
+    def test_trajectory_rates_include_every_route(self):
+        workers = [{"result": {"trajectories": [
+            {"reward_route": "live", "trajectory_success": i < 2,
+             "action_stage_invoked": i < 4, "skipped_action": i >= 4}
+            for i in range(7)
+        ] + [{"skipped_action": True}]}}]
+        summary = _reward_route_summary(workers)
+        self.assertEqual(summary["trajectory_count"], 8)
+        row = self.log_update({**summary, "scenarios_in_update": 2})
+        self.assertEqual(row["rollout/trajectory_success_rate"], 0.25)
+        self.assertEqual(row["rollout/skipped_action_rate"], 0.5)
+
+    def test_legacy_route_counts_recover_trajectory_denominator(self):
+        row = self.log_update({"scenarios_in_update": 2,
+                               "reward_route_counts": {"live": 5, "unknown": 2, "offline": 1},
+                               "full_success_count": 2, "skipped_action_count": 4})
+        self.assertEqual(row["rollout/trajectory_count"], 8)
+        self.assertEqual(row["rollout/trajectory_success_rate"], 0.25)
+        self.assertEqual(row["rollout/skipped_action_rate"], 0.5)
+
+    def test_no_rate_without_a_nonempty_trajectory_population(self):
+        for extra in ({}, {"trajectory_count": 0}, {"reward_route_counts": {}}):
+            with self.subTest(extra=extra):
+                row = self.log_update({"scenarios_in_update": 2,
+                                       "full_success_count": 0, "skipped_action_count": 0, **extra})
+                self.assertNotIn("rollout/trajectory_success_rate", row)
+                self.assertNotIn("rollout/skipped_action_rate", row)
+
+    def test_versions_and_skip_reason_describe_the_current_update(self):
+        row = self.log_update({"published_policy_version": "policy@u2",
+                               "rollout_policy_version": "policy@u1",
+                               "action": {"updated": True},
+                               "rca": {"updated": False, "skip_reason": "no_signal"}})
+        self.assertEqual(row["train/policy_version"], "policy@u2")
+        self.assertEqual(row["train/rollout_policy_version"], "policy@u1")
+        self.assertEqual(row["train/action_skip_reason"], "")
+        self.assertEqual(row["train/rca_skip_reason"], "no_signal")
 
 
 def span(i, duration, *, trace=None, parent="", service="api", error=False):

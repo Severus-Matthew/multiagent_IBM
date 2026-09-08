@@ -2,7 +2,7 @@
 
 Audited source: `training-pipeline-v0` at `e885485c38023605e54d4315bff07b100481ef81`.
 
-**Verdict: the intended architecture is recognizable, but this snapshot is not qualified for a reportable end-to-end experiment.** The changes in this branch are a draft. They have been inspected as source, but the execution environment became unavailable before the new regression suite could run. No live deployment, running training process, dataset rebuild, or GPU update was performed by this audit.
+**Verdict: the intended architecture is recognizable, but this snapshot is not qualified for a reportable end-to-end experiment.** The changes in this branch remain a draft. After workspace access was restored, all 23 regression tests and five existing CPU/pure-Python audits passed. No live deployment, running training process, dataset rebuild, or GPU update was performed by this audit.
 
 The review covers the active `training_pipeline/`, `digital_twin_runtime/`, and `state_abstraction_full/` code. The older `agents/`, `digital_twin/`, and `training/grpo_trainer.py` are not interchangeable with that implementation.
 
@@ -18,6 +18,8 @@ The review covers the active `training_pipeline/`, `digital_twin_runtime/`, and 
 | Safety report does not inspect namespace FQDNs and truncates key inspection at 1,000 list entries | Some payloads are reported safe despite containing fields the sanitizer is supposed to remove | Detect unredacted service FQDN namespaces and scan every list entry |
 | Reward-route logging independently guesses the route | Logged route can disagree with the actual reward route | Log the route selected by the reward boundary |
 | Existing calibration has no link to corrected trace aggregation | Old thresholds could silently authorize a changed measurement pipeline | Reject old control records until requalified with `unique_raw_spans_v1` |
+| W&B trajectory rates divide by the number of scenarios | Rates are inflated by the trajectory group size and can exceed one | Record the actual trajectory count, including unknown routes, and use it as the denominator; omit rates for empty/unknown populations |
+| W&B reads a policy-version key the trainer does not emit and leaves old skip reasons in the summary | Empty policy identifiers and stale skip reasons obscure interpretation | Log the published and rollout versions explicitly and clear prior skip reasons on current updates |
 
 The calibrated-mechanism registry remains intact as historical information. **This draft intentionally prevents its old controls from authorizing production reward.** Do not add the new aggregation tag to old evidence or use the uncalibrated override to label a scientific run qualified. Collect and inspect new controls first.
 
@@ -94,12 +96,18 @@ The `1/D_role` weighting implements the project's chosen average-over-decisions 
 
 ## Validation and restart requirements
 
-Before the workspace became unavailable, these existing audits ran on the unmodified source and returned PASS:
+After workspace access was restored, validation of this draft returned PASS for:
 
+- `python -m unittest discover -s tests -p test_audit_corrections.py -v` — all 23 tests.
 - `python -m training_pipeline.audit_grpo_objective`
 - `python -m training_pipeline.audit_injectible_rca_contract`
+- `python -m training_pipeline.audit_exact_token_grpo_replay`
+- `python -m training_pipeline.audit_factorized_grpo_learner`
+- `python -m training_pipeline.audit_streaming_grpo_optimizer`
 
-The log-summary tools found no local rollout files; their empty outputs are not training-health evidence. Torch/GPU integration and live Kubernetes checks were not completed. The 19 new regression tests in this branch have **not been executed**.
+The last three used Torch 2.14.0+cpu with synthetic tiny policies. The streaming/reference maximum absolute gradient difference was approximately `2.98e-8`. These tests verify the implemented arithmetic and replay mechanics, not the unresolved behavior-policy sampling contract or real Qwen/GPU integration. Live Kubernetes checks and full-corpus leakage sweeps remain outstanding.
+
+The four logging regression tests verify an eight-trajectory/two-scenario example (including unknown routes), legacy route-count recovery, omission of rates without a nonempty population, and current update provenance. The logging correction affects future logs; existing W&B history is not rewritten by this draft.
 
 Start review with:
 
