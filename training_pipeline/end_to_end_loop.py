@@ -64,6 +64,14 @@ def _group_normalize(
         trajectory[f"{advantage_key}_normalization_epsilon"] = result.normalization_epsilon
 
 
+def _optimizer_eligible(trajectory: dict[str, Any]) -> bool:
+    # A zero placeholder return is not an observed reward. Require the reward
+    # boundary's explicit admission decision before baseline or token replay.
+    reward = trajectory.get("reward") or {}
+    components = reward.get("components") or {}
+    return components.get("optimizer_credit_eligible") is True
+
+
 def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
     _group_normalize(
         trajectories,
@@ -73,6 +81,7 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         advantage_key="system_advantage",
         zero_variance_key="system_group_zero_variance",
     )
+    eligible = [t for t in trajectories if _optimizer_eligible(t)]
     _group_normalize(
         trajectories,
         value_key="rca_policy_return",
@@ -80,8 +89,9 @@ def _compute_factorized_advantages(trajectories: list[dict[str, Any]]) -> None:
         std_key="rca_group_return_std",
         advantage_key="rca_policy_advantage",
         zero_variance_key="rca_group_zero_variance",
+        participants=[t for t in eligible if t.get("rca_stage_invoked")],
     )
-    action_participants = [t for t in trajectories if t.get("action_stage_invoked")]
+    action_participants = [t for t in eligible if t.get("action_stage_invoked")]
     _group_normalize(
         trajectories,
         value_key="action_policy_return",
@@ -329,7 +339,8 @@ def run_end_to_end_trajectory_group(
                 "action_policy_return": reward_obj["action_policy_return"],
                 "trajectory_success": reward_obj["success"],
                 "reward": reward_obj,
-                "reward_route": _reward_route_from_episode(rca_result, action_result),
+                "reward_route": reward_obj["components"]["reward_route"],
+                "rca_stage_invoked": bool(rca_samples),
                 "action_stage_invoked": bool(action_samples) and not bool(action_result.get("skipped_action")),
                 "skipped_action": bool(action_result.get("skipped_action")),
                 "rca_result": {k: v for k, v in rca_result.items() if k != "grpo_samples"},
@@ -344,9 +355,16 @@ def run_end_to_end_trajectory_group(
 
     rca_policy_samples: list[dict[str, Any]] = []
     action_policy_samples: list[dict[str, Any]] = []
+    excluded_trajectory_ids = []
     for trajectory in trajectories:
+        samples = trajectory.pop("_policy_samples", [])
+        if not _optimizer_eligible(trajectory):
+            # Retain public/private diagnostic records, but exclude the entire
+            # trajectory from optimizer replay, including its KL term.
+            excluded_trajectory_ids.append(trajectory["trajectory_id"])
+            continue
         rca_rows, action_rows = _attach_factorized_credit(
-            trajectory.pop("_policy_samples", []),
+            samples,
             trajectory_group_id=trajectory_group_id,
             trajectory_id=trajectory["trajectory_id"],
             trajectory_index=int(trajectory["trajectory_index"]),
@@ -361,6 +379,7 @@ def run_end_to_end_trajectory_group(
         rca_policy_samples.extend(rca_rows)
         action_policy_samples.extend(action_rows)
 
+    rca_policy_samples, dropped_rca_groups = drop_undersized_optimizer_groups(rca_policy_samples)
     action_policy_samples, dropped_action_groups = drop_undersized_optimizer_groups(action_policy_samples)
     all_policy_samples = rca_policy_samples + action_policy_samples
     projection = agent_state.get("projection") if isinstance(agent_state, dict) else None
@@ -399,6 +418,8 @@ def run_end_to_end_trajectory_group(
         "action_group_zero_variance": trajectories[0].get("action_group_zero_variance") if trajectories else None,
         "reward_route_counts": route_counts,
         "dropped_action_optimizer_groups": dropped_action_groups,
+        "dropped_rca_optimizer_groups": dropped_rca_groups,
+        "optimizer_ineligible_trajectory_ids": excluded_trajectory_ids,
         "num_action_stage_trajectories": sum(1 for t in trajectories if t.get("action_stage_invoked")),
         "num_successful_trajectories": sum(1 for t in trajectories if t.get("trajectory_success")),
         "uses_hidden_rca_success_for_action_transition": False,
@@ -409,7 +430,10 @@ def run_end_to_end_trajectory_group(
             "system_advantage": "diagnostic_only",
             "advantage_normalization": "per_incident_complete_trajectory_group_sample_std_plus_1e-4",
             "trajectory_group_baseline_scope": "same_initial_incident",
-            "action_baseline_scope": "trajectories_that_produced_action_decisions",
+            "optimizer_admission": "explicit_reward_eligibility_before_normalization_and_replay",
+            "rca_baseline_scope": "eligible_trajectories_that_produced_rca_decisions",
+            "action_baseline_scope": "eligible_trajectories_that_produced_action_decisions",
+            "undersized_rca_groups_dropped": dropped_rca_groups,
             "undersized_action_groups_dropped": dropped_action_groups,
             "decision_prompt_equivalence": "not_assumed_after_history_diverges",
             "rca_downstream_credit_weight": float(rca_downstream_credit_weight),

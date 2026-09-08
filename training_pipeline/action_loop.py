@@ -90,14 +90,24 @@ def _rollout_token_info(policy_info: dict[str, Any]) -> tuple[float | None, list
     return old_logprob_sum, old_logprobs, completion_token_ids, ref_logprobs
 
 
-def _namespace(full_state: dict[str, Any], compressed_state: dict[str, Any]) -> str:
-    return (
-        compressed_state.get("namespace")
-        or compressed_state.get("target_namespace")
-        or (full_state.get("fault_context", {}) or {}).get("target_namespace")
-        or (full_state.get("fault_context", {}) or {}).get("namespace")
-        or "default"
-    )
+def _namespace(
+    full_state: dict[str, Any],
+    compressed_state: dict[str, Any],
+    twin_verifier=None,
+) -> str:
+    """Resolve command scope from the verifier, never from incident labels."""
+    del full_state, compressed_state
+    live_namespace = getattr(twin_verifier, "action_namespace", None)
+    if callable(live_namespace):
+        owned = live_namespace()
+        if owned:
+            return str(owned)
+        if getattr(twin_verifier, "is_live", False):
+            raise RuntimeError("live Action stage has no verifier-owned Twin namespace")
+    elif getattr(twin_verifier, "is_live", False):
+        raise RuntimeError("live verifier does not expose its Action namespace")
+    # Offline diagnostic agents do not execute on the source application.
+    return "aiops-twin-debug"
 
 
 def _first_valid_mitigation_action(normalized: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -294,12 +304,7 @@ def run_action_prompt_optimizer_loop(
     attempts: list[ActionAttempt] = []
     grpo_samples: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
-    namespace = _namespace(full_state, compressed_state)
-    live_namespace = getattr(twin_verifier, "action_namespace", None)
-    if callable(live_namespace):
-        owned_namespace = live_namespace()
-        if owned_namespace:
-            namespace = str(owned_namespace)
+    namespace = _namespace(full_state, compressed_state, twin_verifier)
     current_sla = sla_verdict_from_state(compressed_state)
     scenario_id = _scenario_id(full_state, compressed_state)
 

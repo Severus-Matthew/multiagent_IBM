@@ -652,7 +652,7 @@ def main() -> None:
         if args.max_runtime_hours is not None and time.monotonic() - started_monotonic >= args.max_runtime_hours * 3600:
             stop_reason = "MAX_RUNTIME"
             break
-        sync_id = f"live-update-{updates:06d}"
+        sync_id = f"live-update-{updates:06d}-batch-{completed:08d}"
         batch_count = min(scenarios_per_update, len(records) - scenario_cursor)
         batch_records = records[scenario_cursor:scenario_cursor + batch_count]
         rollout_policy_version = trainer.current_policy_version
@@ -724,7 +724,28 @@ def main() -> None:
             epoch_index += 1
             scenario_cursor = 0
         if not batch_rca:
-            raise RuntimeError("joint batch lacks RCA optimizer rows; inspect rollout failures")
+            # Observation/calibration admission can leave no valid G>=2 group.
+            # Save the advanced data cursor without updating either adapter.
+            skipped = {
+                "status": "SKIPPED_NO_ADMISSIBLE_RCA_GROUP",
+                "sync_batch_id": sync_id,
+                "bundle_update_step": trainer.bundle_update_step,
+                "policy_version": trainer.current_policy_version,
+                "scenarios_completed": completed,
+                "epoch_index": epoch_index,
+                "scenario_cursor": scenario_cursor,
+                "wandb_run_id": wandb_logger.run_id,
+                "twin_mode": args.twin_mode,
+                "scenarios_in_batch": batch_count,
+                "optimizer_ineligible_trajectories": sum(
+                    len(w["result"].get("optimizer_ineligible_trajectory_ids", []))
+                    for w in worker_results
+                ),
+            }
+            trainer.save_checkpoint(checkpoint, last_update=skipped)
+            _append_jsonl(event_path, skipped)
+            print(json.dumps(skipped, sort_keys=True))
+            continue
         update = trainer.update_joint_batch(batch_rca, batch_action)
         updates = trainer.bundle_update_step
         copied_adapter_tensors = 0

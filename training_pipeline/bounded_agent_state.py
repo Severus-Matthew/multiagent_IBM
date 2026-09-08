@@ -323,6 +323,16 @@ def _compact_system_map(mapping: Any, priority: list[str], cfg: BoundedAgentStat
         entry: dict[str, Any] = {
             "health": _diagnostic_scalars(raw.get("health", {}), limit=8, string_chars=120)
         }
+        # Keep routing evidence for every service, including those outside the
+        # anomaly-ranked detail budget. A port mismatch may leave pods healthy.
+        service_spec = raw.get("service")
+        if isinstance(service_spec, dict) and service_spec:
+            entry["service"] = {
+                key: service_spec[key]
+                for key in ("service_type", "selector", "ports",
+                            "session_affinity", "internal_traffic_policy")
+                if key in service_spec
+            }
         if service in detail_services:
             if "deployment" in raw:
                 entry["deployment_signals"] = _diagnostic_scalars(
@@ -568,7 +578,7 @@ def build_bounded_agent_state(
     priority = _observable_service_priority(sanitized_state)
     out: dict[str, Any] = {
         "projection": {
-            "version": "bounded_agent_state_v2_schema_aware_observable_projection",
+            "version": "bounded_agent_state_v3_service_routing_evidence",
             "source_safe_for_training_agent": True,
             "service_detail_ranking": "observable_health_and_log_error_signals_only",
             "raw_prompt_token_truncation_used": False,

@@ -220,6 +220,14 @@ def compress_system(system):
             "images": compact_list(s.get("images", []), 5),
             "endpoints": s.get("endpoints", {}),
             "deployment": s.get("deployment", {}),
+            # Observable Service routing is essential for targetPort/selector
+            # diagnosis. Do not copy source namespace, IPs or metadata here.
+            "service": {
+                key: (s.get("services", {}) or {})[key]
+                for key in ("service_type", "selector", "ports",
+                            "session_affinity", "internal_traffic_policy")
+                if key in (s.get("services", {}) or {})
+            },
             "events_top": compact_list(s.get("events", []), 5),
         })
     return out

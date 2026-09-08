@@ -165,6 +165,17 @@ def assess_live_reward_calibration(labels: list[FaultLabel]) -> dict[str, Any]:
             "reason": "mechanism_reproduction_threshold_not_calibrated",
             "mechanism": mechanism,
         }
+    # Historical controls were measured with the summary-of-quantiles parser.
+    # A threshold is not transferable merely because its mechanism name matches:
+    # the observation contract used to calibrate it must match the current one.
+    if calibration.get("trace_aggregation") != "unique_raw_spans_v1":
+        return {
+            "eligible": False,
+            "reason": "reward_controls_require_raw_span_requalification",
+            "mechanism": mechanism,
+            "required_trace_aggregation": "unique_raw_spans_v1",
+            "calibration_trace_aggregation": calibration.get("trace_aggregation"),
+        }
     return {
         "eligible": True,
         "mechanism": mechanism,

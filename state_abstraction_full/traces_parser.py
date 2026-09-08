@@ -61,7 +61,7 @@ def normalize_trace_row(row):
     return normalized
 
 
-def parse_trace_csv(path):
+def _read_trace_csv(path):
     path = Path(path)
     rows = []
     parse_errors = []
@@ -71,13 +71,27 @@ def parse_trace_csv(path):
             for row in reader:
                 rows.append(normalize_trace_row(row))
     except Exception as e:
-        return {}, set(), {"file": str(path), "rows_seen": 0, "parse_errors": [{"file": str(path), "error": str(e)}]}
+        return [], {"file": str(path), "rows_seen": 0, "parse_errors": [{"file": str(path), "error": str(e)}]}
+    return rows, {"file": str(path), "rows_seen": len(rows), "parse_errors": parse_errors}
 
+
+def _summarize_trace_rows(rows):
+    """Summarize unique raw spans, resolving parents across all supplied files."""
     spans_by_trace = defaultdict(dict)
     for row in rows:
         trace_id = str(row.get("trace_id", "")).strip()
         span_id = str(row.get("span_id", "")).strip()
         if trace_id and span_id:
+            previous = spans_by_trace[trace_id].get(span_id)
+            if previous is not None:
+                # Overlapping exports commonly contain identical spans. Count
+                # each identity once; conflicting observations are not a valid
+                # basis for a deterministic latency/reproduction score.
+                fields = ("parent_span", "service_name", "operation_name",
+                          "duration", "response", "has_error")
+                if any(str(previous.get(k, "")).strip() != str(row.get(k, "")).strip()
+                       for k in fields):
+                    raise ValueError("conflicting observations for the same trace/span identity")
             spans_by_trace[trace_id][span_id] = row
 
     edge_stats = defaultdict(lambda: {"request_count": 0, "error_count": 0, "durations_us": [], "operations": Counter(), "responses": Counter(), "trace_ids": set(), "example_error_spans": []})
@@ -154,8 +168,25 @@ def parse_trace_csv(path):
             "responses": dict(stats["responses"].most_common(10)),
         }
 
-    meta = {"file": str(path), "rows_seen": len(rows), "num_traces": len(spans_by_trace), "num_edges": len(final_edges), "num_services": len(final_services), "parse_errors": parse_errors, "service_summary": final_services}
+    unique_spans = sum(len(spans) for spans in spans_by_trace.values())
+    valid_rows = sum(bool(str(row.get("trace_id", "")).strip()
+                          and str(row.get("span_id", "")).strip()) for row in rows)
+    meta = {
+        "rows_seen": len(rows), "num_traces": len(spans_by_trace),
+        "num_unique_spans": unique_spans,
+        "duplicate_span_rows": valid_rows - unique_spans,
+        "rows_without_identity": len(rows) - valid_rows,
+        "num_edges": len(final_edges), "num_services": len(final_services),
+        "service_summary": final_services,
+        "aggregation": "unique_raw_spans_v1",
+    }
     return final_edges, observed_edges, meta
+
+
+def parse_trace_csv(path):
+    rows, file_meta = _read_trace_csv(path)
+    edges, observed, summary = _summarize_trace_rows(rows)
+    return edges, observed, {**summary, **file_meta}
 
 
 def _looks_like_trace_csv(path: Path) -> bool:
@@ -215,54 +246,34 @@ def discover_trace_csv_files(run_dir):
 
 
 def merge_edges(all_edge_dicts):
-    merged_raw = defaultdict(lambda: {"request_count": 0, "error_count": 0, "durations_us": [], "operations": Counter(), "responses": Counter(), "example_error_spans": []})
-    for edge_dict in all_edge_dicts:
-        for edge, feats in edge_dict.items():
-            merged_raw[edge]["request_count"] += feats.get("request_count", 0)
-            merged_raw[edge]["error_count"] += feats.get("error_count", 0)
-            for key in ["latency_mean_us", "latency_p50_us", "latency_p95_us", "latency_p99_us", "latency_max_us"]:
-                val = feats.get(key, 0.0)
-                if val:
-                    merged_raw[edge]["durations_us"].append(val)
-            merged_raw[edge]["operations"].update(feats.get("top_operations", {}))
-            merged_raw[edge]["responses"].update(feats.get("responses", {}))
-            merged_raw[edge]["example_error_spans"].extend(feats.get("example_error_spans", [])[:5])
-    merged = {}
-    for edge, stats in merged_raw.items():
-        req = stats["request_count"]
-        err = stats["error_count"]
-        durations = stats["durations_us"]
-        error_ratio = err / req if req else 0.0
-        latency_p95_us = percentile(durations, 95)
-        merged[edge] = {
-            "request_count": req,
-            "error_count": err,
-            "error_ratio": error_ratio,
-            "latency_mean_us": sum(durations) / len(durations) if durations else 0.0,
-            "latency_p50_us": percentile(durations, 50),
-            "latency_p95_us": latency_p95_us,
-            "latency_p99_us": percentile(durations, 99),
-            "latency_max_us": max(durations) if durations else 0.0,
-            "failure_type": classify_failure(error_ratio, latency_p95_us),
-            "is_suspicious": error_ratio > 0.2 or latency_p95_us > 100000,
-            "edge_rank_score": edge_rank_score(error_ratio, latency_p95_us),
-            "top_operations": dict(stats["operations"].most_common(10)),
-            "responses": dict(stats["responses"].most_common(10)),
-            "example_error_spans": stats["example_error_spans"][:5],
-        }
-    return merged
+    """A summary alone cannot reconstruct pooled latency quantiles.
+
+    Kept for callers with one already summarized capture. Multiple captures must
+    go through parse_traces so raw spans, counts and parent links are combined.
+    """
+    nonempty = [edges for edges in all_edge_dicts if edges]
+    if len(nonempty) > 1:
+        raise ValueError("cannot merge trace quantiles without raw spans; use parse_traces")
+    return dict(nonempty[0]) if nonempty else {}
 
 
 def parse_traces(run_dir):
     trace_files = discover_trace_csv_files(Path(run_dir))
-    all_edge_dicts = []
-    all_observed_edges = set()
+    all_rows = []
     file_metas = []
     for path in trace_files:
-        edges, observed_edges, meta = parse_trace_csv(path)
-        all_edge_dicts.append(edges)
-        all_observed_edges |= observed_edges
-        file_metas.append(meta)
-    merged_edges = merge_edges(all_edge_dicts)
-    meta = {"files_seen": [str(x) for x in trace_files], "num_files": len(trace_files), "num_edges": len(merged_edges), "num_observed_edges": len(all_observed_edges), "file_metas": file_metas, "trace_signal_present": any(m.get("rows_seen", 0) > 0 for m in file_metas)}
-    return merged_edges, sorted(all_observed_edges), meta
+        rows, file_meta = _read_trace_csv(path)
+        _, _, file_summary = _summarize_trace_rows(rows)
+        file_metas.append({**file_summary, **file_meta})
+        all_rows.extend(rows)
+    merged_edges, observed_edges, summary = _summarize_trace_rows(all_rows)
+    meta = {
+        **summary,
+        "files_seen": [str(x) for x in trace_files],
+        "num_files": len(trace_files),
+        "num_observed_edges": len(observed_edges),
+        "file_metas": file_metas,
+        "trace_signal_present": summary["num_unique_spans"] > 0,
+        "parse_errors": [error for m in file_metas for error in m["parse_errors"]],
+    }
+    return merged_edges, sorted(observed_edges), meta

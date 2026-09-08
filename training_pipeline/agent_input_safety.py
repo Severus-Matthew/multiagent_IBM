@@ -140,7 +140,7 @@ def agent_input_safety_report(obj: Any) -> dict[str, Any]:
                     found_keys.append(p)
                 walk(v, p)
         elif isinstance(x, list):
-            for i, v in enumerate(x[:1000]):
+            for i, v in enumerate(x):
                 walk(v, f"{path}[{i}]")
 
     walk(obj)
@@ -148,11 +148,13 @@ def agent_input_safety_report(obj: Any) -> dict[str, Any]:
     text_l = text.lower()
     found_markers = [m for m in BANNED_TEXT_MARKERS if m in text_l]
     found_scenario_ids = sorted({m.group(0) for m in _DESCRIPTIVE_SCENARIO_ID_RE.finditer(text)})
+    found_namespace_fqdns = sorted({m.group(0) for m in _K8S_NAMESPACE_FQDN_RE.finditer(text)})
     return {
-        "safe_for_training_agent": not found_keys and not found_markers and not found_scenario_ids,
+        "safe_for_training_agent": not found_keys and not found_markers and not found_scenario_ids and not found_namespace_fqdns,
         "banned_key_paths": found_keys[:50],
         "banned_text_markers": found_markers,
         "descriptive_scenario_id_values": found_scenario_ids[:20],
+        "source_namespace_fqdn_values": found_namespace_fqdns[:20],
         "serialized_chars": len(text_l),
-        "sanitizer_version": "agent_input_safety_v2_no_oracle_no_candidate_menu_no_descriptive_ids",
+        "sanitizer_version": "agent_input_safety_v3_namespace_fqdn_full_list_scan",
     }
