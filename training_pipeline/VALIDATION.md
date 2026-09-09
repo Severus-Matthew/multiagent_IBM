@@ -116,6 +116,22 @@ result exposes two separate problems:
 Positive/negative separation on this incident is inverted, so no threshold could
 be qualified from it. Rejecting both hypotheses was the correct outcome.
 
+## Legacy run resumability (verified, not only preflighted)
+
+`/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/` now carries its own copy
+of `.venv-training` (base interpreter tarball included) and the frozen worktree
+holds its own copy of `AIOpsLab/aiopslab-applications`, so the legacy path no
+longer depends on the live checkout or on the live environment. A zero-update
+resume (`--max_updates 0`, no W&B, scratch output directory) run from that
+worktree with the snapshot venv loaded the base model on both GPUs, restored
+`update-00000132.pt` strictly (adapters, both optimizers, data cursor 270,
+policy `qwen-live-grpo-stage1-v1@u000132`, git commit e885485), created no Twin
+namespace, and left every original run artifact byte-identical (checksums
+recorded before and after). A CPU check of the checkpoint found 192 finite
+adapter tensors per role with trained B matrices and Adam moments for every
+parameter at steps 131/114. What this does not show: a full update on the
+legacy code after the pause, which would require the OpenAI key and the cluster.
+
 ## Not established by these checks
 
 No corpus was rebuilt, no calibration controls were collected, no GPU training
