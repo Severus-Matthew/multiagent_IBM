@@ -225,12 +225,17 @@ the raw evidence gate, score above clean):
 
 On every fresh incident the true hypothesis scores 1.0 and every negative
 scores at most 0.792, so a score threshold separates them on this set
-(midpoint of the worst case: 0.896). The raw evidence gate alone admitted 6 of
-8 wrong hypotheses, because a wrong service or mechanism on the same request
+(midpoint of the worst case: 0.896). That midpoint is a pilot observation
+only: the required calibration set (three matched incidents per key with the
+full negative control set) has not been collected, and the single calibration
+incident cannot qualify anything. The raw evidence gate alone admitted 5 of 8
+wrong hypotheses, because a wrong service or mechanism on the same request
 path often reproduces the same failed edges or structural change; the
 calibrated threshold on top of the gate is therefore load-bearing, not a
 formality. Four incidents across three mechanisms are a diagnosis, not a
-qualification (three matched incidents per key with the full control set).
+qualification. The pilot "test" incident was examined during development
+(its controls were scored and inspected), so it cannot serve as a held-out
+evaluation case; final evaluation needs fresh, untouched captures.
 Deployed scope was 19 of 19 deployable controllers (hotel) and 24 of 27 (social).
 
 ## Legacy run resumability (verified, not only preflighted)

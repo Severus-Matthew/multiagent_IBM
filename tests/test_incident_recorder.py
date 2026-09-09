@@ -116,6 +116,19 @@ class RecorderTests(unittest.TestCase):
                             phase_runner=failing_runner, abstractor=self.abstractor, sleep=lambda s_: None)
         self.assertEqual(self.events, ["clean", "inject", "incident", "recover"])
 
+    def test_injection_that_raises_after_a_partial_mutation_is_still_recovered(self):
+        problem = FakeProblem(self.journal, self.events)
+        def partial_inject():
+            self.events.append("inject"); self.journal.append({"mechanism": "network_delay", "service": "frontend", "applied": True, "manifested": False})
+            raise RuntimeError("chaos object created but manifestation wait failed")
+        problem.inject_fault = partial_inject
+        with self.assertRaisesRegex(RuntimeError, "manifestation wait failed"):
+            record_scenario(spec(), cfg=self.cfg, generator=FakeGenerator(), problem_factory=lambda: problem,
+                            session=self.session, verifier=self.verifier, journal=self.journal, scrape_interval=60,
+                            is_clean=lambda ns: (True, {}), wait_clean=lambda ns, t: (True, {"reason": "clean"}),
+                            phase_runner=self.phase_runner, abstractor=self.abstractor, sleep=lambda s_: None)
+        self.assertEqual(self.events, ["clean", "inject", "recover"])
+
     def test_failed_recovery_is_fatal_after_recover_attempt(self):
         with self.assertRaisesRegex(RuntimeError, "clean state"):
             self._record(clean_after=False)

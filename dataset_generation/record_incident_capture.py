@@ -260,9 +260,11 @@ def record_scenario(spec: dict[str, Any], *, cfg: RecorderConfig, generator: Any
                                           scrape_interval=scrape_interval, cfg=cfg)
     journal_start = len(journal)
     injected_at = datetime.now(timezone.utc).isoformat()
-    problem.inject_fault()
     evidence: dict[str, Any] = {"verified": False}
     try:
+        # Injection itself is inside the protected block: an injector that
+        # mutates the source and then raises must still be recovered.
+        problem.inject_fault()
         sleep(max(0.0, cfg.manifestation_settle_seconds))
         mutations = list(journal[journal_start:])
         evidence = injection_evidence(problem_id, mutations)
