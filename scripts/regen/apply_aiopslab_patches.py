@@ -21,8 +21,8 @@ def main():
     def install_helper():
         if not helper.exists():
             helper.write_bytes(expected)
-    def run(*args):
-        return subprocess.run(['git', '-C', str(dependency), 'apply', *args, str(patch)],
+    def run(*args, target=None):
+        return subprocess.run(['git', '-C', str(dependency), 'apply', *args, str(target or patch)],
                               text=True, capture_output=True, check=False)
     generator = (dependency / 'gen_and_telmetry.py').read_text()
     if 'attach_scenario_identity(' in generator and 'unique_scenarios(' in generator:
@@ -36,14 +36,25 @@ def main():
         install_helper()
         print('AIOpsLab scenario identity patch is already applied.')
         return
-    checked = run('--check')
-    if checked.returncode:
-        raise SystemExit('AIOpsLab patch conflicts with the current checkout; preserve local work and inspect it.\n' + checked.stderr)
-    applied = run()
-    if applied.returncode:
-        raise SystemExit(applied.stderr)
-    install_helper()
-    print('Applied AIOpsLab scenario identity patch; pinned submodule commit remains unchanged.')
+    # The pinned-commit patch first, then the port recorded for the training
+    # host's newer checkout (b56eda8). Neither resets nor commits the submodule.
+    errors = []
+    for candidate in (patch, root / 'patches/aiopslab-scenario-identity-b56eda8.patch'):
+        if not candidate.is_file():
+            continue
+        checked = run('--check', target=candidate)
+        if checked.returncode:
+            errors.append(f'{candidate.name}: {checked.stderr.strip()}')
+            continue
+        applied = run(target=candidate)
+        if applied.returncode:
+            raise SystemExit(applied.stderr)
+        install_helper()
+        print(f'Applied {candidate.name}; pinned submodule commit remains unchanged.')
+        return
+    raise SystemExit('No bundled AIOpsLab patch applies to this checkout; preserve local work and port '
+                     'attach_scenario_identity/unique_scenarios by hand (training_pipeline/OPERATIONS.md).\n'
+                     + '\n'.join(errors))
 
 
 if __name__ == '__main__':

@@ -342,6 +342,35 @@ incidents per calibration key with all required controls (see
 `digital_twin_runtime/reward_calibration.py`); one incident per mechanism is a
 diagnostic, not a qualification.
 
+`dataset_generation/record_incident_capture.py` implements that recorder (run it
+from the generation environment, `.venv-aiops312`, with no `aiops-twin-*`
+namespaces present and a clean source application):
+
+```bash
+.venv-aiops312/bin/python dataset_generation/record_incident_capture.py \
+  --scenario_ids ids.txt --output_dir /mnt/aiops-training/datasets/<new-version> \
+  --workload_duration_seconds 150
+```
+
+Per scenario it records `clean`, `incident` and `recovered` phases under
+`raw/<id>/`, each with the Twin's `collection_metadata.json` (window, channels,
+scrape coverage) and a `phase.json` (workload contract, payload hashes), writes
+the generator's private files (`spec.json`, `ground_truth.json`,
+`fault_timing.json`, `injection_evidence.json`) into the scenario and incident
+directories only, abstracts the incident phase into `processed_states/<id>/` and
+the other phases into `processed_phases/<id>/`, and journals every scenario in
+`log.jsonl` (accepted captures also under `accepted/`). It stops if the source
+application does not return to a clean state after the problem's own recovery.
+Multifault and application-level specs are not supported yet.
+
+`python -m training_pipeline.pilot_score_separation --processed_states
+<new-version>/processed_states --processed_phases <new-version>/processed_phases
+--output_dir <report>` then runs the positive, one wrong-service and one
+wrong-mechanism control per incident on the live verifier and tabulates the
+scores with their per-channel overlaps; it also scores the capture's own clean
+phase against its incident phase offline. Inspect that table before spending
+the full calibration budget.
+
 ### Lineage when reusing adapter weights
 
 `update-00000132.pt` from the legacy run may initialize a new experiment only with
