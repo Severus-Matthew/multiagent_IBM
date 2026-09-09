@@ -27,4 +27,7 @@ the canonical training path.
 
 After initializing submodules, run `python scripts/regen/apply_aiopslab_patches.py`
 to apply the bundled generator fix. The AIOpsLab gitlink remains pinned to its
-existing published commit; the script preserves unrelated local edits.
+existing published commit; the script preserves unrelated local edits. On the
+training host the submodule is a newer, locally modified checkout that already
+carries the fix as a manual port: do not re-initialize it there (see the host
+section of `training_pipeline/OPERATIONS.md`).

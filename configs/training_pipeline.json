@@ -28,13 +28,14 @@
   "rca_output": "one physical line; service::fault_type::mechanism[::variant] roots separated by |",
   "digital_twin": {
     "default_mode": "live",
-    "scope": "all_observably_affected_services_plus_request_paths_and_dependencies",
+    "scope": "all attributable observably affected services (alias-resolved) plus request paths and startup dependencies; unattributed symptom names reported",
     "scope_frozen_before_rca": true,
     "preserve_reference_replicas": true,
     "calibration": "matched application/mechanism/variant/joint controls; no built-in qualified threshold",
     "action_retry": "fresh frozen reference plus same fault hypothesis",
     "recovery": "all observed symptoms cleared and SLA satisfied; restoration transition recorded separately",
-    "real_application": "digital_twin_runtime.repair_transfer; explicit context, namespace, and --execute"
+    "real_application": "digital_twin_runtime.repair_transfer; explicit context, namespace, and --execute",
+    "phase_window": "each phase measured inside its own window; workload phase >= 2 * Prometheus scrape_interval + 5s (150s at a 1m cadence); lookback never widened"
   },
   "dataset": {
     "explicit_train_ids_required": true,

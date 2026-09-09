@@ -36,7 +36,7 @@ The patch and identity helper are versioned in this repository; no publication t
 the separate AIOpsLab remote is required:
 
 ```bash
-git submodule update --init --recursive
+git submodule update --init --recursive   # fresh clones only; never on the training host (see below)
 python scripts/regen/apply_aiopslab_patches.py
 python state_abstraction_full/run_batch.py \
   --telemetry_dir /path/to/all/raw/telemetry_outputs \
@@ -89,7 +89,8 @@ python -m training_pipeline.collect_live_calibration \
   --scenario_ids /path/to/frozen-v2/calibration_ids.txt \
   --source_namespace HEALTHY_REFERENCE_NAMESPACE \
   --application_source_root /path/to/application/source \
-  --output_dir /path/to/controls-v2
+  --output_dir /path/to/controls-v2 \
+  --workload_duration_seconds 150
 ```
 
 There is no hardcoded two-mechanism exemption. An application/mechanism/variant or
@@ -120,8 +121,14 @@ python -m training_pipeline.train_qwen_live_grpo \
   --application_source_root /path/to/application/source \
   --output_dir /path/to/new-run --twin_mode live \
   --temperature 1 --top_p 1 --rca_max_iterations 7 --action_max_iterations 7 \
+  --twin_workload_duration_seconds 150 \
   --retain_twin_artifacts --wandb --wandb_project aiops-rl
 ```
+
+`--twin_workload_duration_seconds` (and `--twin_workload_rate`) are part of the
+calibration contract and must match the values used by `collect_live_calibration`;
+the trainer refuses phases shorter than two Prometheus scrapes before loading the
+model (150s on a 1m scrape cadence).
 
 The downstream provider/model remains independently configurable. Production
 training never edits frozen labels. `--allow_uncalibrated_live_reward` and offline
@@ -201,3 +208,123 @@ unit tests are mocked. CPU tests do not establish Qwen GPU throughput, a live Tw
 fidelity, threshold separability, real resource savings, or real-cluster repair
 success. Run the live control/recovery workflow and held-out evaluation on the
 patched branch before treating a new experiment as reportable.
+
+## Integration on the training host (9 September 2026)
+
+The audit branch was integrated into `training-pipeline-v0` on the host that runs
+training. Several assumptions in this document did not hold there; the
+qualifications below take precedence on that host and are recorded in
+[VALIDATION.md](VALIDATION.md).
+
+### The pre-correction run is preserved, not migrated
+
+W&B run `wsxhzf27` (`/mnt/aiops-training/runs/live-grpo-stage1`) was stopped at
+bundle update 132 immediately after its checkpoint was written. The corrected
+pipeline intentionally rejects that configuration (tempered sampling, load-time
+label corrections, an unfrozen abstraction contract, uncalibrated live reward); no
+bypass flag was added. The run resumes from a frozen copy of its own execution
+environment instead:
+
+- `/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/` holds the last complete
+  checkpoint with both optimizer states (outside checkpoint pruning, hash-verified),
+  run manifests, exact launch arguments, dataset/selection references, the
+  `.venv-training` package list, and the AIOpsLab submodule state including the
+  dirty nested `aiopslab-applications` submodule.
+- `/home/ubuntu/multiagent_IBM-legacy-wsxhzf27` is a git worktree pinned to
+  `e885485` (the last pre-audit commit) with `AIOpsLab` symlinked to the live
+  checkout; `resume_legacy_wsxhzf27.sh` in the backup directory resumes the run
+  from there into the same W&B run id. It refuses to start while `aiops-twin-*`
+  namespaces exist. Do not upgrade `.venv-training` if that run must stay
+  reproducible; snapshot it first.
+
+Results from that run remain an exploratory, pre-correction experiment and cannot
+be relabeled as having used the corrected pipeline.
+
+### Stop the trainer before touching the checkout
+
+`SparseLiveTwinVerifier._abstract` runs `state_abstraction_full/run_pipeline.py`
+as a subprocess for every Twin phase, so a running trainer reads files from the
+checkout even though its own Python modules are already imported. Stop the
+trainer, confirm no `run_pipeline.py` children remain, and delete any leftover
+`aiops-twin-*` namespaces (Kubernetes workloads do not stop with the parent)
+before switching branches or editing the tree.
+
+### AIOpsLab submodule on this host
+
+The gitlink pins `3538780`, but the host checkout is `b56eda8` plus local edits
+and an untracked corpus; `git submodule update --init --recursive` must **not** be
+run there (it would reset that work). The scenario identity fix was ported by
+hand into `AIOpsLab/gen_and_telmetry.py` (multifault specs pass through
+`attach_scenario_identity`; `main()` enumerates `unique_scenarios`) and the helper
+was installed as `AIOpsLab/scenario_identity.py`. `scripts/regen/apply_aiopslab_patches.py`
+recognizes a ported generator and leaves it alone. The pre-port file is kept in
+the legacy backup under `source/`.
+
+Multifault ids now carry a `--<24 hex>` parameter hash. `dataset_generation/regenerate.py`
+attaches the identity to every spec it runs, matches queue files written with the
+legacy ids, and journals `legacy_problem_id` next to `problem_id` in the shard log;
+new split/selection files must use the new ids.
+
+### Prometheus scrape cadence and phase length
+
+The cluster's Prometheus scrapes every **1m**. A phase-bounded `rate()` needs two
+samples inside the phase, so the default 30s workload observed zero pods. The
+trainer, the verifier and the collector now read the global `scrape_interval`
+from the Prometheus API and refuse any phase shorter than
+`2 * scrape_interval + 5s`; the lookback is never widened into an earlier phase.
+On this cluster use `--twin_workload_duration_seconds 150` for training and
+`--workload_duration_seconds 150` for `collect_live_calibration`, or lower the
+Prometheus global `scrape_interval` (15s makes 40s phases sufficient). The scrape
+interval is part of the reference environment fingerprint, so controls must be
+recollected after changing it. Per-pod sample coverage is recorded in
+`collection_metadata.json` (`resources.metric_sample_coverage`); pods with fewer
+than two samples in the phase invalidate the CPU/memory measurement but do not
+fail the reward channel.
+
+Phase workloads are deduplicated by payload/endpoint, so several symptomatic
+services on the same request path cost one workload run.
+
+### Incident scope on real captures
+
+Captured symptom signatures name pods, containers (`hotel-reserv-geo-mongo`),
+log artifacts (`unknown`), Chaos objects (`container-kill`, `delay`) and volumes
+(`profile-db`) as well as services. The incident scope resolves those names onto
+the deployable service inventory through the comparator aliases, plans entry
+paths for symptomatic services on the request graph, keeps symptomatic datastores
+and infrastructure directly with their startup closure, and requires trace
+coverage only for services the incident's own traces observed. Names that resolve
+to nothing are reported as `unattributed_symptom_names`; inventory names without a
+controller in the healthy reference are `undeployable_inventory_names`. The
+comparator rejects a comparison only when a *deployable* service with symptoms is
+outside scope.
+
+Because every capture in the 622/49 corpus carries background log errors on most
+datastores, incident scopes are large: 25 of 27 services (SocialNetwork) and 19 of
+24 (HotelReservation) on sampled records. That is the corrected contract's
+expected outcome ("reduction is not forced"), and it means resource-saving claims
+need the matched full-versus-Twin measurement, not the service count.
+
+Open item: the corrected comparator counts restarts as a symptom only while a pod
+is still unready, so incidents whose only surviving evidence is a restart counter
+(recovered `container_kill` captures) have no request-path symptom and fail closed
+as unverifiable. Decide whether restart evidence should re-enter the incident-side
+signature before rebuilding the corpus.
+
+### transformers 5
+
+`.venv-training` runs transformers 5.16.1, which removed `use_model_defaults` and
+merges `model.generation_config` into unset generation fields. The sampler pins the
+raw-softmax contract by neutralizing the owning module's generation defaults for
+the duration of each call and restores them afterwards;
+`tests/test_server_integration_fixes.py` checks generated scores against raw
+logits for both adapters on the installed stack.
+
+### Lineage when reusing adapter weights
+
+`update-00000132.pt` from the legacy run may initialize a new experiment only with
+its lineage recorded in the new run manifest, and only after checking that the new
+calibration and test incidents never appeared in that run's training selection
+(`/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/dataset_refs/train_fully_live_reward_admissible.txt`,
+557 ids). The trainer currently has no warm-start mode: `--resume` restores the
+optimizer states and data cursor as well, so a warm start needs a dedicated flag
+before it is used for a reportable experiment.
