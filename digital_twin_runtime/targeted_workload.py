@@ -82,6 +82,24 @@ def _parse_wrk_output(text: str) -> tuple[float | None, int | None, int, int, di
     return rate, total, non_success, application_failures, errors
 
 
+
+WORKLOAD_WAIT_MARGIN_SECONDS = 60.0
+
+
+def workload_timeout_seconds(duration_seconds: int, timeout_seconds: float | None = None) -> float:
+    """How long to wait for a phase workload Job.
+
+    The wait must cover the requested wrk2 duration plus Job scheduling and
+    image start; a fixed timeout shorter than the phase silently reported long
+    phases as failed workloads.
+    """
+    minimum = float(int(duration_seconds)) + WORKLOAD_WAIT_MARGIN_SECONDS
+    if timeout_seconds is None:
+        return minimum
+    if float(timeout_seconds) < float(int(duration_seconds)):
+        raise ValueError(f"workload timeout {timeout_seconds}s is shorter than its {duration_seconds}s duration")
+    return float(timeout_seconds)
+
 def run_targeted_wrk(
     session: SparseLiveTwinSession,
     *,
@@ -93,7 +111,7 @@ def run_targeted_wrk(
     frontend_port: int = 8080,
     rate: int = 10,
     duration_seconds: int = 10,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float | None = None,
 ) -> WorkloadResult:
     """Run the established AIOpsLab wrk2 client inside the Twin namespace."""
     if not session.applied:
@@ -117,6 +135,7 @@ end
 """
     # Unique create-only resources are also safe in an existing application
     # namespace. Never apply over another verifier's workload or payload.
+    timeout_seconds = workload_timeout_seconds(duration_seconds, timeout_seconds)
     suffix = uuid.uuid4().hex[:20]
     cm_name = "twin-wrk2-payload-" + suffix
     job_name = "twin-wrk2-job-" + suffix

@@ -19,6 +19,7 @@ from digital_twin_runtime.targeted_telemetry import (
     collect_targeted_telemetry, discover_prometheus_scrape_interval, minimum_phase_window_seconds,
     parse_prometheus_duration, require_phase_window_covers_scrapes, scrape_interval_from_config_yaml,
 )
+from digital_twin_runtime.targeted_workload import WORKLOAD_WAIT_MARGIN_SECONDS, workload_timeout_seconds
 from training_pipeline.audit_hf_exact_token_sampler import TinyTokenizer, _build_model
 from training_pipeline.hf_exact_token_sampler import (
     ExactTokenGenerationConfig, HFExactTokenPolicySampler, _generation_defaults_owner,
@@ -128,6 +129,15 @@ class SymptomAttributionTests(unittest.TestCase):
         rejected = compare_symptoms_scoped(wider, wider, scope, target_services=scope, attributable_services=attributable)
         self.assertFalse(rejected["incident_scope_coverage_complete"])
         self.assertEqual(rejected["reproduction_score"], 0)
+
+
+class WorkloadTimeoutTests(unittest.TestCase):
+    def test_wait_covers_the_requested_phase(self):
+        # A 150s phase at a 1m scrape cadence was abandoned by the old fixed 60s wait.
+        self.assertEqual(workload_timeout_seconds(150), 150 + WORKLOAD_WAIT_MARGIN_SECONDS)
+        self.assertEqual(workload_timeout_seconds(30, 90), 90)
+        with self.assertRaisesRegex(ValueError, "shorter"):
+            workload_timeout_seconds(150, 60)
 
 
 class ScrapeIntervalTests(unittest.TestCase):
