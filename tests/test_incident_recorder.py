@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from dataset_generation.record_incident_capture import (
-    PRIVATE_FILES, RecorderConfig, SourceSession, injection_evidence, record_scenario, run_phase,
-    select_workloads, spec_targets,
+    PRIVATE_FILES, RecorderConfig, SourceSession, fingerprint_drift, injection_evidence, record_scenario, run_phase,
+    select_workloads, source_fingerprint, spec_targets,
 )
 from digital_twin_runtime.targeted_telemetry import MEASUREMENT_CONTRACT
 
@@ -130,6 +130,30 @@ class RecorderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no faulty service"):
             spec_targets(spec(faulty_service=None, mode="constructor_app"))
 
+    def test_unrecovered_spec_mutation_is_fatal_even_when_pods_are_ready(self):
+        objects = [{"kind": "Service", "metadata": {"name": "user-service", "resourceVersion": "1"},
+                    "spec": {"ports": [{"port": 9090, "targetPort": 9090}]}},
+                   {"kind": "Deployment", "metadata": {"name": "user-service"}, "spec": {"replicas": 1}}]
+        reference = source_fingerprint(objects)
+        same = [dict(o, metadata={**o["metadata"], "resourceVersion": "2"}) for o in objects]
+        self.assertEqual(fingerprint_drift(reference, source_fingerprint(same)), {"changed": [], "missing": [], "added": []})
+        faulted = json.loads(json.dumps(objects)); faulted[0]["spec"]["ports"][0]["targetPort"] = 65534
+        self.assertEqual(fingerprint_drift(reference, source_fingerprint(faulted))["changed"], ["Service/user-service"])
+        state = {"objects": objects}
+        def load(ns):
+            return state["objects"]
+        problem = FakeProblem(self.journal, self.events)
+        def leaky_recover():
+            self.events.append("recover"); state["objects"] = faulted
+        problem.recover_fault = leaky_recover
+        with self.assertRaisesRegex(RuntimeError, "spec drift"):
+            record_scenario(spec(), cfg=self.cfg, generator=FakeGenerator(), problem_factory=lambda: problem,
+                            session=self.session, verifier=self.verifier, journal=self.journal, scrape_interval=60,
+                            is_clean=lambda ns: (True, {}), wait_clean=lambda ns, t: (True, {"reason": "clean"}),
+                            phase_runner=self.phase_runner, abstractor=self.abstractor, sleep=lambda s_: None,
+                            reference_fingerprint=reference, load_objects=load)
+        self.assertIn("recover", self.events)
+
     def test_evidence_rule_matches_regeneration(self):
         rows = [{"mechanism": "m", "service": "a", "applied": True, "manifested": True},
                 {"mechanism": "m", "service": "b", "applied": True, "manifested": False}]
@@ -177,3 +201,53 @@ class PilotControlTests(unittest.TestCase):
         self.assertEqual(controls["wrong_mechanism"][0].service, "frontend")
         self.assertNotEqual(controls["wrong_mechanism"][0].fault_mechanism, "network_delay")
         self.assertEqual(controls["positive"], [label])
+
+
+class SourceHealthTests(unittest.TestCase):
+    def test_service_left_at_fault_target_port_is_misrouted(self):
+        from dataset_generation.warm_cluster import misrouted_services
+        pods = [{"metadata": {"labels": {"service": "user-service"}},
+                 "spec": {"containers": [{"ports": [{"containerPort": 9090, "name": "thrift"}]}]}}]
+        healthy = [{"metadata": {"name": "user-service"}, "spec": {"selector": {"service": "user-service"}, "ports": [{"port": 9090, "targetPort": 9090}]}}]
+        faulted = [{"metadata": {"name": "user-service"}, "spec": {"selector": {"service": "user-service"}, "ports": [{"port": 9090, "targetPort": 65534}]}}]
+        named = [{"metadata": {"name": "user-service"}, "spec": {"selector": {"service": "user-service"}, "ports": [{"port": 9090, "targetPort": "thrift"}]}}]
+        headless = [{"metadata": {"name": "x"}, "spec": {"ports": [{"port": 1, "targetPort": 65534}]}}]
+        declared_mismatch = [{"metadata": {"name": "media-frontend"}, "spec": {"selector": {"service": "media-frontend"}, "ports": [{"port": 8081, "targetPort": 8080}]}}]
+        self.assertEqual(misrouted_services(healthy, pods), {})
+        self.assertEqual(misrouted_services(named, pods), {})
+        self.assertEqual(misrouted_services(declared_mismatch, pods), {})  # declared containerPorts are not ground truth
+        self.assertEqual(list(misrouted_services(headless, pods)), ["x"])
+        self.assertEqual(list(misrouted_services(faulted, pods)), ["user-service"])
+        self.assertEqual(misrouted_services(faulted, pods)["user-service"][0]["targetPort"], 65534)
+
+    def test_target_port_injection_refuses_an_already_faulted_source(self):
+        from dataset_generation import injector_fixes
+        faulted = {"metadata": {"name": "user-service"}, "spec": {"ports": [{"port": 9090, "targetPort": 65534}]}}
+        with patch.object(injector_fixes, "_service", return_value=faulted), patch.object(injector_fixes, "_apply") as apply:
+            with self.assertRaisesRegex(injector_fixes.MutationDiscoveryError, "already_misconfigured"):
+                injector_fixes._patched_misconfig_k8s(SimpleNamespace(namespace="ns"), ["user-service"])
+        apply.assert_not_called()
+
+    def test_target_port_snapshot_is_not_aliased_by_the_mutation(self):
+        from dataset_generation import injector_fixes
+        healthy = {"metadata": {"name": "user-service", "resourceVersion": "1"}, "spec": {"ports": [{"port": 9090, "targetPort": 9090}]}}
+        applied = []
+        state = {"svc": healthy}
+        def service(ns, name):
+            return json.loads(json.dumps(state["svc"]))
+        def apply(obj, operation):
+            applied.append((operation, obj["spec"]["ports"][0]["targetPort"])); state["svc"] = obj
+        injector = SimpleNamespace(namespace="ns")
+        with patch.object(injector_fixes, "_service", side_effect=service), patch.object(injector_fixes, "_apply", side_effect=apply), \
+             patch.object(injector_fixes, "_wait_for", return_value=True):
+            injector_fixes._patched_misconfig_k8s(injector, ["user-service"])
+            self.assertEqual(state["svc"]["spec"]["ports"][0]["targetPort"], 65534)
+            injector_fixes._patched_recover_misconfig_k8s(injector, ["user-service"])
+        self.assertEqual([port for _, port in applied], [65534, 9090])
+        self.assertEqual(state["svc"]["spec"]["ports"][0]["targetPort"], 9090)
+
+    def test_target_port_recovery_never_silently_skips(self):
+        from dataset_generation import injector_fixes
+        injector_fixes._ORIGINAL_SERVICES.pop(("ns", "user-service"), None)
+        with self.assertRaisesRegex(RuntimeError, "no recorded original"):
+            injector_fixes._patched_recover_misconfig_k8s(SimpleNamespace(namespace="ns"), ["user-service"])

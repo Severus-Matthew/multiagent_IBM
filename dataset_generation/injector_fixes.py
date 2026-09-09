@@ -188,11 +188,19 @@ def _service(namespace: str, service: str) -> dict[str, Any]:
 def _patched_misconfig_k8s(self: Any, microservices: list[str]) -> None:
     for service in microservices:
         live = _strip_runtime_fields(_service(self.namespace, service))
-        _ORIGINAL_SERVICES[(self.namespace, service)] = live
+        # Snapshot a copy: the live object is mutated in place below, and a
+        # by-reference snapshot made recovery re-apply the fault (found on the
+        # training host on 9 September; every earlier target-port capture left
+        # its source Service at 65534).
+        _ORIGINAL_SERVICES[(self.namespace, service)] = json.loads(json.dumps(live))
         ports = (live.get("spec", {}) or {}).get("ports", []) or []
         if not ports:
             raise MutationDiscoveryError("service_has_no_ports", service=service)
         original = ports[0].get("targetPort", ports[0].get("port"))
+        if original == 65534:
+            # The source is still carrying this fault from an earlier, unrecovered
+            # injection; snapshotting it would make recovery restore the fault.
+            raise MutationDiscoveryError("service_already_misconfigured", service=service)
         ports[0]["targetPort"] = 65534
         _apply(live, f"misconfigure target port on {service}")
         manifested = _wait_for(
@@ -206,8 +214,17 @@ def _patched_misconfig_k8s(self: Any, microservices: list[str]) -> None:
 def _patched_recover_misconfig_k8s(self: Any, microservices: list[str]) -> None:
     for service in microservices:
         original = _ORIGINAL_SERVICES.get((self.namespace, service))
-        if original:
-            _apply(original, f"restore target port on {service}")
+        if not original:
+            raise RuntimeError(f"no recorded original Service for {service}; cannot restore its target port")
+        _apply(original, f"restore target port on {service}")
+        restored = _wait_for(
+            lambda: ((_service(self.namespace, service).get("spec", {}) or {})
+                     .get("ports", [{}])[0].get("targetPort") != 65534)
+        )
+        _record("target_port_misconfig", service, True, manifested=restored, phase="recovery",
+                restored_target_port=(original.get("spec", {}).get("ports", [{}])[0].get("targetPort")))
+        if not restored:
+            raise RuntimeError(f"target port on {service} was not restored")
 
 
 def _patched_scale_zero(self: Any, microservices: list[str]) -> None:
@@ -547,7 +564,7 @@ def _patched_misconfig_app(self: Any, microservices: list[str]) -> None:
             root = resolve_application_source_root(bundle, _application_source_roots())
             corruption = discover_config_corruption(bundle, service, application_source_root=root)
             live = _strip_runtime_fields(_deployment(namespace, service))
-            _ORIGINAL_DEPLOYMENTS[(namespace, service, "config")] = live
+            _ORIGINAL_DEPLOYMENTS[(namespace, service, "config")] = json.loads(json.dumps(live))
             if corruption.target_kind != "ConfigFile":
                 raise MutationDiscoveryError(
                     "generator_config_fault_supports_image_config_files_only",

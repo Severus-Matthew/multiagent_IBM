@@ -45,6 +45,31 @@ def _items(kind: str, namespace: str) -> list[dict[str, Any]]:
         return []
 
 
+FAULT_TARGET_PORTS = {65534}
+
+
+def misrouted_services(services: list[dict[str, Any]], pods: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Services still carrying an injected target-port fault value.
+
+    A Service left at 65534 keeps every pod Running and every Deployment
+    available, so readiness alone reports a clean namespace while every request
+    through that Service fails. Declared ``containerPort`` values are not used
+    as ground truth: on this host ``media-frontend`` declares 8081 but listens
+    on 8080 and its Service is correct. Any other unrecovered mutation is caught
+    by the recorder's source fingerprint, not by this check.
+    """
+    del pods
+    out: dict[str, Any] = {}
+    for service in services:
+        spec = service.get("spec", {}) or {}
+        bad = [{"port": port.get("port"), "targetPort": port.get("targetPort")}
+               for port in spec.get("ports", []) or []
+               if isinstance(port.get("targetPort"), int) and port.get("targetPort") in FAULT_TARGET_PORTS]
+        if bad:
+            out[str((service.get("metadata", {}) or {}).get("name"))] = bad
+    return out
+
+
 def namespace_is_clean(namespace: str) -> tuple[bool, dict[str, Any]]:
     """Whether a namespace holds a fully available, un-faulted application."""
     report: dict[str, Any] = {"namespace": namespace}
@@ -82,6 +107,10 @@ def namespace_is_clean(namespace: str) -> tuple[bool, dict[str, Any]]:
     ]
     if chaos:
         report["reason"], report["chaos_objects"] = "chaos_objects_present", chaos
+        return False, report
+    misrouted = misrouted_services(_items("services", namespace), _items("pods", namespace))
+    if misrouted:
+        report["reason"], report["services_misrouted"] = "services_misrouted", misrouted
         return False, report
     overlays = [
         str((c.get("metadata", {}) or {}).get("name"))

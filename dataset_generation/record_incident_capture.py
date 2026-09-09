@@ -93,11 +93,42 @@ def _kubectl_json(args: list[str]) -> dict[str, Any]:
     return json.loads(proc.stdout or "{}")
 
 
-def load_source_session(namespace: str) -> SourceSession:
+def load_source_objects(namespace: str) -> list[dict[str, Any]]:
     items = _kubectl_json(["get", "deployments,statefulsets,services", "-n", namespace]).get("items", [])
     for item in items:
         item.setdefault("kind", "")
-    return SourceSession(namespace, items)
+    return items
+
+
+def load_source_session(namespace: str) -> SourceSession:
+    return SourceSession(namespace, load_source_objects(namespace))
+
+
+_RUNTIME_METADATA = ("resourceVersion", "uid", "creationTimestamp", "generation", "managedFields", "selfLink")
+
+
+def _stripped_spec(obj: dict[str, Any]) -> dict[str, Any]:
+    meta = obj.get("metadata", {}) or {}
+    annotations = {k: v for k, v in (meta.get("annotations") or {}).items()
+                   if not k.startswith("kubectl.kubernetes.io/") and not k.startswith("deployment.kubernetes.io/")}
+    return {"kind": obj.get("kind"), "name": meta.get("name"), "labels": meta.get("labels") or {},
+            "annotations": annotations, "spec": obj.get("spec", {}) or {}}
+
+
+def source_fingerprint(objects: list[dict[str, Any]]) -> dict[str, str]:
+    """Per-object digest of controller and Service specs (runtime fields and status excluded)."""
+    out: dict[str, str] = {}
+    for obj in objects:
+        spec = _stripped_spec(obj)
+        out[f"{spec['kind']}/{spec['name']}"] = hashlib.sha256(json.dumps(spec, sort_keys=True, default=str).encode()).hexdigest()
+    return out
+
+
+def fingerprint_drift(reference: dict[str, str], current: dict[str, str]) -> dict[str, list[str]]:
+    """Objects whose spec changed, appeared or vanished relative to the clean reference."""
+    return {"changed": sorted(k for k in reference if k in current and current[k] != reference[k]),
+            "missing": sorted(k for k in reference if k not in current),
+            "added": sorted(k for k in current if k not in reference)}
 
 
 def twin_namespaces_present() -> list[str]:
@@ -193,7 +224,9 @@ def record_scenario(spec: dict[str, Any], *, cfg: RecorderConfig, generator: Any
                     wait_clean: Callable[[str, float], tuple[bool, dict[str, Any]]],
                     phase_runner: Callable[..., dict[str, Any]] = run_phase,
                     abstractor: Callable[..., dict[str, Any]] = abstract_phase,
-                    sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+                    sleep: Callable[[float], None] = time.sleep,
+                    reference_fingerprint: dict[str, str] | None = None,
+                    load_objects: Callable[[str], list[dict[str, Any]]] = load_source_objects) -> dict[str, Any]:
     problem_id = str(spec["problem_id"])
     scenario_dir = cfg.output_dir / "raw" / problem_id
     if scenario_dir.exists():
@@ -204,6 +237,13 @@ def record_scenario(spec: dict[str, Any], *, cfg: RecorderConfig, generator: Any
     ok, report = is_clean(session.namespace)
     if not ok:
         raise RuntimeError(f"source namespace is not clean before recording: {report}")
+    # Readiness cannot see an unrecovered spec mutation (a Service left at the
+    # fault target port keeps every pod Running). Compare the controller and
+    # Service specs with the clean reference taken at the start of the run.
+    if reference_fingerprint is not None:
+        drift = fingerprint_drift(reference_fingerprint, source_fingerprint(load_objects(session.namespace)))
+        if any(drift.values()):
+            raise RuntimeError(f"source namespace drifted from its clean reference before recording: {drift}")
     scenario_dir.mkdir(parents=True)
     workloads = select_workloads(verifier, targets)
     row["workloads"] = workloads
@@ -255,6 +295,11 @@ def record_scenario(spec: dict[str, Any], *, cfg: RecorderConfig, generator: Any
             row["recovery_report"] = report
     if not recovered:
         raise RuntimeError(f"source namespace did not return to a clean state after recovery: {report}")
+    if reference_fingerprint is not None:
+        drift = fingerprint_drift(reference_fingerprint, source_fingerprint(load_objects(session.namespace)))
+        row["post_recovery_drift"] = drift
+        if any(drift.values()):
+            raise RuntimeError(f"source namespace did not return to a clean state after recovery: spec drift {drift}")
     if cfg.capture_recovered:
         row["phases"]["recovered"] = phase_runner(session, verifier.runtime_profile, workloads, "recovered",
                                                   scenario_dir / "recovered", scrape_interval=scrape_interval, cfg=cfg)
@@ -348,6 +393,7 @@ def main() -> int:
     (output / "accepted").mkdir(exist_ok=True)
     print(json.dumps({"event": "start", "specs": len(specs), "missing": missing, "scrape_interval": scrape_interval}), flush=True)
     sessions: dict[str, tuple[SourceSession, Any]] = {}
+    fingerprints: dict[str, dict[str, str]] = {}
     for spec in specs:
         app = str(spec.get("app") or spec.get("app_name") or "")
         row: dict[str, Any] = {"problem_id": spec.get("problem_id"), "app": app, "started_unix": time.time()}
@@ -355,6 +401,10 @@ def main() -> int:
             namespace = cfg.source_namespaces[app]
             if app not in sessions:
                 session = load_source_session(namespace)
+                clean_now, clean_report = namespace_is_clean(namespace)
+                if not clean_now:
+                    raise RuntimeError(f"source namespace is not clean at run start: {clean_report}")
+                fingerprints[app] = source_fingerprint(session.bundle.objects)
                 verifier = SparseLiveTwinVerifier(SparseLiveVerifierConfig(
                     source_namespace=namespace,
                     application_source_root=str(aiopslab_root / "aiopslab-applications" / cfg.app_roots[app]),
@@ -366,12 +416,14 @@ def main() -> int:
             session, verifier = sessions[app]
             row.update(record_scenario(spec, cfg=cfg, generator=generator, problem_factory=generator.make_problem_factory(spec),
                                        session=session, verifier=verifier, journal=INJECTION_JOURNAL,
-                                       scrape_interval=scrape_interval, is_clean=namespace_is_clean, wait_clean=wait_until_clean))
+                                       scrape_interval=scrape_interval, is_clean=namespace_is_clean, wait_clean=wait_until_clean,
+                                       reference_fingerprint=fingerprints.get(app)))
             if row.get("accepted"):
                 (output / "accepted" / f"{spec['problem_id']}.json").write_text(json.dumps(row, indent=2, default=str))
         except Exception as exc:  # noqa: BLE001 - journal and continue unless the source is unhealthy
             row.update({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-2000:], "accepted": False})
-            fatal = "did not return to a clean state" in str(exc) or "not clean before recording" in str(exc)
+            fatal = ("did not return to a clean state" in str(exc) or "not clean before recording" in str(exc)
+                     or "drifted from its clean reference" in str(exc))
             row["fatal"] = fatal
         row["elapsed_seconds"] = round(time.time() - row["started_unix"], 1)
         log.write(json.dumps(row, default=str) + "\n"); log.flush()
