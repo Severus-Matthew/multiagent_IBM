@@ -149,8 +149,8 @@ catalog complete, clean baseline 0 non-2xx):
 | Control | Hypothesis | Score | Clean | Gate | dep | edges |
 |---|---|---:|---:|---|---:|---:|
 | positive | frontend / network_delay | **1.000** | 0.583 | pass | 1.0 | 1.0 |
-| wrong service | geo / network_delay | 0.583 | 0.583 | reject | 1.0 | 0.0 |
-| wrong mechanism | frontend / scale_replicas_zero | 0.376 | 0.583 | reject | 0.5 | 0.0 |
+| wrong service | consul / network_delay | 0.583 | 0.583 | reject | 1.0 | 0.0 |
+| wrong mechanism | frontend / scale_replicas_zero | 0.376 | 0.583 | reject | 0.914 | 0.0 |
 
 This is the first positive/negative separation on a consistently measured
 capture. It is one incident of one mechanism; it qualifies no threshold

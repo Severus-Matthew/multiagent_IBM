@@ -31,11 +31,19 @@ SCORE_KEYS = ("reproduction_score", "clean_reproduction_score", "counterfactual_
               "log_error_service_overlap", "active_channel_weights", "telemetry_incomplete", "reason")
 
 
-def pilot_controls(labels: list[FaultLabel], request_path_targets: list[str], scope: list[str]) -> list[tuple[str, list[FaultLabel]]]:
-    """positive, one wrong-service, one wrong-mechanism; deterministic and label-derived."""
+def pilot_controls(labels: list[FaultLabel], request_path_targets: list[str], scope: list[str],
+                   trace_endpoints: list[str] | None = None) -> list[tuple[str, list[FaultLabel]]]:
+    """positive, one wrong-service, one wrong-mechanism; deterministic and label-derived.
+
+    The wrong-service control prefers another symptomatic request-path target,
+    then a service the incident's traces observed (so the wrong hypothesis is
+    at least exercised by the workload), then any scoped service.
+    """
     root = labels[0]
     controls: list[tuple[str, list[FaultLabel]]] = [("positive", list(labels))]
-    others = [s for s in request_path_targets if s != root.service] or [s for s in scope if s != root.service]
+    others = ([s for s in request_path_targets if s != root.service]
+              or [s for s in sorted(trace_endpoints or []) if s != root.service and s in scope and s != "ROOT"]
+              or [s for s in scope if s != root.service])
     if others:
         controls.append(("wrong_service", [replace(root, service=others[0], metadata={})]))
     for mechanism in WRONG_MECHANISM_PREFERENCE:
@@ -109,7 +117,10 @@ def main() -> None:
                 if clean_path.is_file():
                     row["self_consistency"] = self_consistency(verifier._incident_state, json.loads(clean_path.read_text()),
                                                                verifier._incident_spec.services_to_keep, summary["deployable_services"])
-            for name, hypothesis in pilot_controls(labels, summary["incident_request_path_targets"], verifier._incident_spec.services_to_keep):
+            trace_endpoints = sorted({str(x) for e in ((verifier._incident_state.get("traces") or {}).get("per_edge") or {}).values()
+                                      if isinstance(e, dict) for x in (e.get("source"), e.get("target")) if x})
+            for name, hypothesis in pilot_controls(labels, summary["incident_request_path_targets"],
+                                                   verifier._incident_spec.services_to_keep, trace_endpoints):
                 if name not in selected_controls:
                     continue
                 verifier.begin_trajectory(f"pilot-{record.scenario_id}-{name}"); started = time.time()

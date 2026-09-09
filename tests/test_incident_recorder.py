@@ -171,6 +171,9 @@ class PilotControlTests(unittest.TestCase):
         controls = dict(pilot_controls([label], ["frontend", "geo"], ["frontend", "geo", "rate"]))
         self.assertEqual(set(controls), {"positive", "wrong_service", "wrong_mechanism"})
         self.assertEqual(controls["wrong_service"][0].service, "geo")
+        # single request-path target: prefer a service the incident's traces observed over the alphabetical scope
+        only = dict(pilot_controls([label], ["frontend"], ["consul", "frontend", "search"], trace_endpoints=["ROOT", "frontend", "search"]))
+        self.assertEqual(only["wrong_service"][0].service, "search")
         self.assertEqual(controls["wrong_mechanism"][0].service, "frontend")
         self.assertNotEqual(controls["wrong_mechanism"][0].fault_mechanism, "network_delay")
         self.assertEqual(controls["positive"], [label])

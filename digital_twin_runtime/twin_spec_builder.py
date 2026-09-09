@@ -541,6 +541,8 @@ def build_incident_twin_spec(compressed_state: dict[str, Any], *,
     affected: set[str] = set()
     unattributed: list[str] = []
     for name in sorted(raw_names):
+        if str(name) == "ROOT":
+            continue  # the synthetic trace root is not a service
         resolved = canonical_service(name, services)
         if resolved is None:
             unattributed.append(str(name))
