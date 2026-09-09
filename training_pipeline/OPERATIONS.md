@@ -282,7 +282,11 @@ than two samples in the phase invalidate the CPU/memory measurement but do not
 fail the reward channel.
 
 Phase workloads are deduplicated by payload/endpoint, so several symptomatic
-services on the same request path cost one workload run.
+services on the same request path cost one workload run. A phase is a fixed
+measurement interval: if the workload dies under the fault (connection refused,
+target scaled to zero) the observation window is still held open until
+``start + workload_duration_seconds`` before collection, in the Twin and in the
+recorder alike, so phases stay comparable and always cover the scrape cadence.
 
 ### Incident scope on real captures
 
