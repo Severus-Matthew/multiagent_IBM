@@ -216,6 +216,25 @@ def main() -> None:
         raise RuntimeError("no labeled scenarios matched the requested audit inputs")
     if unsafe_agent_inputs:
         raise AssertionError(f"unsafe agent-facing inputs detected: {unsafe_agent_inputs}")
+    if not rca_rows and not action_rows:
+        # This CLI deliberately uses BehavioralTwinVerifier. Current production
+        # admission must exclude its offline rewards, even with real HF tokens.
+        # Exact likelihood replay is separately exercised by the sampler audit;
+        # do not fabricate live qualification to manufacture optimizer rows here.
+        all_trajectories = []
+        for line in trajectory_path.read_text().splitlines():
+            all_trajectories.extend(json.loads(line)["trajectories"])
+        if any(t.get("reward", {}).get("components", {}).get("optimizer_credit_eligible")
+               for t in all_trajectories):
+            raise AssertionError("offline trajectory was incorrectly admitted")
+        summary = {"status": "PASS_OFFLINE_ADMISSION", "scenario_count": scenario_count,
+                   "trajectory_count": trajectory_count, "optimizer_rows": 0,
+                   "unsafe_agent_inputs": unsafe_agent_inputs, "uses_real_training_update": False,
+                   "canonical_joint_rollout_path": True, "real_hf_prompt_policies": True,
+                   "likelihood_replay_audit": "training_pipeline.audit_hf_exact_token_sampler"}
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+        print(json.dumps(summary, indent=2))
+        return
     if not rca_rows or not action_rows:
         raise AssertionError("canonical end-to-end audit must emit both RCA and Action optimizer rows")
 

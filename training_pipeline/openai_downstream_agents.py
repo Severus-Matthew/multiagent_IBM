@@ -87,7 +87,7 @@ class OpenAIRCAAgent(_ResponsesAgent):
                 "You are a fixed Kubernetes root-cause agent. Use the policy instruction as search guidance, "
                 "but independently inspect all supplied redacted telemetry, especially Kubernetes desired/ready "
                 "replicas, scheduling conditions, Services, endpoints, ports, events, logs, metrics, and traces. "
-                "Return only service::fault_type::injectible_mechanism[::variant] lines, with no prose. "
+                "Return one physical line of service::fault_type::injectible_mechanism[::variant] roots separated by ` | `, with no prose. "
                 "For scale_replicas_zero use scale_0, scale_2, or scale_3 when evidence supports it; "
                 "for network_delay use delay_100ms, delay_300ms, or delay_1000ms; for network_loss "
                 "use loss_5pct, loss_20pct, or loss_50pct. Omit the variant only for default. "
@@ -130,7 +130,7 @@ class OpenAIActionAgent(_ResponsesAgent):
             role="action",
             instructions=(
                 "You are a fixed Kubernetes remediation agent. Return only safe namespace-scoped "
-                "kubectl, helm, or mongosh commands, one per line; no markdown or prose. Never use "
+                "kubectl commands, one per line; no markdown or prose. Never use "
                 "exec, apply, replace, pipelines, broad deletes, or cluster-wide flags."
             ),
             payload={"policy_instruction": instruction_prompt, "context": context},

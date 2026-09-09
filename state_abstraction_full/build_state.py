@@ -55,7 +55,10 @@ def build_state(run_dir):
     metrics = derive_latency(metrics, traces)
     static_services, static_edges = parse_static_topology(run_dir, services)
     services = sorted(set(services) | set(static_services))
-    workload = parse_workload_from_traces(traces)
+    collection = read_json(run_dir / "collection_metadata.json") or {}
+    window = collection.get("window", {}) or {}
+    observation_seconds = window.get("duration_seconds")
+    workload = parse_workload_from_traces(traces, observation_seconds=observation_seconds)
     graph = build_graph(services, metrics, logs, system, traces, observed_edges, static_edges)
     graph_services = sorted(graph["nodes"].keys())
     graph_view = {"services": graph_services, "edges": graph["edges"]}

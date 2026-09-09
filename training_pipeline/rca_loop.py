@@ -53,7 +53,7 @@ class HeuristicRCAInstructionPolicy:
         return (
             "Read only the redacted telemetry. "
             + strategy
-            + " Output only service::fault_type::injectible_mechanism, one root cause per line."
+            + " Output only service::fault_type::injectible_mechanism, one physical line total; separate multiple roots with ` | `."
             + retry
         )
 
@@ -180,7 +180,7 @@ def build_rca_policy_prompt(
     """
     payload = {
         "task": "Generate an RCA instruction prompt for a fixed RCA solver.",
-        "solver_output_contract": "The solver must output one service::fault_type::injectible_mechanism line per root cause.",
+        "solver_output_contract": "The solver must output one physical line of service::fault_type::injectible_mechanism roots separated by ` | `.",
         "iteration": iteration,
         "max_iterations": max_iterations,
         "redacted_state": compressed_state,
@@ -396,6 +396,8 @@ def run_rca_grpo_episode(
 
             prediction_text = solver.solve(agent_state, instruction)
             pred_labels = parse_fault_lines(prediction_text)
+            if pred_labels:
+                prediction_text = " | ".join(label.hypothesis_key() for label in pred_labels)
             pred_key = _hypothesis_key(pred_labels)
             repeated = bool(pred_key) and pred_key in seen
 

@@ -127,10 +127,10 @@ def end_to_end_reward(
     global_reduction = _clamp01(
         verifier.get("global_symptom_reduction", action_components.get("global_symptom_reduction", 0.0))
     )
-    target_sla_restored = bool(
-        verifier.get("target_sla_restored", action_components.get("target_sla_restored", False))
+    target_sla_satisfied = bool(
+        verifier.get("target_sla_condition_satisfied", verifier.get("target_sla_restored", action_components.get("target_sla_restored", False)))
     )
-    sla_restored = bool(verifier.get("sla_restored", action_components.get("sla_restored", False)))
+    sla_satisfied = bool(verifier.get("sla_condition_satisfied", verifier.get("sla_restored", action_components.get("sla_restored", False))))
     resolved = bool(verifier.get("resolved", action_components.get("resolved", False)))
     skipped_action = bool(action_result.get("skipped_action", False))
     has_rca_prediction = bool(str(rca_result.get("final_prediction") or "").strip())
@@ -147,17 +147,17 @@ def end_to_end_reward(
     if telemetry_incomplete or after_state_observed is not True or not live_reward:
         target_reduction = 0.0
         global_reduction = 0.0
-        target_sla_restored = False
-        sla_restored = False
+        target_sla_satisfied = False
+        sla_satisfied = False
         resolved = False
 
     improvement_credit = max(target_reduction, global_reduction)
-    observable_improvement = bool(improvement_credit > 0.0 or target_sla_restored or sla_restored)
+    observable_improvement = bool(improvement_credit > 0.0 or target_sla_satisfied or sla_satisfied)
     full_success = bool(
         safe
         and has_mutation
         and resolved
-        and (target_sla_restored or sla_restored)
+        and (target_sla_satisfied or sla_satisfied)
         and after_state_observed is True
     )
 
@@ -174,7 +174,7 @@ def end_to_end_reward(
         0.40 * improvement_credit
         + 0.35 * float(full_success)
         + 0.15 * float(action_repairs and (observable_improvement or full_success))
-        + 0.10 * float(target_sla_restored or sla_restored)
+        + 0.10 * float(target_sla_satisfied or sla_satisfied)
     ) if safe and (observable_improvement or full_success) else 0.0
 
     action_penalty = (
@@ -250,10 +250,7 @@ def end_to_end_reward(
             "telemetry_incomplete": telemetry_incomplete,
             "optimizer_credit_eligible": optimizer_credit_eligible,
             "rca_public_progress": round(twin_score, 6),
-            "rca_twin_verified": bool(
-                rca_components.get("rca_twin_verified")
-                or rca_components.get("predicted_fault_injection_checked")
-            ) and twin_score > 0.0,
+            "rca_twin_verified": bool(gate.get("rca_twin_verified", rca_components.get("rca_twin_verified", False))),
             "count_mismatch_rate": round(count_mismatch_rate, 6),
             "rca_downstream_credit_weight": round(rca_downstream_weight, 6),
             "action_local_reward_raw_diagnostic_only": round(action_local_raw, 6),
@@ -265,8 +262,11 @@ def end_to_end_reward(
             "action_repairs_fault_type": action_repairs,
             "target_symptom_reduction": round(target_reduction, 6),
             "global_symptom_reduction": round(global_reduction, 6),
-            "target_sla_restored": target_sla_restored,
-            "sla_restored": sla_restored,
+            "target_sla_condition_satisfied": target_sla_satisfied,
+            "target_sla_restored": bool(verifier.get("target_sla_restored", False)),
+            "sla_condition_satisfied": sla_satisfied,
+            "sla_restored": bool(verifier.get("sla_restored", False)),
+            "sla_restoration_applicable": verifier.get("sla_restoration_applicable"),
             "resolved": resolved,
             "after_state_observed": after_state_observed,
             "improvement_credit": round(improvement_credit, 6),

@@ -308,7 +308,24 @@ def run_action_prompt_optimizer_loop(
     current_sla = sla_verdict_from_state(compressed_state)
     scenario_id = _scenario_id(full_state, compressed_state)
 
+    if getattr(twin_verifier, "is_live", False) and group_size != 1:
+        raise ValueError("live action candidates must be separate trajectories, each with its own fault state")
     for iteration in range(max_iterations):
+        prepare_attempt = getattr(twin_verifier, "prepare_action_attempt", None)
+        if callable(prepare_attempt) and getattr(twin_verifier, "is_live", False):
+            try:
+                gate = prepare_attempt(rca_faults)
+                public_gate = _public_rca_gate(gate)
+                namespace = _namespace(full_state, compressed_state, twin_verifier)
+            except Exception as exc:
+                if attempts:
+                    attempts[-1].reward_components["telemetry_incomplete"] = True
+                    attempts[-1].verifier_result["telemetry_incomplete"] = True
+                    attempts[-1].feedback = f"Fresh fault-state preparation failed: {type(exc).__name__}"
+                    break
+                return _blocked_by_rca_gate_result(full_state, compressed_state, rca_result, rca_faults,
+                    {**gate, "rca_twin_verified": False, "telemetry_incomplete": True,
+                     "reason": f"fresh_fault_state_failed:{type(exc).__name__}"}, max_iterations)
         group_id = f"action:{scenario_id}:iter{iteration}"
         policy_prompt = _build_action_policy_prompt(
             agent_state=agent_state,
@@ -337,12 +354,12 @@ def run_action_prompt_optimizer_loop(
                 "redacted_state": agent_state,
                 "previous_attempts": history,
                 "recent_performance": recent_performance,
-                "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl/helm/mongosh commands.",
+                "task_instruction": "Generate instructions for a fixed ActionAgent that outputs only kubectl commands.",
                 "action_requirements": [
                     "Use only scoped namespace commands.",
                     "Prefer the minimal remediation matching the predicted RCA fault type.",
                     "If rca_twin_gate.actionable_fault_resources is non-empty, delete only the listed exact resource.",
-                    "Include at least one verification command such as kubectl rollout status, kubectl get, or helm status.",
+                    "Include at least one verification command such as kubectl rollout status or kubectl get.",
                     "Do not use exec, apply, replace, shell pipelines, broad deletes, or cluster-wide flags.",
                 ],
             }
@@ -503,7 +520,7 @@ def _build_action_policy_prompt(
     read like a request for the policy to emit commands itself — the
     ActionAgent (a separate, fixed model called afterward with this policy's
     text embedded as ``policy_instruction``) is the one contractually required
-    to output kubectl/helm/mongosh lines. Earlier wording here put that
+    to output kubectl lines. Earlier wording here put that
     contract in the policy's own prompt without saying whose output it
     described, and the policy — a coding-specialized base model — resolved
     that ambiguity by writing commands itself instead of strategy.
@@ -511,7 +528,7 @@ def _build_action_policy_prompt(
     payload = {
         "task": (
             "Write remediation STRATEGY guidance, in prose, for a separate, fixed ActionAgent "
-            "that will read your guidance and then issue the exact kubectl/helm/mongosh commands. "
+            "that will read your guidance and then issue the exact kubectl commands. "
             "Structure your guidance in three parts, in order: "
             "(1) restate the predicted fault (service, fault type, mechanism) and name the specific "
             "redacted_state field/value that supports it; "
@@ -521,7 +538,7 @@ def _build_action_policy_prompt(
             "commands implementing that fix, including a verification step afterward."
         ),
         "who_outputs_commands": (
-            "The ActionAgent outputs the actual kubectl/helm/mongosh commands, not you. "
+            "The ActionAgent outputs the actual kubectl commands, not you. "
             "Your output is read as instructions/guidance the ActionAgent will follow — "
             "write prose describing the remediation approach and reasoning, not command lines."
         ),
@@ -533,7 +550,7 @@ def _build_action_policy_prompt(
         "redacted_state": agent_state,
         "previous_attempts_non_leaking": history,
         "instruction_requirements": [
-            "Do not write kubectl/helm/mongosh command lines yourself; describe the strategy in prose.",
+            "Do not write kubectl command lines yourself; describe the strategy in prose.",
             "Start by restating the predicted fault (service, fault type, mechanism) and cite the "
             "specific redacted_state field/value that supports it.",
             "Use only the predicted RCA targets, not downstream victims.",

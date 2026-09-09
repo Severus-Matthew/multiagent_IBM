@@ -16,6 +16,7 @@ No oracle/private fields are consulted.
 """
 
 from dataclasses import dataclass
+from copy import deepcopy
 import json
 import math
 from typing import Any
@@ -590,6 +591,11 @@ def build_bounded_agent_state(
     }
 
     # Small structural/global context.
+    # Reference routing/capacity is compact, observable diagnostic evidence.
+    # Keep every affected service's deviation and its corresponding reference.
+    for key in ("observed_deviations", "reference_configuration", "abstraction_contract"):
+        if key in sanitized_state:
+            out[key] = deepcopy(sanitized_state[key])
     for key in ("timestamp", "workload", "services", "clusters", "traces", "sla", "redaction"):
         if key in sanitized_state:
             out[key] = _compact_value(

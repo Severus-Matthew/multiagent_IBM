@@ -493,3 +493,35 @@ def build_oracle_twin_spec(full_state: dict[str, Any], gt_faults: list[FaultLabe
         [x.to_dict() for x in gt_faults],
         reason,
     )
+
+
+def build_incident_twin_spec(compressed_state: dict[str, Any], **budgets: Any) -> TwinSpec:
+    """Freeze scope from observable incident evidence, before any RCA proposal.
+
+    Every observed affected service is retained, with request paths and runtime
+    dependencies. No predicted root, private label, or scenario ID selects scope.
+    A fully connected dependency requirement may legitimately yield no reduction.
+    """
+    from .telemetry_comparator import symptom_signature
+    services = set(compressed_state.get("services") or [])
+    affected = set(symptom_signature(compressed_state)["affected_services"]) & services
+    affected |= set((compressed_state.get("observed_deviations") or {}).keys()) & services
+    if not affected:
+        raise ValueError("no observable incident symptoms or reference-state deviations")
+    # The existing path/closure planner only uses the service field of these
+    # structural seeds. They are not fault hypotheses and are never injected.
+    seeds = [FaultLabel(service=s, fault_type="unknown") for s in sorted(affected)]
+    spec = build_sparse_live_twin_spec(compressed_state, seeds, **budgets)
+    if not affected.issubset(set(spec.services_to_keep)):
+        raise ValueError("incident scope cannot cover all observable affected services")
+    spec.mode = "incident_observable_sparse_live"
+    spec.selection_policy = "hypothesis_independent_incident_scope_v1"
+    spec.target_faults = []
+    spec.resource_summary.update({"incident_affected_services": sorted(affected),
+                                  "scope_depends_on_rca_prediction": False,
+                                  "symptoms_expand_deployment_scope": True})
+    for reasons in spec.reason.values():
+        if "rca_predicted_root_cause" in reasons:
+            reasons.remove("rca_predicted_root_cause")
+            reasons.append("observable_incident_service")
+    return spec

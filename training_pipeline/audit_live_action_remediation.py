@@ -5,13 +5,14 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from digital_twin_runtime.live_action_executor import execute_twin_commands
 from digital_twin_runtime.live_fault_injector import inject_predicted_fault
 from digital_twin_runtime.sparse_live_manifest import discover_sparse_manifest_plan, render_sparse_manifest_bundle
 from digital_twin_runtime.sparse_live_session import SparseLiveTwinSession
-from digital_twin_runtime.targeted_telemetry import collect_targeted_telemetry
+from digital_twin_runtime.targeted_telemetry import collect_targeted_telemetry, ObservationWindow
 from digital_twin_runtime.targeted_workload import run_targeted_wrk
 from digital_twin_runtime.telemetry_comparator import score_resolution
 from digital_twin_runtime.twin_spec_builder import build_sparse_live_twin_spec
@@ -80,13 +81,14 @@ def main() -> None:
             manifestation = handle.wait_for_manifestation(timeout_seconds=60)
             if not manifestation.manifested:
                 raise RuntimeError("predicted fault did not manifest")
+            phase_start = time.time()
             before_workload = run_targeted_wrk(
                 session,
                 payload_script=Path(app_root) / "wrk2/scripts/social-network/read-user-timeline.lua",
                 endpoint="http://nginx-thrift:8080/wrk2-api/user-timeline/read",
                 required_service=fault.service,
             )
-            collect_targeted_telemetry(session, temp / "before", workload=before_workload)
+            collect_targeted_telemetry(session, temp / "before", workload=before_workload, window=ObservationWindow(phase_start, time.time(), "before"))
             before_state = _abstract(temp / "before", temp / "before-processed")
 
             action_plan = {
@@ -111,13 +113,14 @@ def main() -> None:
             recovery = session.wait_for_clean_baseline(timeout_seconds=args.timeout_seconds)
             if not recovery.ready:
                 raise RuntimeError("Action did not restore stable controller health")
+            phase_start = time.time()
             after_workload = run_targeted_wrk(
                 session,
                 payload_script=Path(app_root) / "wrk2/scripts/social-network/read-user-timeline.lua",
                 endpoint="http://nginx-thrift:8080/wrk2-api/user-timeline/read",
                 required_service=fault.service,
             )
-            collect_targeted_telemetry(session, temp / "after", workload=after_workload)
+            collect_targeted_telemetry(session, temp / "after", workload=after_workload, window=ObservationWindow(phase_start, time.time(), "after"))
             after_state = _abstract(temp / "after", temp / "after-processed")
             resolution = score_resolution(before_state, after_state)
             endpoint_restored = (after_workload.required_ready_endpoints or 0) > 0

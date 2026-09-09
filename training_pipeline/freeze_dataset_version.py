@@ -28,6 +28,7 @@ def main() -> None:
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--train_ids", required=True)
     ap.add_argument("--test_ids", required=True)
+    ap.add_argument("--calibration_ids", required=True)
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--version", required=True)
     ap.add_argument("--admission_report", required=True)
@@ -47,14 +48,17 @@ def main() -> None:
 
     train = sorted(read_scenario_ids(args.train_ids) or set())
     test = sorted(read_scenario_ids(args.test_ids) or set())
-    if set(train) & set(test):
-        raise ValueError("train/test overlap")
+    calibration = sorted(read_scenario_ids(args.calibration_ids) or set())
+    if not train or not test or not calibration:
+        raise ValueError("train, calibration and test splits must all be nonempty")
+    if set(train) & set(test) or set(train) & set(calibration) or set(test) & set(calibration):
+        raise ValueError("train/calibration/test overlap")
     corrections = load_manifest(args.label_corrections)
     corrected_ids: list[str] = []
     overrides = [Path(p).resolve() for p in args.override_processed_states]
     provenance: dict[str, str] = {}
     records = []
-    for split, ids in (("train", train), ("test", test)):
+    for split, ids in (("train", train), ("calibration", calibration), ("test", test)):
         for scenario_id in ids:
             src = source / scenario_id
             for override in overrides:
@@ -89,6 +93,7 @@ def main() -> None:
                             "source_root": provenance[scenario_id]})
 
     (output / "train_ids.txt").write_text("\n".join(train) + "\n")
+    (output / "calibration_ids.txt").write_text("\n".join(calibration) + "\n")
     (output / "test_ids.txt").write_text("\n".join(test) + "\n")
     shutil.copy2(Path(args.admission_report).resolve(), output / "admission_report.json")
     manifest = {
@@ -96,7 +101,7 @@ def main() -> None:
         "version": args.version,
         "created_unix": time.time(),
         "source": str(source),
-        "counts": {"train": len(train), "test": len(test), "total": len(records)},
+        "counts": {"train": len(train), "calibration": len(calibration), "test": len(test), "total": len(records)},
         "train_test_overlap": False,
         "copy_policy": "independent_files_no_symlinks_or_hardlinks",
         "override_roots": [str(p) for p in overrides],
@@ -113,6 +118,8 @@ def main() -> None:
     (output / "manifest.sha256").write_text(
         hashlib.sha256(rendered.encode()).hexdigest() + "  manifest.json\n"
     )
+    from .dataset_integrity import validate_dataset
+    validate_dataset(output / "manifest.json", states, set(train))
     # Make accidental in-place mutation fail for the normal training user. A new
     # version is created for every salvage/regeneration stage.
     for path in output.rglob("*"):

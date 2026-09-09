@@ -1,3 +1,5 @@
+import json
+import math
 from pathlib import Path
 from utils import read_jsonl, write_json
 
@@ -10,6 +12,18 @@ class SLAConfig:
     MAX_CRASHLOOP = 0
 
 
+def configure_sla(path):
+    values = json.loads(Path(path).read_text())
+    values = values.get("thresholds", values)
+    allowed = {k for k in vars(SLAConfig) if k.startswith("MAX_")}
+    if set(values) != allowed or any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in values.values()):
+        raise ValueError("SLA definition must specify every supported finite nonnegative threshold")
+    if values["MAX_ERROR_RATIO"] > 1 or values["MAX_LOG_ANOMALY"] > 1:
+        raise ValueError("SLA ratios must lie in [0, 1]")
+    for key, value in values.items():
+        setattr(SLAConfig, key, value)
+
+
 def evaluate_service_sla(state):
     out = {}
     services = state.get("graph", {}).get("services") or sorted(set(state.get("metrics", {})) | set(state.get("logs", {})) | set(state.get("system", {})))
@@ -18,7 +32,7 @@ def evaluate_service_sla(state):
         l = state.get("logs", {}).get(svc, {})
         sy = state.get("system", {}).get(svc, {})
         reasons = []
-        if m.get("latency", 0.0) > SLAConfig.MAX_LATENCY_MS:
+        if m.get("latency_ms", m.get("latency", 0.0)) > SLAConfig.MAX_LATENCY_MS:
             reasons.append(f"latency_high={m.get('latency')}")
         if l.get("log_anomaly_score", 0.0) > SLAConfig.MAX_LOG_ANOMALY:
             reasons.append(f"log_anomaly={l.get('log_anomaly_score'):.3f}")
@@ -50,9 +64,10 @@ def evaluate_dependency_sla(state):
 def evaluate_workload_sla(state):
     w = state.get("workload", {})
     reasons = []
-    if w.get("estimated_request_rate", 0) == 0:
+    requests = w.get("observed_root_request_count", w.get("estimated_request_rate", 0)) or 0
+    if requests <= 0:
         reasons.append("no_trace_traffic_observed")
-    return {"healthy": not reasons, "reasons": reasons, "total_requests": w.get("estimated_request_rate", 0)}
+    return {"healthy": not reasons, "reasons": reasons, "total_requests": requests}
 
 
 def evaluate_sla(state):
@@ -69,6 +84,7 @@ def evaluate_sla(state):
         global_reasons.append("multiple_unhealthy_services")
     # Do not fail global solely because trace traffic is absent; mark as observability gap.
     return {
+        "definition": {k: v for k, v in vars(SLAConfig).items() if k.startswith("MAX_")},
         "service_sla": service,
         "dependency_sla": dep,
         "workload_sla": workload,

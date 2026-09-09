@@ -631,6 +631,10 @@ def parse_system(run_dir, services=None):
 
     service_state, pod_to_service = parse_pods_json(pods_json)
     deployments = parse_deployments_json(d / "deployments.json")
+    statefulsets = parse_deployments_json(d / "statefulsets.json")
+    if set(deployments) & set(statefulsets):
+        raise ValueError("multiple controller kinds resolve to the same logical service")
+    deployments.update(statefulsets)
     replicasets = parse_replicasets_json(d / "replicasets.json")
     endpoints = parse_endpoints_json(d / "endpoints.json")
     events_by_service, global_events = parse_events_txt(d / "events.txt")

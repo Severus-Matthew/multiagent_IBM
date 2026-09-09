@@ -107,9 +107,11 @@ def action_reward(
 
 def feedback(safety: dict[str, Any], verifier_result: dict[str, Any], commands: list[str]) -> str:
     if not safety.get("safe"):
-        return "One or more commands were unsafe or unsupported. Use scoped kubectl/helm/mongosh commands only."
+        return "One or more commands were unsafe or unsupported. Use scoped kubectl commands only."
     if not commands:
         return "No executable commands were produced."
+    if verifier_result.get("resolved") and verifier_result.get("sla_condition_satisfied"):
+        return "The independent repair cleared observed symptoms and met the configured SLA."
     if verifier_result.get("resolved") and verifier_result.get("sla_restored"):
         return "Commands repaired the twin target and restored the SLA-style symptom signature."
     if verifier_result.get("resolved") and verifier_result.get("target_sla_restored"):

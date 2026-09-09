@@ -411,9 +411,9 @@ def _sanitize_for_clone(
         spec.pop("progressDeadlineSeconds", None)
         if kind == "Deployment":
             spec.pop("revisionHistoryLimit", None)
-        # A sparse Twin starts with one replica per selected logical service;
-        # scale faults are applied later to this clean baseline.
-        spec["replicas"] = 1
+        # Preserve the healthy reference's capacity. Sparse means selected
+        # services, not an implicit rescaling of every retained workload.
+        spec.setdefault("replicas", 1)
         template_meta = (
             spec.setdefault("template", {}).setdefault("metadata", {})
         )

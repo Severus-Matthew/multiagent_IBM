@@ -2,11 +2,10 @@ from __future__ import annotations
 
 """Exact-token rollout sampling for the factorized RCA/Action policies.
 
-The sampler deliberately separates *sampling* from the log-probability contract
-used by GRPO. A completion is first generated with the active role adapter. We
-then replay the exact prompt+completion token sequence through that same adapter
-and store raw-model per-token log probabilities. Reference log probabilities are
-computed on the same exact tokens with all LoRA adapters disabled.
+Rollouts sample the unmodified categorical softmax policy. A fresh generation
+configuration disables temperature, truncation and inherited logit processors.
+The same raw-softmax distribution is used for old/reference and learner token
+likelihoods; altered-temperature or nucleus rollouts are rejected.
 
 Generation may use either plain tokenizer encoding (used by the tiny local audits)
 or the model tokenizer's chat template (used by instruction-tuned production
@@ -32,8 +31,8 @@ from .peft_adapter_control import ROLE_ADAPTERS
 @dataclass(frozen=True)
 class ExactTokenGenerationConfig:
     max_new_tokens: int = 256
-    temperature: float = 0.7
-    top_p: float = 0.9
+    temperature: float = 1.0
+    top_p: float = 1.0
     do_sample: bool = True
     max_prompt_tokens: int | None = None
     seed: int = 0
@@ -43,6 +42,8 @@ class ExactTokenGenerationConfig:
     def validate(self) -> None:
         if self.max_new_tokens < 1:
             raise ValueError("max_new_tokens must be >= 1")
+        if not self.do_sample or self.temperature != 1.0 or self.top_p != 1.0:
+            raise ValueError("raw_softmax_v1 GRPO requires do_sample=True, temperature=1, top_p=1")
         if self.temperature <= 0.0:
             raise ValueError("temperature must be > 0")
         if not (0.0 < self.top_p <= 1.0):
@@ -275,20 +276,21 @@ class HFExactTokenPolicySampler:
         try:
             with self._rng_context(seed):
                 self._set_seed(seed)
-                generation_kwargs = {
-                    "input_ids": input_ids,
-                    "attention_mask": attention_mask,
-                    "max_new_tokens": int(self.config.max_new_tokens),
-                    "do_sample": bool(self.config.do_sample),
-                    "eos_token_id": eos_id,
-                    "pad_token_id": pad_id,
-                    "use_cache": True,
-                }
-                if self.config.do_sample:
-                    generation_kwargs["temperature"] = float(self.config.temperature)
-                    generation_kwargs["top_p"] = float(self.config.top_p)
+                from transformers import GenerationConfig
+                generation_config = GenerationConfig(
+                    max_new_tokens=int(self.config.max_new_tokens), do_sample=True,
+                    temperature=1.0, top_p=1.0, top_k=0, typical_p=1.0,
+                    repetition_penalty=1.0, no_repeat_ngram_size=0,
+                    eos_token_id=eos_id, pad_token_id=pad_id,
+                    bos_token_id=getattr(self.tokenizer, "bos_token_id", None),
+                    use_cache=True,
+                )
                 with torch.no_grad():
-                    sequences = self.model.generate(**generation_kwargs)
+                    sequences = self.model.generate(
+                        input_ids=input_ids, attention_mask=attention_mask,
+                        generation_config=generation_config,
+                        use_model_defaults=False,
+                    )
 
             if sequences.ndim != 2 or sequences.shape[0] != 1:
                 raise RuntimeError(f"expected generate() to return [1, seq], got {tuple(sequences.shape)}")
@@ -335,6 +337,8 @@ class HFExactTokenPolicySampler:
                 "old_logprobs_source": "active_adapter_tail_logits_replay_on_exact_sampled_tokens",
                 "reference_logprobs_source": "shared_frozen_base_disabled_adapters_tail_logits_replay",
                 "replay_logits_to_keep": int(len(completion_ids) + 1),
+                "sampling_contract": "raw_softmax_v1",
+                "sampling_top_k": 0,
                 "sampling_temperature": float(self.config.temperature),
                 "sampling_top_p": float(self.config.top_p),
                 "sampling_do_sample": bool(self.config.do_sample),

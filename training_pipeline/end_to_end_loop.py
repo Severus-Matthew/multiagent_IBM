@@ -241,6 +241,9 @@ def run_end_to_end_trajectory_group(
             "a singleton group has zero relative advantage"
         )
 
+    prepare_scenario = getattr(twin_verifier, "prepare_scenario", None)
+    if callable(prepare_scenario):
+        prepare_scenario(full_state, compressed_state)
     public_agent_state = getattr(twin_verifier, "public_agent_state", None)
     policy_source_state = (
         public_agent_state(compressed_state) if callable(public_agent_state) else compressed_state
@@ -258,9 +261,6 @@ def run_end_to_end_trajectory_group(
     scenario_id = str(full_state.get("scenario_id") or compressed_state.get("scenario_id") or "unknown")
     trajectory_group_id = f"e2e:{scenario_id}"
     trajectories: list[dict[str, Any]] = []
-    prepare_scenario = getattr(twin_verifier, "prepare_scenario", None)
-    if callable(prepare_scenario):
-        prepare_scenario(full_state, compressed_state)
     live_mode = bool(getattr(twin_verifier, "is_live", False))
 
     for trajectory_index in range(int(trajectory_group_size)):
@@ -270,6 +270,23 @@ def run_end_to_end_trajectory_group(
         if callable(begin):
             begin(trajectory_id)
         try:
+            prepare_incident = getattr(twin_verifier, "prepare_incident_twin", None)
+            if callable(prepare_incident):
+                try:
+                    prepare_incident(compressed_state)
+                except Exception as exc:
+                    trajectories.append({
+                        "trajectory_id": trajectory_id, "trajectory_index": trajectory_index,
+                        "system_reward": 0.0, "system_quality": 0.0,
+                        "rca_policy_return": 0.0, "action_policy_return": 0.0,
+                        "trajectory_success": False,
+                        "reward": {"components": {"optimizer_credit_eligible": False,
+                                                   "telemetry_incomplete": True}},
+                        "reward_route": "live", "action_stage_invoked": False,
+                        "skipped_action": True, "rca_result": {}, "action_result": {},
+                        "preparation_error": f"{type(exc).__name__}: {exc}", "_policy_samples": [],
+                    })
+                    continue
             rca_result = run_rca_grpo_episode(
                 full_state,
                 compressed_state,

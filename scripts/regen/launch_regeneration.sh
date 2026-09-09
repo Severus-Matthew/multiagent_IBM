@@ -13,6 +13,7 @@ STAGE=${1:-must}            # must | weak | corrected_multifault
 LIMIT=${LIMIT:-}
 mkdir -p "$OUT"
 cd "$REPO"
+"$PY" scripts/regen/apply_aiopslab_patches.py
 if kubectl get ns --no-headers | grep -q '^aiops-twin-'; then
   echo "refusing to start: live Twin namespaces exist (a Twin audit or training is running)" >&2
   exit 2

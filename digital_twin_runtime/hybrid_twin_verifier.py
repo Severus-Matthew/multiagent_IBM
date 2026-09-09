@@ -24,11 +24,24 @@ class HybridTwinVerifier:
         self.route_reason = "scenario_not_prepared"
 
     def prepare_scenario(self, full_state: dict[str, Any], compressed_state: dict[str, Any]) -> None:
-        del compressed_state
         labels = labels_from_full_state(full_state)
         assessments = [assess_live_capability(label) for label in labels]
         self.is_live = bool(labels) and all(row.get("supported") for row in assessments)
         self.route_reason = "all_fault_mechanisms_live_eligible" if self.is_live else "explicitly_excluded_from_live_reward"
+        if self.is_live:
+            self.live.prepare_scenario({}, compressed_state)
+
+    def public_agent_state(self, compressed_state):
+        return self.live.public_agent_state(compressed_state) if self.is_live else compressed_state
+
+    def prepare_incident_twin(self, compressed_state):
+        if self.is_live:
+            self.live.prepare_incident_twin(compressed_state)
+
+    def prepare_action_attempt(self, faults):
+        if not self.is_live:
+            raise RuntimeError("offline route has no live action state")
+        return self.live.prepare_action_attempt(faults)
 
     def begin_trajectory(self, trajectory_id: str | None = None) -> None:
         target = self.live if self.is_live else self.offline

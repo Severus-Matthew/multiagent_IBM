@@ -5,12 +5,13 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from digital_twin_runtime.live_fault_injector import inject_predicted_fault
 from digital_twin_runtime.sparse_live_manifest import discover_sparse_manifest_plan, render_sparse_manifest_bundle
 from digital_twin_runtime.sparse_live_session import SparseLiveTwinSession
-from digital_twin_runtime.targeted_telemetry import collect_targeted_telemetry
+from digital_twin_runtime.targeted_telemetry import collect_targeted_telemetry, ObservationWindow
 from digital_twin_runtime.targeted_workload import run_targeted_wrk
 from digital_twin_runtime.telemetry_comparator import compare_symptoms_scoped
 from digital_twin_runtime.twin_spec_builder import build_sparse_live_twin_spec
@@ -67,6 +68,7 @@ def main() -> None:
                 manifestation = handle.wait_for_manifestation(timeout_seconds=60)
                 if not manifestation.manifested:
                     raise RuntimeError("predicted fault did not manifest")
+                phase_start = time.time()
                 workload = run_targeted_wrk(
                     session,
                     payload_script=(
@@ -79,7 +81,7 @@ def main() -> None:
                     timeout_seconds=90,
                 )
                 collection = collect_targeted_telemetry(
-                    session, run_dir, workload=workload
+                    session, run_dir, workload=workload, window=ObservationWindow(phase_start, time.time(), "post_injection")
                 )
             finally:
                 handle.restore()

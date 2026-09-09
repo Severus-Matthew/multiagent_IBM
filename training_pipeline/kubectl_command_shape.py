@@ -20,7 +20,9 @@ import shlex
 # rollouts. Kept narrow deliberately: anything else starting with "-" is
 # still skipped as a single self-contained token (covers "=" forms like
 # --type=json, -p='...'), it just isn't assumed to consume a following value.
-FLAGS_WITH_SEPARATE_VALUE = {"-n", "--namespace"}
+FLAGS_WITH_SEPARATE_VALUE = {"-n", "--namespace", "-p", "--patch", "--type", "--replicas",
+                             "--timeout", "--request-timeout", "-o", "--output", "-l", "--selector",
+                             "--field-selector", "--since", "--since-time", "--tail", "-c", "--container"}
 
 
 def split_command(cmd: str) -> list[str]:
@@ -96,9 +98,10 @@ def resource_target(positional: list[str]) -> tuple[str, str] | None:
 
 
 def namespace_flag(parts: list[str]) -> str | None:
+    values = []
     for index, part in enumerate(parts):
         if part in {"-n", "--namespace"} and index + 1 < len(parts):
-            return parts[index + 1]
-        if part.startswith("--namespace="):
-            return part.split("=", 1)[1]
-    return None
+            values.append(parts[index + 1])
+        if part.startswith(("--namespace=", "-n=")):
+            values.append(part.split("=", 1)[1])
+    return values[0] if len(values) == 1 else None

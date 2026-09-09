@@ -263,13 +263,14 @@ def normalize_fault_mechanism(text: str | None) -> str:
 def parse_fault_lines(text: str) -> list[FaultLabel]:
     """Parse RCA lines.
 
-    The live contract is ``service::fault_type::mechanism[::variant]``. The
+    The live contract is one physical line of ``service::fault_type::mechanism[::variant]``
+    roots separated by `` | ``. Historical newlines remain parseable. The
     historical two-field form remains parseable for offline audits, but yields
     a deliberately non-injectible label rather than guessing a mechanism.
     """
     labels: list[FaultLabel] = []
     seen: set[str] = set()
-    for raw in str(text or "").splitlines():
+    for raw in str(text or "").replace(" | ", "\n").splitlines():
         line = raw.strip().strip("`").strip()
         if not line or line.startswith("#") or "::" not in line:
             continue

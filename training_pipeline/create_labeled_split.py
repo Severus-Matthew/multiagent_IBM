@@ -19,7 +19,7 @@ def _label_signature(labels: list[Any]) -> tuple[tuple[str, str, str, str], ...]
             str(label.service),
             str(label.fault_type),
             str(label.fault_mechanism),
-            str(label.variant_name or "default"),
+            "all_parameter_variants",
         )
         for label in labels
     ))

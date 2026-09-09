@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from collections import Counter, defaultdict
 
@@ -91,6 +92,8 @@ def compress_metrics(metrics):
                 groups[group] = summarized
         out[svc] = round_deep({
             "flat_summary": {
+                "cpu_usage_cores": m.get("cpu_usage_cores"),
+                "cpu_usage_rate_observed": bool(m.get("cpu_usage_rate_observed", False)),
                 "cpu_usage_delta": m.get("cpu_usage_delta", _kpi(raw, "kpi_container_cpu_usage_seconds_total", "container_cpu_usage_seconds_total").get("delta", 0.0)),
                 "cpu_load_last": m.get("cpu_load_last", _kpi(raw, "kpi_container_cpu_load_average_10s", "container_cpu_load_average_10s").get("last", 0.0)),
                 "memory_working_set_last": m.get("memory_working_set_last", _kpi(raw, "kpi_container_memory_working_set_bytes", "container_memory_working_set_bytes").get("last", 0.0)),
@@ -312,11 +315,9 @@ def build_llm_view(compressed):
 
 
 def compress_state(state):
-    fault_ctx = state.get("fault_context", {}) or {}
     compressed = {
-        "timestamp": state.get("timestamp"),
-        "scenario_id": state.get("scenario_id"),
-        "state_type": "redacted_compressed_aiops_state_abstraction_v3",
+        "state_type": "public_compressed_aiops_state_v4",
+        "abstraction_contract": "raw_spans_public_state_metric_units_v1",
         "source_state_type": state.get("state_type"),
         "redaction": {
             "ground_truth_removed": True,
@@ -325,7 +326,6 @@ def compress_state(state):
             "service_health_oracle_markers_removed": True,
             "safe_for_rca_agent": True,
         },
-        "namespace": fault_ctx.get("target_namespace"),
         "services": state.get("services", []),
     }
     compressed["metrics"] = compress_metrics(state.get("metrics", {}))
@@ -336,12 +336,26 @@ def compress_state(state):
     compressed["graph"] = state.get("graph", {})
     compressed["sla"] = state.get("sla", {})
     compressed["service_health"] = sanitize_service_health(state.get("service_health", {}))
-    compressed["observability_metadata"] = state.get("observability_metadata", {})
+    # Preserve channel quality/counts, not file paths or processing provenance.
+    metadata = state.get("observability_metadata", {}) or {}
+    compressed["observability_metadata"] = {
+        channel: {key: value for key, value in info.items()
+                  if key in {"trace_signal_present", "num_unique_spans", "duplicate_span_rows",
+                             "metric_signal_present", "log_signal_present", "num_edges",
+                             "trace_aggregation", "num_files", "system_signal_present"}}
+        for channel, info in metadata.items() if isinstance(info, dict)
+    }
     model_rows = build_model_vector(state)
     compressed["model_table"] = model_rows
     compressed["clusters"] = simple_cluster_rows(model_rows)
     compressed["llm_view"] = build_llm_view(compressed)
-    return compressed
+    # The standalone compressed file has the same privacy boundary as live
+    # agent payloads. CLI execution from this directory needs the package root.
+    package_root = str(Path(__file__).resolve().parents[1])
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
+    from training_pipeline.agent_input_safety import sanitize_agent_state
+    return sanitize_agent_state(compressed)
 
 
 def main():

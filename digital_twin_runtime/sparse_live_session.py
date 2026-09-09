@@ -165,7 +165,7 @@ class SparseLiveTwinSession:
                 spec = obj.get("spec", {}) or {}
                 status = obj.get("status", {}) or {}
                 desired = int(spec.get("replicas", 1) or 0)
-                available = int(status.get("availableReplicas", 0) or 0)
+                available = int(status.get("availableReplicas", status.get("readyReplicas", 0)) or 0)
                 observed = int(status.get("observedGeneration", 0) or 0)
                 generation = int(meta.get("generation", 0) or 0)
                 row_ready = desired > 0 and available >= desired and observed >= generation
@@ -191,6 +191,8 @@ class SparseLiveTwinSession:
             meta = pod.get("metadata", {}) or {}
             labels = meta.get("labels", {}) or {}
             name = str(meta.get("name") or "")
+            if labels.get("aiopslab.ibm/workload") == "targeted-wrk2":
+                continue  # verifier-owned probe Jobs are not failed application pods
             identity = str(labels.get("service") or labels.get("app") or "")
             if identity and identity not in expected_pod_labels:
                 unexpected.append(name)

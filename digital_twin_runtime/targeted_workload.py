@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import subprocess
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,7 @@ def _run(args: list[str], payload: dict[str, Any] | None = None) -> subprocess.C
     return subprocess.run(
         ["kubectl", *args], input=json.dumps(payload) if payload is not None else None,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        timeout=180,
     )
 
 
@@ -43,6 +46,9 @@ class WorkloadResult:
     socket_errors: dict[str, int]
     output: str
     execution_started: bool = False
+    requested_rate: int | None = None
+    requested_duration_seconds: int | None = None
+    payload_sha256: str | None = None
     scope_policy: str = "minimal_root_reaching_request_path"
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,8 +115,11 @@ done = function(summary, latency, requests)
   io.write("Twin application failures: " .. tostring(twin_application_failures) .. "\\n")
 end
 """
-    cm_name = "twin-wrk2-payload"
-    job_name = "twin-wrk2-job"
+    # Unique create-only resources are also safe in an existing application
+    # namespace. Never apply over another verifier's workload or payload.
+    suffix = uuid.uuid4().hex[:20]
+    cm_name = "twin-wrk2-payload-" + suffix
+    job_name = "twin-wrk2-job-" + suffix
     configmap = {
         "apiVersion": "v1", "kind": "ConfigMap",
         "metadata": {"name": cm_name, "namespace": session.namespace},
@@ -148,8 +157,12 @@ end
             },
         },
     }
-    _must(_run(["apply", "-f", "-"], configmap), "create targeted workload ConfigMap")
-    _must(_run(["apply", "-f", "-"], job), "create targeted workload Job")
+    _must(_run(["create", "-f", "-"], configmap), "create targeted workload ConfigMap")
+    try:
+        _must(_run(["create", "-f", "-"], job), "create targeted workload Job")
+    except Exception:
+        _run(["delete", "configmap", cm_name, "-n", session.namespace])
+        raise
     started = time.monotonic()
     completed = failed = False
     output = ""
@@ -172,7 +185,7 @@ end
                 break
             time.sleep(0.5)
         output_proc = _run(["logs", "job/" + job_name, "-n", session.namespace])
-        output = output_proc.stdout + output_proc.stderr
+        output = _must(output_proc, "read targeted workload output")
         workload_pods = json.loads(_must(
             _run(["get", "pods", "-n", session.namespace, "-l", f"job-name={job_name}", "-o", "json"]),
             "read targeted workload pod status",
@@ -205,7 +218,7 @@ end
             if frontend_container:
                 exec_args.extend(["-c", frontend_container])
             exec_args.extend([
-                "--", "curl", "-sS", "-w", "\n__HTTP_STATUS__:%{http_code}",
+                "--", "curl", "-sS", "--max-time", "5", "-w", "\n__HTTP_STATUS__:%{http_code}",
                 f"http://127.0.0.1:{int(frontend_port)}" + path,
             ])
             probe = _run(exec_args)
@@ -257,4 +270,6 @@ end
         socket_errors=socket_errors,
         output=output,
         execution_started=execution_started,
+        requested_rate=int(rate), requested_duration_seconds=int(duration_seconds),
+        payload_sha256=hashlib.sha256(script.encode()).hexdigest(),
     )

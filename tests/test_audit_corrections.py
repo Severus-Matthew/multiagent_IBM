@@ -266,7 +266,7 @@ class CalibrationContractTests(unittest.TestCase):
                 with patch.dict(LIVE_REWARD_CALIBRATION, legacy, clear=True):
                     result = assess_live_reward_calibration([fault])
                 self.assertFalse(result["eligible"])
-                self.assertEqual(result["reason"], "reward_controls_require_raw_span_requalification")
+                self.assertEqual(result["reason"], "current_live_calibration_manifest_required")
 
 
 class OptimizerAdmissionTests(unittest.TestCase):

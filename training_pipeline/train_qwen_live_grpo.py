@@ -142,7 +142,9 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Train RCA/Action Qwen prompt policies with factorized GRPO")
     ap.add_argument("--processed_states", required=True)
     ap.add_argument("--output_dir", required=True)
-    ap.add_argument("--scenario_ids", default=None)
+    ap.add_argument("--scenario_ids", required=True, help="Explicit train-only membership file")
+    ap.add_argument("--dataset_manifest", required=True, help="Validated frozen dataset manifest")
+    ap.add_argument("--reward_calibration", default=None, help="Current matched live control manifest")
     ap.add_argument(
         "--label_corrections", default=None,
         help="label-correction manifest (training_pipeline.label_corrections); corrects private "
@@ -187,8 +189,8 @@ def _parser() -> argparse.ArgumentParser:
             "reasoning, explicit handoff) routinely needs more than that to complete."
         ),
     )
-    ap.add_argument("--temperature", type=float, default=0.8)
-    ap.add_argument("--top_p", type=float, default=0.95)
+    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--top_p", type=float, default=1.0)
     ap.add_argument("--learning_rate", type=float, default=5e-6)
     ap.add_argument("--kl_coeff", type=float, default=0.01)
     ap.add_argument("--lora_r", type=int, default=16)
@@ -223,7 +225,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--source_namespace", default="test-social-network")
     ap.add_argument("--application_source_root", default="AIOpsLab/aiopslab-applications/socialNetwork")
     ap.add_argument("--state_abstraction_root", default="state_abstraction_full")
-    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.4702)
+    ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
     ap.add_argument("--max_serialized_chars", type=int, default=100_000)
     ap.add_argument("--max_system_services", type=int, default=12)
     ap.add_argument("--max_metric_services", type=int, default=64)
@@ -288,6 +290,8 @@ def _write_manifest(path: Path, *, args: argparse.Namespace, records: list[Any],
     safe_args = dict(vars(args))
     manifest = {
         "format": "qwen_live_grpo_run_manifest_v1", "created_unix": time.time(),
+        "sampling_contract": "raw_softmax_v1",
+        "dataset_integrity": getattr(args, "dataset_integrity", None),
         "argv": sys.argv, "arguments": safe_args, "python": sys.version,
         "platform": platform.platform(), "hostname": platform.node(),
         "git_commit": _git_value("rev-parse", "HEAD"),
@@ -394,6 +398,9 @@ def _run_worker_rollout(
 
 def main() -> None:
     args = _parser().parse_args()
+    from .dataset_integrity import validate_training_inputs
+    dataset_integrity = validate_training_inputs(args)
+    args.dataset_integrity = dataset_integrity
     durable_cache = Path("/mnt/aiops-training/cache/huggingface")
     if args.model_cache_dir is None and durable_cache.is_dir():
         args.model_cache_dir = str(durable_cache)
@@ -424,7 +431,6 @@ def main() -> None:
     from digital_twin_runtime.sparse_live_verifier import SparseLiveTwinVerifier, SparseLiveVerifierConfig
     from digital_twin_runtime.twin_verifier import BehavioralTwinVerifier
     from digital_twin_runtime.live_capabilities import (
-        LIVE_REWARD_CALIBRATION,
         audit_live_training_records,
     )
     from .bounded_agent_state import BoundedAgentStateConfig
@@ -458,24 +464,14 @@ def main() -> None:
         records = records[:args.limit]
     if not records:
         raise RuntimeError("no labeled scenarios matched the requested training selection")
-    if args.twin_mode == "live" and not args.allow_uncalibrated_live_reward:
-        calibrated_thresholds = {
-            float(row["threshold"]) for row in LIVE_REWARD_CALIBRATION.values()
-        }
-        if not any(
-            abs(float(args.min_twin_reproduction_score) - threshold) <= 1e-9
-            for threshold in calibrated_thresholds
-        ):
-            raise ValueError(
-                "--min_twin_reproduction_score does not match a validated live "
-                f"control threshold: configured={args.min_twin_reproduction_score}, "
-                f"validated={sorted(calibrated_thresholds)}"
-            )
+    if args.twin_mode == "live" and not args.allow_uncalibrated_live_reward and not args.reward_calibration:
+        raise ValueError("--reward_calibration is required; collect current matched live controls before training")
     if args.twin_mode == "live":
         live_preflight = audit_live_training_records(
             records,
             admit_weak_evidence=args.admit_weak_evidence,
             require_reward_calibration=not args.allow_uncalibrated_live_reward,
+            calibration_path=args.reward_calibration,
         )
         if not live_preflight["all_supported"]:
             preview = live_preflight["unsupported"][:10]
@@ -491,6 +487,7 @@ def main() -> None:
             records,
             admit_weak_evidence=args.admit_weak_evidence,
             require_reward_calibration=not args.allow_uncalibrated_live_reward,
+            calibration_path=args.reward_calibration,
         )
         (out_dir / "live_reward_eligibility.json").write_text(
             json.dumps(live_preflight, indent=2, sort_keys=True, default=str) + "\n",
@@ -585,6 +582,7 @@ def main() -> None:
                 application_source_root=str(Path(args.application_source_root).resolve()),
                 state_abstraction_root=str(Path(args.state_abstraction_root).resolve()),
                 reproduction_threshold=args.min_twin_reproduction_score,
+                calibration_path=args.reward_calibration,
                 require_reward_calibration=not args.allow_uncalibrated_live_reward,
                 artifact_root=(str(out_dir / "twin_artifacts" / f"worker-{worker_index}")
                                if args.retain_twin_artifacts else None),

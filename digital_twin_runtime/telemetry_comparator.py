@@ -149,17 +149,25 @@ def symptom_signature(state: dict[str, Any]) -> dict[str, Any]:
     degraded: list[str] = []
     for svc, info in (state.get("system", {}) or {}).items():
         health = info.get("health", info) if isinstance(info, dict) else {}
+        currently_ready = (_safe_float(health.get("pods_total")) > 0
+                           and _safe_float(health.get("pods_ready")) >= _safe_float(health.get("pods_total"))
+                           and _safe_float(health.get("pods_unready")) == 0)
         if (
-            bool(health.get("infra_issue_flag"))
+            (bool(health.get("infra_issue_flag")) and not currently_ready)
             or _safe_float(health.get("pods_unready")) > 0
             or _safe_float(health.get("crashloop_count")) > 0
-            or _safe_float(health.get("oomkilled_count")) > 0
-            or _safe_float(health.get("restart_count")) > 0
+            or (_safe_float(health.get("oomkilled_count")) > 0 and not currently_ready)
         ):
             degraded.append(str(svc))
     for svc, h in (state.get("service_health", {}) or {}).items():
         if isinstance(h, dict) and str(h.get("status", "healthy")).lower() not in {"healthy", "unknown", ""}:
-            degraded.append(str(svc))
+            info = (state.get("system") or {}).get(svc, {})
+            health = info.get("health", info) if isinstance(info, dict) else {}
+            ready = (_safe_float(health.get("pods_total")) > 0
+                     and _safe_float(health.get("pods_ready")) >= _safe_float(health.get("pods_total"))
+                     and _safe_float(health.get("pods_unready")) == 0)
+            if not ready:
+                degraded.append(str(svc))
 
     failed_edges: list[str] = []
     trace_sources: list[str] = []
@@ -200,6 +208,7 @@ def symptom_signature(state: dict[str, Any]) -> dict[str, Any]:
         if _safe_float(flat.get("latency_ms")) > 500:
             metric_services.append(str(svc))
 
+    degraded.extend(str(x) for x in (state.get("observed_deviations") or {}))
     affected = set(degraded) | set(error_services) | set(trace_sources) | set(trace_targets) | set(metric_services)
     return {
         "degraded_services": sorted(set(degraded)),
@@ -510,7 +519,7 @@ def compare_symptoms_scoped(
             if "->" not in text:
                 continue
             src, dst = (_norm_service(x) for x in text.split("->", 1))
-            if src in scope and dst in scope:
+            if (src in scope or src == "ROOT") and dst in scope:
                 kept.add(f"{src}->{dst}")
         return kept
 
@@ -568,7 +577,7 @@ def compare_symptoms_scoped(
         weighted.append((0.25, _jaccard(orig_edges, twin_edges)))
     if orig_logs or twin_logs:
         weighted.append((0.15, _jaccard(orig_logs, twin_logs)))
-    orig_has_scoped_symptoms = bool(orig_deployment or orig_degraded or orig_edges or orig_logs)
+    orig_has_scoped_symptoms = bool(orig_degraded or orig_edges or orig_logs)
     if not orig_has_scoped_symptoms:
         score = 0.0
         score_reason = "no_original_symptoms_in_sparse_scope"
@@ -584,7 +593,13 @@ def compare_symptoms_scoped(
         "top_error_services": sorted(set(orig["top_error_services"]) - scope),
         "failed_edges": sorted(set(orig["failed_edges"]) - orig_edges),
     }
+    has_outside = any(outside.values())
+    if has_outside:
+        score = 0.0
+        score_reason = "unexplained_incident_symptoms_outside_scope"
     return {
+        "positive_incident_evidence": orig_has_scoped_symptoms,
+        "incident_scope_coverage_complete": not has_outside,
         "reproduction_score": round(score, 4),
         "comparison_scope": sorted(scope),
         "scope_policy": "selected_sparse_common_scope_v3_target_structural_state",
@@ -653,7 +668,7 @@ def score_resolution(before_state: dict[str, Any], after_state: dict[str, Any]) 
         reason = "no_before_symptoms_fail_closed"
     else:
         reduction = max(0.0, min(1.0, (before_count - after_count) / max(before_count, 1)))
-        resolved = after_count == 0 or reduction >= 0.95
+        resolved = after_count == 0
         reason = "after_symptoms_cleared" if resolved else "symptoms_remain"
     return {
         "symptom_reduction": round(reduction, 4),

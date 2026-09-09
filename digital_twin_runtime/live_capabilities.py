@@ -131,10 +131,8 @@ LIVE_MECHANISM_CAPABILITIES: dict[str, LiveMechanismCapability] = {
     ),
 }
 
-# Only these mechanisms currently have matched positive and negative
-# counterfactual controls supporting the production threshold. Adapter
-# operability alone is insufficient: the 56-case matrix showed that one global
-# threshold does not transfer across mechanisms.
+# Historical evidence only; never admitted by the current assessor.
+# Current production qualification is a content-bound matched-control manifest.
 LIVE_REWARD_CALIBRATION: dict[str, dict[str, Any]] = {
     "assign_to_non_existent_node": {
         "threshold": 0.4702,
@@ -149,38 +147,10 @@ LIVE_REWARD_CALIBRATION: dict[str, dict[str, Any]] = {
 }
 
 
-def assess_live_reward_calibration(labels: list[FaultLabel]) -> dict[str, Any]:
-    """Whether a hypothesis has a validated live-reproduction decision rule."""
-    if len(labels) != 1:
-        return {
-            "eligible": False,
-            "reason": "multifault_reproduction_threshold_not_calibrated",
-            "num_faults": len(labels),
-        }
-    mechanism = normalize_fault_mechanism(labels[0].fault_mechanism)
-    calibration = LIVE_REWARD_CALIBRATION.get(mechanism)
-    if calibration is None:
-        return {
-            "eligible": False,
-            "reason": "mechanism_reproduction_threshold_not_calibrated",
-            "mechanism": mechanism,
-        }
-    # Historical controls were measured with the summary-of-quantiles parser.
-    # A threshold is not transferable merely because its mechanism name matches:
-    # the observation contract used to calibrate it must match the current one.
-    if calibration.get("trace_aggregation") != "unique_raw_spans_v1":
-        return {
-            "eligible": False,
-            "reason": "reward_controls_require_raw_span_requalification",
-            "mechanism": mechanism,
-            "required_trace_aggregation": "unique_raw_spans_v1",
-            "calibration_trace_aggregation": calibration.get("trace_aggregation"),
-        }
-    return {
-        "eligible": True,
-        "mechanism": mechanism,
-        **calibration,
-    }
+def assess_live_reward_calibration(labels: list[FaultLabel], *, calibration_path: str | None = None,
+                                   application_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .reward_calibration import assess_calibration
+    return assess_calibration(labels, calibration_path, application_state)
 
 
 def _object_refs(bundle: Any | None) -> set[tuple[str, str]]:
@@ -250,6 +220,7 @@ def audit_live_training_records(
     *,
     admit_weak_evidence: bool = False,
     require_reward_calibration: bool = True,
+    calibration_path: str | None = None,
 ) -> dict[str, Any]:
     """Dataset-level adapter audit; object/workload checks happen at runtime."""
     from training_pipeline.ground_truth import labels_from_full_state
@@ -260,7 +231,8 @@ def audit_live_training_records(
     for record in records:
         labels = labels_from_full_state(record.full_state)
         record_admission = assess_record_for_live_reward(record, admit_weak_evidence=admit_weak_evidence)
-        reward_calibration = assess_live_reward_calibration(labels)
+        reward_calibration = assess_live_reward_calibration(labels, calibration_path=calibration_path,
+                                                     application_state=record.compressed_state)
         missing = [
             {**label.to_dict(), "capability": assess_live_capability(label)}
             for label in labels if not assess_live_capability(label)["supported"]
@@ -285,5 +257,5 @@ def audit_live_training_records(
         "registry_scope": "mechanism_and_required_object_shape_not_service_or_scenario",
         "registry": [asdict(row) for row in LIVE_MECHANISM_CAPABILITIES.values()],
         "require_reward_calibration": bool(require_reward_calibration),
-        "reward_calibration": LIVE_REWARD_CALIBRATION,
+        "reward_calibration_manifest": calibration_path,
     }

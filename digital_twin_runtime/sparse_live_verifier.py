@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import hashlib
 import re
 import subprocess
 import sys
@@ -20,10 +21,12 @@ from .live_capabilities import assess_live_reward_calibration
 from .live_fault_injector import LiveFaultHandle, inject_predicted_fault
 from .sparse_live_manifest import discover_sparse_manifest_plan, render_sparse_manifest_bundle
 from .sparse_live_session import SparseLiveTwinSession
-from .targeted_telemetry import collect_targeted_telemetry
+from .targeted_telemetry import (collect_targeted_telemetry, ObservationWindow,
+                                 TelemetryCollectionError, MEASUREMENT_CONTRACT)
+from .incident_evidence import reference_state_from_objects, with_reference_deviations
 from .targeted_workload import WorkloadResult, run_targeted_wrk
 from .telemetry_comparator import _service_aliases, compare_symptoms_scoped, score_resolution
-from .twin_spec_builder import build_sparse_live_twin_spec
+from .twin_spec_builder import build_incident_twin_spec
 
 
 class TwinTelemetryIncomplete(RuntimeError):
@@ -54,9 +57,8 @@ class SparseLiveVerifierConfig:
     baseline_timeout_seconds: float = 180.0
     # Conservative provisional gate. Reported experiments must replace this
     # with a threshold calibrated from live positive/negative controls.
-    # Calibrated 2026-09-02 from four lifecycle-complete matched triplets:
-    # min positive=.5400, max wrong-service/mechanism=.4004, midpoint=.4702.
-    reproduction_threshold: float = 0.4702
+    # Debug-only floor; production decisions use current matched controls.
+    reproduction_threshold: float = 0.0
     upstream_hops: int = 2
     # One direct hop of runtime dependencies. Larger budgets saturate the
     # dependency graph and deploy essentially the whole application, which
@@ -66,6 +68,9 @@ class SparseLiveVerifierConfig:
     artifact_root: str | None = None
     telemetry_settle_seconds: float = 5.0
     require_reward_calibration: bool = True
+    calibration_path: str | None = None
+    workload_rate: int = 10
+    workload_duration_seconds: int = 30
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,15 @@ class SparseLiveTwinVerifier:
         self.selected_paths: list[list[str]] = []
         self.last_rca_result: dict[str, Any] | None = None
         self.runtime_profile: _RuntimeProfile | None = None
+        self._incident_key: str | None = None
+        self._incident_state: dict[str, Any] | None = None
+        self._incident_spec = None
+        self._incident_profile = None
+        self._incident_template = None
+        self._incident_reference: dict[str, Any] = {}
+        self._clean_capture: dict[str, Any] | None = None
+        self._action_attempt_count = 0
+        self.environment_sha256: str | None = None
 
     def begin_trajectory(self, trajectory_id: str | None = None) -> None:
         self.end_trajectory()
@@ -117,8 +131,146 @@ class SparseLiveTwinVerifier:
         the Twin silently plans with a richer source-derived graph. No label,
         scenario name, predicted fault, or private full state is consulted.
         """
-        profile = self._profile(compressed_state)
-        return self._planner_state(compressed_state, profile)
+        self.prepare_scenario({}, compressed_state)
+        return copy.deepcopy(self._incident_state)
+
+    def prepare_scenario(self, full_state: dict[str, Any], compressed_state: dict[str, Any]) -> None:
+        del full_state
+        from training_pipeline.agent_input_safety import sanitize_agent_state
+        state = sanitize_agent_state(compressed_state)
+        key = hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+        if key == self._incident_key:
+            return
+        profile = self._profile(state)
+        planner_state = self._planner_state(state, profile)
+        reference_plan = discover_sparse_manifest_plan(profile.source_namespace, state.get("services") or [])
+        from .sparse_live_manifest import _object
+        source_contract = {
+            "objects": sorted([
+                {"kind": o["kind"], "name": o["metadata"]["name"], "spec": o.get("spec", {})}
+                for o in reference_plan.controllers + reference_plan.service_objects],
+                key=lambda o: (o["kind"], o["name"])),
+            "configmaps": {name: _object("configmap", name, profile.source_namespace).get("data", {})
+                           for name in sorted(reference_plan.configmaps)},
+            "payloads": {str(p.relative_to(profile.source_root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                         for p in sorted(profile.source_root.rglob("*.lua"))},
+            "rate": self.config.workload_rate, "duration": self.config.workload_duration_seconds,
+            "sla_definition": (state.get("sla") or {}).get("definition"),
+            "measurement_contract": MEASUREMENT_CONTRACT,
+        }
+        self.environment_sha256 = hashlib.sha256(json.dumps(source_contract, sort_keys=True).encode()).hexdigest()
+        reference = reference_state_from_objects(reference_plan.controllers + reference_plan.service_objects)
+        planner_state = with_reference_deviations(planner_state, reference)
+        # This is observable reference capacity/routing, not the private fault.
+        planner_state["reference_configuration"] = reference
+        spec = build_incident_twin_spec(
+            planner_state, upstream_hops=self.config.upstream_hops,
+            downstream_support_hops=self.config.downstream_support_hops,
+            max_entry_path_hops=self.config.max_entry_path_hops,
+        )
+        if not spec.services_to_keep or spec.resource_summary.get("invalid_topology"):
+            raise RuntimeError("invalid incident Twin topology")
+        plan = discover_sparse_manifest_plan(profile.source_namespace, spec.services_to_keep)
+        if set(plan.selected_services) != set(spec.services_to_keep):
+            raise RuntimeError("manifest discovery changed the incident service scope")
+        template = render_sparse_manifest_bundle(plan, "aiops-twin-template", pvc_policy="ephemeral_empty")
+        self._incident_key, self._incident_state = key, planner_state
+        self._incident_reference, self._incident_spec = reference, spec
+        self._incident_profile, self._incident_template = profile, template
+
+    def _incident_targets(self) -> list[FaultLabel]:
+        return [FaultLabel(service=service, fault_type="unknown")
+                for service in self._incident_spec.resource_summary["incident_affected_services"]]
+
+    def _capture_phase(self, phase: str, *, require_trace_coverage: bool) -> dict[str, Any]:
+        assert self.session is not None and self.work_root is not None
+        from .targeted_telemetry import capture_pod_inventory
+        inventory = capture_pod_inventory(self.session)
+        started = time.time()
+        workload, workloads = self._run_predicted_root_workloads(self._incident_targets())
+        window = ObservationWindow(started, time.time(), phase)
+        time.sleep(max(0.0, self.config.telemetry_settle_seconds))
+        root = self.work_root / (phase + "-" + uuid.uuid4().hex[:8])
+        collection = collect_targeted_telemetry(self.session, root, window=window, workload=workload,
+                                                 initial_pod_inventory=inventory)
+        contract = [{"service": w.required_service, "rate": w.requested_rate,
+                     "duration_seconds": w.requested_duration_seconds, "payload_sha256": w.payload_sha256,
+                     "endpoint": w.endpoint.replace(self.session.namespace, "application-namespace")}
+                    for w in workloads]
+        collection.resources["workload_contract_sha256"] = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()
+        collection.resources["workload_healthy"] = bool(workload.completed and not workload.failed
+            and not workload.application_failures and (workload.total_requests or 0) > 0)
+        collection.resources["observed_request_count"] = workload.total_requests
+        collection.resources["reference_environment_sha256"] = self.environment_sha256
+        collection.resources["effective_requests_per_second"] = (workload.total_requests or 0) / (window.end_unix - window.start_unix)
+        (root / "collection_metadata.json").write_text(json.dumps(collection.to_dict(), indent=2))
+        state = self._abstract(root, root.with_name(root.name + "-processed"))
+        state = with_reference_deviations(state, self._incident_reference)
+        state["collection_quality"] = {"contract": collection.collection_mode,
+                                       "channels": collection.channels, "errors": collection.errors}
+        channels = self._require_observable_channels(
+            state, phase, trace_collection_prevalidated=not require_trace_coverage)
+        coverage = (self._require_predicted_roots_observed(state, self._incident_targets(), phase)
+                    if require_trace_coverage else {})
+        return {"state": state, "workload": workload, "workloads": workloads,
+                "channels": channels, "coverage": coverage, "collection": collection.to_dict()}
+
+    def prepare_incident_twin(self, compressed_state: dict[str, Any]) -> None:
+        """Create the frozen incident-scope live baseline before the RCA policy runs."""
+        if compressed_state is not self._incident_state:
+            self.prepare_scenario({}, compressed_state)
+        if self.session and not self.handles and self._clean_capture:
+            return
+        trajectory_id = self.trajectory_id
+        self.end_trajectory()
+        self.trajectory_id = trajectory_id
+        self.runtime_profile = self._incident_profile
+        self.selected_services = list(self._incident_spec.services_to_keep)
+        self.selected_paths = copy.deepcopy(self._incident_spec.selected_paths)
+        namespace = "aiops-twin-" + uuid.uuid4().hex[:12]
+        bundle = copy.deepcopy(self._incident_template)
+        def rebind(value):
+            if isinstance(value, str):
+                return value.replace("aiops-twin-template", namespace)
+            if isinstance(value, list):
+                return [rebind(v) for v in value]
+            if isinstance(value, dict):
+                return {k: rebind(v) for k, v in value.items()}
+            return value
+        bundle.target_namespace = namespace
+        bundle.objects, bundle.object_refs = rebind(bundle.objects), rebind(bundle.object_refs)
+        self.session = SparseLiveTwinSession(bundle)
+        if self.config.artifact_root:
+            base = Path(self.config.artifact_root).expanduser().resolve()
+            self.work_root = base / namespace
+            self.work_root.mkdir(parents=True, exist_ok=False)
+        else:
+            self.temp_dir = tempfile.TemporaryDirectory(prefix="aiops-live-verifier-")
+            self.work_root = Path(self.temp_dir.name)
+        self.session.create_namespace()
+        self.session.apply_manifests()
+        baseline = self.session.wait_for_clean_baseline(timeout_seconds=self.config.baseline_timeout_seconds)
+        if not baseline.ready:
+            raise RuntimeError("incident Twin healthy reference did not stabilize")
+        clean = self._capture_phase("clean_baseline", require_trace_coverage=True)
+        workload = clean["workload"]
+        if (not workload.completed or workload.failed or workload.application_failures
+                or (workload.total_requests or 0) <= 0 or (workload.required_ready_endpoints or 0) <= 0):
+            raise RuntimeError("incident Twin clean workload failed")
+        clean["baseline"] = baseline
+        self._clean_capture = clean
+
+    def prepare_action_attempt(self, faults: list[FaultLabel]) -> dict[str, Any]:
+        """Every candidate repair starts from the same frozen baseline plus faults."""
+        count = self._action_attempt_count
+        if count:
+            result = self.validate_rca_prediction({}, self._incident_state, faults)
+        else:
+            result = self.current_rca_gate(faults) or {}
+        self._action_attempt_count = count + 1
+        if not result.get("rca_twin_verified"):
+            raise RuntimeError("fresh fault-state qualification failed before action attempt")
+        return result
 
     def end_trajectory(self) -> None:
         if self.session and self.session.created:
@@ -136,6 +288,8 @@ class SparseLiveTwinVerifier:
         self.runtime_profile = None
         self.work_root = None
         self.trajectory_id = None
+        self._clean_capture = None
+        self._action_attempt_count = 0
         if self.temp_dir is not None:
             self.temp_dir.cleanup()
             self.temp_dir = None
@@ -164,18 +318,10 @@ class SparseLiveTwinVerifier:
             return None
         if [x.injection_key() for x in faults] != [x.injection_key() for x in self.predicted_faults]:
             return None
-        score = float(self.last_rca_result.get("reproduction_score", 0.0) or 0.0)
         return {
             **self.last_rca_result,
-            "rca_twin_verified": bool(
-                self.last_rca_result.get("predicted_fault_injection_checked")
-                and (
-                    self.last_rca_result.get("live_reward_calibrated")
-                    or not self.config.require_reward_calibration
-                )
-                and score >= self.config.reproduction_threshold
-            ),
-            "min_reproduction_score": self.config.reproduction_threshold,
+            "rca_twin_verified": bool(self.last_rca_result.get("rca_twin_verified")),
+            "min_reproduction_score": self.last_rca_result.get("decision_threshold", self.config.reproduction_threshold),
             "source": "active_sparse_live_twin_session",
         }
 
@@ -205,7 +351,12 @@ class SparseLiveTwinVerifier:
         )
         if not ranked_ns or ranked_ns[0][0] == 0:
             raise NotImplementedError("no source namespace overlaps observable services")
-        overlap, source_namespace = ranked_ns[0]
+        if self.config.source_namespace in by_namespace and services.issubset(by_namespace[self.config.source_namespace]):
+            overlap, source_namespace = len(services), self.config.source_namespace
+        else:
+            if len(ranked_ns) > 1 and ranked_ns[0][0] == ranked_ns[1][0]:
+                raise RuntimeError("ambiguous healthy reference namespace; configure source_namespace")
+            overlap, source_namespace = ranked_ns[0]
 
         parent = configured_root.parent
         roots = [configured_root] + ([p for p in parent.iterdir() if p.is_dir()] if parent.exists() else [])
@@ -388,6 +539,7 @@ class SparseLiveTwinVerifier:
         script, endpoint = self._workload(required_service)
         return run_targeted_wrk(
             self.session, payload_script=script, endpoint=endpoint,
+            rate=self.config.workload_rate, duration_seconds=self.config.workload_duration_seconds,
             required_service=required_service,
             frontend_service=self.runtime_profile.frontend_service,
             frontend_container=self.runtime_profile.frontend_container,
@@ -414,7 +566,7 @@ class SparseLiveTwinVerifier:
             completed=all(row.completed for row in rows),
             failed=any(row.failed for row in rows),
             elapsed_seconds=round(sum(row.elapsed_seconds for row in rows), 3),
-            requests_per_second=sum(row.requests_per_second or 0.0 for row in rows),
+            requests_per_second=sum(row.total_requests or 0 for row in rows) / max(1e-9, sum(row.elapsed_seconds for row in rows)),
             total_requests=sum(row.total_requests or 0 for row in rows),
             non_success_responses=sum(row.non_success_responses for row in rows),
             application_failures=sum(row.application_failures for row in rows),
@@ -493,9 +645,15 @@ class SparseLiveTwinVerifier:
         return report
 
     def _abstract(self, run_dir: Path, output_dir: Path) -> dict[str, Any]:
+        definition = (self._incident_state or {}).get("sla", {}).get("definition")
+        sla_args = []
+        if definition:
+            sla_path = run_dir / "sla_definition.json"
+            sla_path.write_text(json.dumps(definition))
+            sla_args = ["--sla_config", str(sla_path)]
         proc = subprocess.run(
             [sys.executable, "run_pipeline.py", "--run_dir", str(run_dir),
-             "--output_dir", str(output_dir), "--skip_simulator"],
+             "--output_dir", str(output_dir), "--skip_simulator", *sla_args],
             cwd=self.config.state_abstraction_root,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -517,6 +675,12 @@ class SparseLiveTwinVerifier:
         advantages. Fail closed and label the failure so it is attributable to
         collection rather than to a wrong prediction.
         """
+        quality = state.get("collection_quality") or {}
+        channels_now = quality.get("channels") or {}
+        if (quality.get("contract") != MEASUREMENT_CONTRACT or quality.get("errors")
+                or not all(channels_now.get(k, {}).get("query_succeeded")
+                           for k in ("system", "traces", "metrics", "logs"))):
+            raise TwinTelemetryIncomplete(phase, "current_phase_collection_status", quality)
         traces = state.get("traces") or {}
         system = state.get("system") or {}
         per_edge = traces.get("per_edge", {}) if isinstance(traces, dict) else {}
@@ -548,216 +712,108 @@ class SparseLiveTwinVerifier:
         compressed_state: dict[str, Any],
         predicted_faults: list[FaultLabel],
     ) -> dict[str, Any]:
-        del full_state  # Explicit: private evaluator state is not used here.
-        trajectory_id = self.trajectory_id
-        self.end_trajectory()
-        self.trajectory_id = trajectory_id
+        del full_state
         if not predicted_faults or any(not fault.is_injectible() for fault in predicted_faults):
-            return _with_live_route({
-                "mode": "sparse_live_kubernetes_v1",
-                "reproduction_score": 0.0,
-                "predicted_fault_injection_checked": False,
-                "rca_twin_verified": False,
-                "reason": "prediction_not_injectible",
-                "uses_oracle_labels": False,
-            })
-        reward_calibration = assess_live_reward_calibration(predicted_faults)
-        if (
-            reward_calibration["eligible"]
-            and abs(
-                float(self.config.reproduction_threshold)
-                - float(reward_calibration["threshold"])
-            ) > 1e-9
-        ):
-            reward_calibration = {
-                **reward_calibration,
-                "eligible": False,
-                "reason": "configured_reproduction_threshold_not_calibrated",
-                "configured_threshold": float(self.config.reproduction_threshold),
-            }
+            return _with_live_route({"reproduction_score": 0.0, "rca_twin_verified": False,
+                                     "reason": "prediction_not_injectible", "uses_oracle_labels": False})
+        reward_calibration = assess_live_reward_calibration(
+            predicted_faults, calibration_path=self.config.calibration_path,
+            application_state=compressed_state)
         if self.config.require_reward_calibration and not reward_calibration["eligible"]:
-            return _with_live_route({
-                "mode": "sparse_live_kubernetes_v1",
-                "reproduction_score": 0.0,
-                "predicted_fault_injection_checked": False,
-                "rca_twin_verified": False,
-                "reason": str(reward_calibration["reason"]),
-                "live_reward_calibrated": False,
-                "reward_calibration": reward_calibration,
-                "uses_oracle_labels": False,
-            })
+            return _with_live_route({"reproduction_score": 0.0, "rca_twin_verified": False,
+                                     "reason": reward_calibration["reason"], "live_reward_calibrated": False,
+                                     "reward_calibration": reward_calibration, "uses_oracle_labels": False})
+        threshold = float(reward_calibration.get("threshold", self.config.reproduction_threshold))
         try:
-            profile = self._profile(compressed_state)
-            self.runtime_profile = profile
-            planner_state = self._planner_state(compressed_state, profile)
-            spec = build_sparse_live_twin_spec(
-                planner_state, predicted_faults,
-                upstream_hops=self.config.upstream_hops,
-                downstream_support_hops=self.config.downstream_support_hops,
-                max_entry_path_hops=self.config.max_entry_path_hops,
-            )
-            self.selected_paths = [list(path) for path in spec.selected_paths]
-            if not spec.services_to_keep or spec.resource_summary.get("invalid_topology"):
-                raise RuntimeError("invalid sparse Twin specification")
-            plan = discover_sparse_manifest_plan(
-                profile.source_namespace, spec.services_to_keep
-            )
-            # Manifest rendering resolves ConfigMaps/Secrets/PVCs for the
-            # planner-selected workloads, but must never widen workload scope.
-            # Shared service registries often name the full application and are
-            # not evidence that every named service is required. Fail closed if
-            # this boundary regresses.
-            if set(plan.selected_services) != set(spec.services_to_keep):
-                raise RuntimeError(
-                    "sparse manifest discovery changed the causal service scope: "
-                    f"planned={sorted(spec.services_to_keep)} "
-                    f"rendered={sorted(plan.selected_services)}"
-                )
-            namespace = "aiops-twin-" + uuid.uuid4().hex[:12]
-            self.session = SparseLiveTwinSession(
-                render_sparse_manifest_bundle(plan, namespace, pvc_policy="ephemeral_empty")
-            )
-            if self.config.artifact_root:
-                base = Path(self.config.artifact_root).expanduser().resolve()
-                base.mkdir(parents=True, exist_ok=True)
-                safe_id = "".join(c if c.isalnum() or c in "-_" else "_"
-                                  for c in (self.trajectory_id or "trajectory"))
-                self.work_root = base / f"{safe_id}-{uuid.uuid4().hex[:8]}"
-                self.work_root.mkdir(parents=True)
-            else:
-                self.temp_dir = tempfile.TemporaryDirectory(prefix="aiops-live-verifier-")
-                self.work_root = Path(self.temp_dir.name)
-            self.session.create_namespace()
-            self.session.apply_manifests()
-            baseline = self.session.wait_for_clean_baseline(
-                timeout_seconds=self.config.baseline_timeout_seconds
-            )
-            if not baseline.ready:
-                raise RuntimeError("sparse Twin baseline did not stabilize")
-            assert self.work_root is not None
-            root = self.work_root
-            clean_workload, clean_workloads = self._run_predicted_root_workloads(
-                predicted_faults
-            )
-            if (
-                not clean_workload.completed or clean_workload.failed
-                or (clean_workload.total_requests or 0) <= 0
-                or clean_workload.application_failures > 0
-                or (clean_workload.required_ready_endpoints or 0) <= 0
-            ):
-                raise RuntimeError("sparse Twin clean workload did not exercise the selected path")
-            time.sleep(max(0.0, self.config.telemetry_settle_seconds))
-            collect_targeted_telemetry(self.session, root / "clean", workload=clean_workload)
-            clean_state = self._abstract(root / "clean", root / "clean-processed")
-            clean_channels = self._require_observable_channels(clean_state, "clean_baseline")
-            clean_target_coverage = self._require_predicted_roots_observed(
-                clean_state, predicted_faults, "clean_baseline"
-            )
+            # _incident_state is enriched; reuse the frozen plan when resetting an action.
+            if compressed_state is not self._incident_state:
+                self.prepare_scenario({}, compressed_state)
+            if reward_calibration.get("eligible") and reward_calibration.get("environment_sha256") != self.environment_sha256:
+                return _with_live_route({"reproduction_score": 0.0, "rca_twin_verified": False,
+                    "reason": "reference_environment_differs_from_matched_controls",
+                    "live_reward_calibrated": False, "uses_oracle_labels": False})
+            if not set(f.service for f in predicted_faults).issubset(self._incident_spec.services_to_keep):
+                return _with_live_route({"reproduction_score": 0.0, "rca_twin_verified": False,
+                                         "reason": "hypothesis_outside_observed_incident_scope",
+                                         "live_reward_calibrated": bool(reward_calibration["eligible"]),
+                                         "uses_oracle_labels": False})
+            if self.handles:
+                trajectory_id = self.trajectory_id
+                self.end_trajectory()
+                self.trajectory_id = trajectory_id
+            if not self._clean_capture:
+                # Do not recompute the frozen plan from its enriched public projection.
+                self.prepare_incident_twin(compressed_state)
+            assert self._clean_capture is not None
+            clean = self._clean_capture
             manifestations = []
             for fault in predicted_faults:
-                handle = inject_predicted_fault(
-                    self.session, fault,
-                    application_source_root=str(profile.source_root),
-                )
+                handle = inject_predicted_fault(self.session, fault,
+                    application_source_root=str(self.runtime_profile.source_root))
                 self.handles.append(handle)
                 manifestation = handle.wait_for_manifestation(timeout_seconds=60)
                 manifestations.append(manifestation.to_dict())
                 if not manifestation.manifested:
                     raise RuntimeError("predicted fault failed to manifest")
-            workload, workloads = self._run_predicted_root_workloads(predicted_faults)
-            time.sleep(max(0.0, self.config.telemetry_settle_seconds))
-            collect_targeted_telemetry(self.session, root / "before", workload=workload)
-            twin_state = self._abstract(root / "before", root / "before-processed")
-            twin_channels = self._require_observable_channels(
-                twin_state, "post_injection", trace_collection_prevalidated=True
-            )
-            comparison = compare_symptoms_scoped(
-                compressed_state, twin_state, spec.services_to_keep,
-                target_services=[fault.service for fault in predicted_faults],
-            )
-            comparison["twin_observable_channels"] = twin_channels
-            injection_checked = bool(
-                all(row.get("manifested") for row in manifestations)
-                and (workload.completed or workload.failed)
-                and (
-                    (workload.total_requests or 0) > 0
-                    or bool(workload.output.strip())
-                    or bool(workload.socket_errors)
-                    or workload.execution_started
-                )
-            )
-            score = float(comparison.get("reproduction_score", 0.0) or 0.0)
-            result = {
-                **comparison,
-                "mode": "sparse_live_kubernetes_v1",
+            if len(self.handles) > 1:
+                # A later mutation must not have undone an earlier component.
+                manifestations = [h.wait_for_manifestation(timeout_seconds=60).to_dict() for h in self.handles]
+                if not all(m["manifested"] for m in manifestations):
+                    raise RuntimeError("joint fault components are not simultaneously manifested")
+            capture = self._capture_phase("post_injection", require_trace_coverage=False)
+            state, workload = capture["state"], capture["workload"]
+            scope = self._incident_spec.services_to_keep
+            comparison = compare_symptoms_scoped(self._incident_state, state, scope, target_services=scope)
+            clean_comparison = compare_symptoms_scoped(self._incident_state, clean["state"], scope, target_services=scope)
+            score = float(comparison["reproduction_score"])
+            clean_score = float(clean_comparison["reproduction_score"])
+            injection_checked = bool(all(m["manifested"] for m in manifestations)
+                                     and (workload.completed or workload.failed)
+                                     and workload.execution_started)
+            evidence_gate = bool(comparison.get("positive_incident_evidence")
+                                 and comparison.get("incident_scope_coverage_complete")
+                                 and score > clean_score)
+            result = _with_live_route({
+                **comparison, "mode": "incident_sparse_live_kubernetes_v2",
+                "measurement_contract": MEASUREMENT_CONTRACT,
                 "predicted_fault_injection_checked": injection_checked,
-                "counterfactual_prediction_replayed": True,
-                "uses_full_state_for_rca_score": False,
-                "uses_oracle_labels": False,
-                "uses_hidden_injection_manifest_for_score": False,
+                "counterfactual_prediction_replayed": True, "uses_oracle_labels": False,
+                "uses_full_state_for_rca_score": False, "uses_hidden_injection_manifest_for_score": False,
                 "live_reward_calibrated": bool(reward_calibration["eligible"]),
-                "reward_calibration": reward_calibration,
-                "uncalibrated_reward_override_used": bool(
-                    not reward_calibration["eligible"]
-                    and not self.config.require_reward_calibration
-                ),
-                "rca_twin_verified": bool(
-                    injection_checked
-                    and (
-                        reward_calibration["eligible"]
-                        or not self.config.require_reward_calibration
-                    )
-                    and score >= self.config.reproduction_threshold
-                ),
-                "manifestations": manifestations,
-                "baseline": baseline.to_dict(),
-                "clean_workload": clean_workload.to_dict(),
-                "clean_workloads": [row.to_dict() for row in clean_workloads],
-                "clean_observable_channels": clean_channels,
-                "clean_predicted_root_trace_coverage": clean_target_coverage,
-                "workload": workload.to_dict(),
-                "workloads": [row.to_dict() for row in workloads],
-                "twin_namespace_opaque": True,
-                "services_selected": len(spec.services_to_keep),
-                "service_reduction_percent": spec.resource_summary.get("service_reduction_percent"),
-                "selected_paths": spec.selected_paths,
+                "reward_calibration": reward_calibration, "decision_threshold": threshold,
+                "uncalibrated_reward_override_used": not reward_calibration["eligible"] and not self.config.require_reward_calibration,
+                "clean_reproduction_score": clean_score, "counterfactual_evidence_gate": evidence_gate,
+                "rca_twin_verified": bool(injection_checked and evidence_gate and score >= threshold),
+                "manifestations": manifestations, "baseline": clean["baseline"].to_dict(),
+                "clean_workload": clean["workload"].to_dict(),
+                "clean_workloads": [w.to_dict() for w in clean["workloads"]],
+                "clean_observable_channels": clean["channels"],
+                "clean_predicted_root_trace_coverage": clean["coverage"],
+                "workload": workload.to_dict(), "workloads": [w.to_dict() for w in capture["workloads"]],
+                "twin_namespace_opaque": True, "services_selected": len(scope),
+                "selected_service_names": list(scope),
+                "service_reduction_percent": self._incident_spec.resource_summary.get("service_reduction_percent"),
+                "scope_policy": self._incident_spec.selection_policy, "selected_paths": self.selected_paths,
                 "actionable_fault_resources": self._actionable_fault_resources(),
-                "runtime_profile_discovery": profile.discovery,
-                "telemetry_artifact_path": str(root) if self.config.artifact_root else None,
-            }
-            result = _with_live_route(result)
-            self.before_state = twin_state
-            self.before_workload = workload
-            self.predicted_faults = list(predicted_faults)
-            self.selected_services = list(spec.services_to_keep)
-            self.last_rca_result = result
-            return result
-        except TwinTelemetryIncomplete as exc:
-            self.end_trajectory()
-            # Distinct from a wrong hypothesis: the Twin ran but the observation
-            # channel needed to judge it was not collected.
-            return _with_live_route({
-                "mode": "sparse_live_kubernetes_v1",
-                "reproduction_score": 0.0,
-                "predicted_fault_injection_checked": False,
-                "rca_twin_verified": False,
-                "telemetry_incomplete": True,
-                "missing_channel": exc.channel,
-                "observed_channels": exc.observed,
-                "reason": f"twin_telemetry_incomplete:{exc.channel}",
-                "uses_oracle_labels": False,
+                "measured_resources": capture["collection"]["resources"],
+                "clean_measured_resources": clean["collection"]["resources"],
+                "telemetry_artifact_path": str(self.work_root) if self.config.artifact_root else None,
             })
+            self.before_state, self.before_workload = state, workload
+            self.predicted_faults, self.last_rca_result = list(predicted_faults), result
+            return result
+        except (TwinTelemetryIncomplete, TelemetryCollectionError) as exc:
+            self.end_trajectory()
+            return _with_live_route({"reproduction_score": 0.0, "rca_twin_verified": False,
+                                     "predicted_fault_injection_checked": False,
+                                     "telemetry_incomplete": True, "reason": str(exc), "uses_oracle_labels": False})
         except Exception as exc:
             self.end_trajectory()
-            return _with_live_route({
-                "mode": "sparse_live_kubernetes_v1",
-                "reproduction_score": 0.0,
-                "predicted_fault_injection_checked": False,
-                "rca_twin_verified": False,
-                "telemetry_incomplete": False,
-                "reason": f"{type(exc).__name__}: {exc}",
-                "uses_oracle_labels": False,
-            })
+            # Infrastructure failures have no usable counterfactual return.
+            return _with_live_route({"reproduction_score": 0.0, "rca_twin_verified": False,
+                                     "predicted_fault_injection_checked": False,
+                                     "telemetry_incomplete": True,
+                                     "reason": f"{type(exc).__name__}: {exc}", "uses_oracle_labels": False})
 
     def apply_commands_and_score(
         self,
@@ -785,39 +841,19 @@ class SparseLiveTwinVerifier:
                 "reason": "live_command_execution_failed",
                 "execution": execution.to_dict(),
             })
-        recovery = self.session.wait_for_clean_baseline(
-            timeout_seconds=self.config.baseline_timeout_seconds
-        )
-        after_workload, after_workloads = self._run_predicted_root_workloads(
-            rca_faults
-        )
-        time.sleep(max(0.0, self.config.telemetry_settle_seconds))
-        assert self.work_root is not None
-        root = self.work_root
-        collect_targeted_telemetry(self.session, root / "after", workload=after_workload)
-        after_state = self._abstract(root / "after", root / "after-processed")
+        recovery = None
         try:
-            after_channels = self._require_observable_channels(after_state, "post_remediation")
-            after_target_coverage = self._require_predicted_roots_observed(
-                after_state, rca_faults, "post_remediation"
-            )
-        except TwinTelemetryIncomplete as exc:
-            # An uncollected after-state is indistinguishable from a fully healed
-            # one by symptom counting, so recovery credit must not be granted.
-            return _with_live_route({
-                "mode": "sparse_live_kubernetes_action_v1",
-                "resolved": False, "twin_resolved": False,
+            recovery = self.session.wait_for_clean_baseline(timeout_seconds=self.config.baseline_timeout_seconds)
+            capture = self._capture_phase("post_remediation", require_trace_coverage=True)
+            after_workload, after_workloads = capture["workload"], capture["workloads"]
+            after_state, after_channels = capture["state"], capture["channels"]
+            after_target_coverage = capture["coverage"]
+        except Exception as exc:
+            return _with_live_route({"resolved": False, "twin_resolved": False,
                 "sla_restored": False, "target_sla_restored": False,
-                "symptom_reduction": 0.0, "global_symptom_reduction": 0.0,
-                "target_symptom_reduction": 0.0,
-                "action_repairs_fault_type": False,
-                "telemetry_incomplete": True,
-                "missing_channel": exc.channel,
-                "observed_channels": exc.observed,
-                "reason": f"twin_telemetry_incomplete:{exc.channel}",
-                "execution": execution.to_dict(),
-                "recovery": recovery.to_dict(),
-            })
+                "telemetry_incomplete": True, "reason": str(exc),
+                "execution": execution.to_dict(), "recovery": recovery.to_dict() if recovery else None})
+        root = self.work_root
         resolution = score_resolution(self.before_state, after_state)
         before_sla = self.before_state.get("sla", {}) or {}
         after_sla = after_state.get("sla", {}) or {}
@@ -830,6 +866,9 @@ class SparseLiveTwinVerifier:
             and (after_sla.get("global_sla", {}) or {}).get("healthy", False)
         )
         sla_transition_restored = bool(before_sla_violated and after_sla_healthy)
+        # A repaired structural deviation may have preserved an already healthy
+        # SLA. Record satisfaction separately from an actual restoration.
+        sla_condition_satisfied = after_sla_healthy
         target_restored = bool(
             recovery.ready
             and after_workload.completed
@@ -838,17 +877,20 @@ class SparseLiveTwinVerifier:
             and (after_workload.required_ready_endpoints or 0) > 0
             and after_workload.application_failures == 0
             and resolution.get("resolved", False)
-            and sla_transition_restored
+            and sla_condition_satisfied
         )
         global_restored = bool(
-            resolution.get("resolved", False) and sla_transition_restored
+            resolution.get("resolved", False) and sla_condition_satisfied
         )
-        return _with_live_route({
+        result = _with_live_route({
             "mode": "sparse_live_kubernetes_action_v1",
             "resolved": target_restored,
             "twin_resolved": target_restored,
-            "sla_restored": global_restored,
-            "target_sla_restored": target_restored,
+            "sla_restored": global_restored and sla_transition_restored,
+            "target_sla_restored": target_restored and sla_transition_restored,
+            "sla_condition_satisfied": global_restored,
+            "target_sla_condition_satisfied": target_restored,
+            "sla_restoration_applicable": before_sla_violated,
             "symptom_reduction": resolution.get("symptom_reduction", 0.0),
             "global_symptom_reduction": resolution.get("symptom_reduction", 0.0),
             "target_symptom_reduction": 1.0 if target_restored else 0.0,
@@ -865,7 +907,24 @@ class SparseLiveTwinVerifier:
             "before_sla": before_sla,
             "after_sla": after_sla,
             "sla_transition_restored": sla_transition_restored,
+            "repair_validation": "independent_frozen_fault_state_v1",
+            "measurement_contract": MEASUREMENT_CONTRACT,
+            "verified_commands": list(commands) if target_restored else [],
+            "verified_namespace": self.session.namespace,
+            "measured_resources": capture["collection"]["resources"],
             "telemetry_incomplete": False,
             "observed_channels": after_channels,
             "telemetry_artifact_path": str(root) if self.config.artifact_root else None,
         })
+        if target_restored and (self.last_rca_result or {}).get("live_reward_calibrated"):
+            from .repair_transfer import export_verified_repair
+            try:
+                plan = export_verified_repair(self, commands, result)
+                result["verified_repair_plan"] = plan
+                if self.config.artifact_root:
+                    path = root / "verified_repair_plan.json"
+                    path.write_text(json.dumps(plan, indent=2))
+                    result["verified_repair_plan_path"] = str(path)
+            except ValueError as exc:
+                result["repair_export_error"] = str(exc)
+        return result

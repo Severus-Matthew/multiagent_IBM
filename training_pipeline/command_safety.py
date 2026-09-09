@@ -85,6 +85,14 @@ def _has_shell_metacharacters(raw: str) -> bool:
 
 def _kubectl_safety(parts: list[str], raw: str) -> list[str]:
     reasons: list[str] = []
+    denied_flags = {"--context", "--kubeconfig", "--server", "-s", "--token", "--as", "--as-group",
+                    "--user", "--cluster", "--certificate-authority", "--client-certificate", "--client-key",
+                    "--insecure-skip-tls-verify", "--all-namespaces", "-A", "--raw", "--filename", "-f",
+                    "--kustomize", "-k", "--recursive", "-R"}
+    if any(p.split("=", 1)[0] in denied_flags for p in parts):
+        reasons.append("kubectl_context_scope_or_file_override")
+    if any(len(p) > 2 and p[:2] in {"-s", "-f", "-k", "-n"} and not p.startswith("-n=") for p in parts):
+        reasons.append("kubectl_compact_scope_flag_not_supported")
     positional = positional_args(parts, 1)
     if not positional:
         return ["kubectl_missing_verb"]
@@ -103,7 +111,7 @@ def _kubectl_safety(parts: list[str], raw: str) -> list[str]:
     if verb in {"get", "describe"}:
         target = resource_target(positional)
         resource = target[0] if target else ""
-        if resource in SENSITIVE_READ_RESOURCES:
+        if any(r.split(".", 1)[0] in SENSITIVE_READ_RESOURCES for r in resource.split(",")):
             reasons.append(f"kubectl_sensitive_read:{resource}")
     if verb == "patch":
         low = raw.lower()

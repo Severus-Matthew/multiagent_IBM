@@ -210,7 +210,7 @@ def _normalize_rca_lines(text: str) -> str:
         line = re.sub(r"^(?:[-*]\s+|\d+[.)]\s+)", "", line).strip()
         if "::" in line:
             lines.append(line)
-    return "\n".join(lines) if lines else str(text or "").strip()
+    return " | ".join(lines) if lines else str(text or "").strip()
 
 
 def _extract_command_lines(text: str, *, max_commands: int) -> list[str]:
@@ -245,7 +245,7 @@ class FrozenQwenRCASolver:
             "output_contract": (
                 "Output only root-cause lines in "
                 "service::fault_type::injectible_mechanism[::variant] format, "
-                "one line per root cause. Do not add prose, labels, confidence, or explanations."
+                "one physical line total, separating multiple roots with ` | `. Do not add prose, labels, confidence, or explanations."
             ),
             "public_injectible_mechanisms": sorted(INJECTIBLE_FAULT_MECHANISMS),
             "currently_live_replayable_mechanisms": sorted(
@@ -291,7 +291,7 @@ class FrozenQwenActionAgent:
             "current_sla": context.get("current_sla") or {},
             "redacted_state": context.get("redacted_state") or {},
             "output_contract": (
-                "Output kubectl, helm, or mongosh commands only, one command per line. "
+                "Output kubectl commands only, one command per line. "
                 "No markdown fences and no prose."
             ),
             "safety_requirements": [

@@ -106,6 +106,8 @@ def _import_generator(aiopslab_root: Path, generated_output: Path):
     # working directory, so it must run from the AIOpsLab checkout.
     os.chdir(root)
     import gen_and_telmetry  # noqa: E402
+    if not hasattr(gen_and_telmetry, "attach_scenario_identity"):
+        raise RuntimeError("Apply the reviewed generator fix first: python scripts/regen/apply_aiopslab_patches.py")
 
     # The upstream module binds output paths at import time. Redirect every one
     # before calling run_one so regeneration can never overwrite the historical

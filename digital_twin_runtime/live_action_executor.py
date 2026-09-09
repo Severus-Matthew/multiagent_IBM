@@ -87,8 +87,13 @@ def execute_twin_commands(
         positional = _positional_args(parts, 1)
         target = _resource_target(positional)
         verb = positional[0] if positional else ""
+        if verb == "rollout" and (len(positional) < 2 or positional[1] != "status"):
+            reasons.append("portable_repairs_require_patch_scale_or_owned_chaos_delete")
         if verb in {"patch", "scale"}:
-            if not target or not target[1] or target[1] not in selected:
+            kinds = {"deploy", "deployment", "deployments", "sts", "statefulset", "statefulsets", "svc", "service", "services"}
+            expected_positions = 2 if len(positional) > 1 and "/" in positional[1] else 3
+            if (not target or target[0] not in kinds or not target[1] or target[1] not in selected
+                    or len(positional) != expected_positions):
                 reasons.append("mutation_target_not_selected_exact_resource")
         if verb == "delete":
             target_kind = str(target[0] if target else "").strip().lower()
