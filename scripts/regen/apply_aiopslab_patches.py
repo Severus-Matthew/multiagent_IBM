@@ -24,6 +24,14 @@ def main():
     def run(*args):
         return subprocess.run(['git', '-C', str(dependency), 'apply', *args, str(patch)],
                               text=True, capture_output=True, check=False)
+    generator = (dependency / 'gen_and_telmetry.py').read_text()
+    if 'attach_scenario_identity(' in generator and 'unique_scenarios(' in generator:
+        # Checkouts newer than the pinned commit (this host runs b56eda8 plus
+        # local edits) carry the fix as a manual port; the patch context no
+        # longer applies, and the submodule must never be reset to satisfy it.
+        install_helper()
+        print('AIOpsLab generator already carries the scenario identity fix (ported or patched).')
+        return
     if run('--reverse', '--check').returncode == 0:
         install_helper()
         print('AIOpsLab scenario identity patch is already applied.')

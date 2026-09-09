@@ -22,8 +22,11 @@ from .live_fault_injector import LiveFaultHandle, inject_predicted_fault
 from .sparse_live_manifest import discover_sparse_manifest_plan, render_sparse_manifest_bundle
 from .sparse_live_session import SparseLiveTwinSession
 from .targeted_telemetry import (collect_targeted_telemetry, ObservationWindow,
-                                 TelemetryCollectionError, MEASUREMENT_CONTRACT)
-from .incident_evidence import reference_state_from_objects, with_reference_deviations
+                                 TelemetryCollectionError, MEASUREMENT_CONTRACT,
+                                 discover_prometheus_scrape_interval,
+                                 require_phase_window_covers_scrapes)
+from .incident_evidence import (reference_state_from_objects, resolve_reference_objects,
+                                with_reference_deviations)
 from .targeted_workload import WorkloadResult, run_targeted_wrk
 from .telemetry_comparator import _service_aliases, compare_symptoms_scoped, score_resolution
 from .twin_spec_builder import build_incident_twin_spec
@@ -119,6 +122,7 @@ class SparseLiveTwinVerifier:
         self._clean_capture: dict[str, Any] | None = None
         self._action_attempt_count = 0
         self.environment_sha256: str | None = None
+        self.scrape_interval_seconds: float | None = None
 
     def begin_trajectory(self, trajectory_id: str | None = None) -> None:
         self.end_trajectory()
@@ -143,28 +147,45 @@ class SparseLiveTwinVerifier:
             return
         profile = self._profile(state)
         planner_state = self._planner_state(state, profile)
+        # Phase-bounded Prometheus range functions need at least two scrapes
+        # inside every phase window. Fail closed before any Twin is created.
+        self.scrape_interval_seconds = discover_prometheus_scrape_interval()
+        require_phase_window_covers_scrapes(self.config.workload_duration_seconds, self.scrape_interval_seconds)
         reference_plan = discover_sparse_manifest_plan(profile.source_namespace, state.get("services") or [])
         from .sparse_live_manifest import _object
+        # The plan carries controller/Service summaries, not Kubernetes objects.
+        # Resolve every reference so the healthy reference state and the
+        # environment fingerprint come from the actual specs.
+        reference_objects = resolve_reference_objects(reference_plan, profile.source_namespace, _object)
         source_contract = {
             "objects": sorted([
                 {"kind": o["kind"], "name": o["metadata"]["name"], "spec": o.get("spec", {})}
-                for o in reference_plan.controllers + reference_plan.service_objects],
+                for o in reference_objects],
                 key=lambda o: (o["kind"], o["name"])),
             "configmaps": {name: _object("configmap", name, profile.source_namespace).get("data", {})
                            for name in sorted(reference_plan.configmaps)},
             "payloads": {str(p.relative_to(profile.source_root)): hashlib.sha256(p.read_bytes()).hexdigest()
                          for p in sorted(profile.source_root.rglob("*.lua"))},
             "rate": self.config.workload_rate, "duration": self.config.workload_duration_seconds,
+            "prometheus_scrape_interval_seconds": self.scrape_interval_seconds,
             "sla_definition": (state.get("sla") or {}).get("definition"),
             "measurement_contract": MEASUREMENT_CONTRACT,
         }
         self.environment_sha256 = hashlib.sha256(json.dumps(source_contract, sort_keys=True).encode()).hexdigest()
-        reference = reference_state_from_objects(reference_plan.controllers + reference_plan.service_objects)
-        planner_state = with_reference_deviations(planner_state, reference)
+        reference = reference_state_from_objects(reference_objects)
+        # Reference capacity/routing and deviations are observable evidence, but
+        # they are derived from source objects after the incident state was
+        # sanitized; apply the same public-input boundary to them.
+        planner_state = sanitize_agent_state(with_reference_deviations(planner_state, reference))
         # This is observable reference capacity/routing, not the private fault.
-        planner_state["reference_configuration"] = reference
+        planner_state["reference_configuration"] = sanitize_agent_state(reference)
+        # Inventory names without a controller in the healthy reference (volumes,
+        # container names, Chaos objects) cannot be deployed or be "outside" scope.
+        deployable = (set(state.get("services") or [])
+                      - set(getattr(reference_plan, "missing_selected_controllers", None) or []))
         spec = build_incident_twin_spec(
-            planner_state, upstream_hops=self.config.upstream_hops,
+            planner_state, deployable_services=deployable,
+            upstream_hops=self.config.upstream_hops,
             downstream_support_hops=self.config.downstream_support_hops,
             max_entry_path_hops=self.config.max_entry_path_hops,
         )
@@ -179,8 +200,15 @@ class SparseLiveTwinVerifier:
         self._incident_profile, self._incident_template = profile, template
 
     def _incident_targets(self) -> list[FaultLabel]:
+        """Affected services on the request graph: they select the phase workloads."""
         return [FaultLabel(service=service, fault_type="unknown")
-                for service in self._incident_spec.resource_summary["incident_affected_services"]]
+                for service in self._incident_spec.resource_summary["incident_request_path_targets"]]
+
+    def _trace_observable_targets(self) -> list[FaultLabel]:
+        """Affected services the incident's own traces observed; only these can be
+        required to appear in a clean/recovered Twin trace export."""
+        return [FaultLabel(service=service, fault_type="unknown")
+                for service in self._incident_spec.resource_summary["incident_trace_observable_targets"]]
 
     def _capture_phase(self, phase: str, *, require_trace_coverage: bool) -> dict[str, Any]:
         assert self.session is not None and self.work_root is not None
@@ -192,7 +220,8 @@ class SparseLiveTwinVerifier:
         time.sleep(max(0.0, self.config.telemetry_settle_seconds))
         root = self.work_root / (phase + "-" + uuid.uuid4().hex[:8])
         collection = collect_targeted_telemetry(self.session, root, window=window, workload=workload,
-                                                 initial_pod_inventory=inventory)
+                                                 initial_pod_inventory=inventory,
+                                                 scrape_interval_seconds=self.scrape_interval_seconds)
         contract = [{"service": w.required_service, "rate": w.requested_rate,
                      "duration_seconds": w.requested_duration_seconds, "payload_sha256": w.payload_sha256,
                      "endpoint": w.endpoint.replace(self.session.namespace, "application-namespace")}
@@ -210,7 +239,7 @@ class SparseLiveTwinVerifier:
                                        "channels": collection.channels, "errors": collection.errors}
         channels = self._require_observable_channels(
             state, phase, trace_collection_prevalidated=not require_trace_coverage)
-        coverage = (self._require_predicted_roots_observed(state, self._incident_targets(), phase)
+        coverage = (self._require_predicted_roots_observed(state, self._trace_observable_targets(), phase)
                     if require_trace_coverage else {})
         return {"state": state, "workload": workload, "workloads": workloads,
                 "channels": channels, "coverage": coverage, "collection": collection.to_dict()}
@@ -555,7 +584,14 @@ class SparseLiveTwinVerifier:
         ))
         if not services:
             raise ValueError("no predicted root services are available for workload execution")
-        rows = [self._run_workload(service) for service in services]
+        # Several targets commonly resolve to the same request path; run each
+        # distinct payload/endpoint once so phase length does not scale with
+        # the number of symptomatic services.
+        distinct: dict[tuple[str, str], str] = {}
+        for service in services:
+            script, endpoint = self._workload(service)
+            distinct.setdefault((str(script), str(endpoint)), service)
+        rows = [self._run_workload(service) for service in distinct.values()]
         if len(rows) == 1:
             return rows[0], rows
 
@@ -763,8 +799,11 @@ class SparseLiveTwinVerifier:
             capture = self._capture_phase("post_injection", require_trace_coverage=False)
             state, workload = capture["state"], capture["workload"]
             scope = self._incident_spec.services_to_keep
-            comparison = compare_symptoms_scoped(self._incident_state, state, scope, target_services=scope)
-            clean_comparison = compare_symptoms_scoped(self._incident_state, clean["state"], scope, target_services=scope)
+            attributable = self._incident_spec.resource_summary["deployable_services"]
+            comparison = compare_symptoms_scoped(self._incident_state, state, scope, target_services=scope,
+                                                 attributable_services=attributable)
+            clean_comparison = compare_symptoms_scoped(self._incident_state, clean["state"], scope, target_services=scope,
+                                                       attributable_services=attributable)
             score = float(comparison["reproduction_score"])
             clean_score = float(clean_comparison["reproduction_score"])
             injection_checked = bool(all(m["manifested"] for m in manifestations)

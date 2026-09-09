@@ -10,6 +10,7 @@ set -euo pipefail
 : "${TRAIN_IDS:=$FROZEN/train_ids.txt}"
 : "${SOURCE_NAMESPACE:?Set the healthy reference namespace}"
 : "${APPLICATION_SOURCE_ROOT:?Set the application source directory}"
+: "${TWIN_WORKLOAD_DURATION_SECONDS:?Set the per-phase workload seconds (>= 2 * Prometheus scrape_interval + 5; 150 at a 1m cadence)}"
 cd "$REPO"
 if [[ -e "$RUN_DIR" ]]; then
   echo 'Use a new run directory, or invoke the trainer directly for a compatible --resume.' >&2
@@ -20,4 +21,5 @@ exec "$TRAINING_PY" -m training_pipeline.train_qwen_live_grpo \
   --scenario_ids "$TRAIN_IDS" --reward_calibration "$CALIBRATION" \
   --source_namespace "$SOURCE_NAMESPACE" --application_source_root "$APPLICATION_SOURCE_ROOT" \
   --output_dir "$RUN_DIR" --twin_mode live --temperature 1 --top_p 1 \
+  --twin_workload_duration_seconds "$TWIN_WORKLOAD_DURATION_SECONDS" \
   --rca_max_iterations 7 --action_max_iterations 7 --retain_twin_artifacts "$@"

@@ -487,21 +487,66 @@ def compare_symptoms(original_state: dict[str, Any], twin_state: dict[str, Any])
     }
 
 
+def canonical_service(name: str | None, services: list[str] | set[str]) -> str | None:
+    """Map a symptom name (pod, container, log or alias form) onto a known service.
+
+    Exact matches win; otherwise the aliases produced by ``_service_aliases``
+    decide (``hotel-reserv-profile-mongo`` -> ``mongodb-profile``). Names that
+    match no known service (log-parser artifacts such as ``unknown``, Chaos
+    objects, volumes) return ``None`` and are reported as unattributed.
+    """
+    normalized = _norm_service(name)
+    if not normalized:
+        return None
+    known = sorted({_norm_service(s) for s in services if _norm_service(s)})
+    if normalized in known:
+        return normalized
+    aliases = _service_aliases(normalized)
+    low = normalized.lower()
+    # A service and its datastore share short aliases (``geo`` belongs to both
+    # ``geo`` and ``mongodb-geo``). Prefer the candidate that names this symptom
+    # among its own aliases, then the candidate named by the symptom's aliases,
+    # then any overlap; each tier must be unique or the name stays unattributed.
+    tiers = (
+        [s for s in known if low in {a.lower() for a in _service_aliases(s)}],
+        [s for s in known if s.lower() in {a.lower() for a in aliases}],
+        [s for s in known if aliases & _service_aliases(s)],
+    )
+    for candidates in tiers:
+        if candidates:
+            return candidates[0] if len(candidates) == 1 else None
+    return None
+
+
 def compare_symptoms_scoped(
     original_state: dict[str, Any],
     twin_state: dict[str, Any],
     selected_services: list[str] | set[str],
     target_services: list[str] | set[str] | None = None,
+    attributable_services: list[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """Compare a sparse Twin only over its principled common service scope.
 
     Missing bystanders are neither treated as healthy nor included in the
-    reproduction denominator. Original symptoms outside the sparse subgraph are
-    reported separately so scope reduction cannot hide unexplained evidence.
+    reproduction denominator. Original symptoms on application services outside
+    the Twin scope reject the comparison so scope reduction cannot hide
+    unexplained evidence. Symptom names are resolved through service aliases;
+    names that belong to no attributable application service (log artifacts,
+    Chaos objects, volumes) cannot be "outside" a deployable scope and are
+    reported separately as unattributed.
     """
     scope = {_norm_service(x) for x in selected_services if _norm_service(x)}
     orig = symptom_signature(original_state)
     twin = symptom_signature(twin_state)
+    attributable = {
+        _norm_service(x) for x in (attributable_services if attributable_services is not None
+                                   else (original_state.get("services") or []))
+        if _norm_service(x)
+    } | scope
+    unattributed: dict[str, list[str]] = {"degraded_services": [], "top_error_services": [], "failed_edges": []}
+
+    def resolve(name: str) -> str | None:
+        return canonical_service(name, attributable)
     # Channels the incident never collected are excluded from scoring rather
     # than scored as "no failed edges": the Twin is compared only on evidence the
     # original capture could have recorded.
@@ -510,7 +555,16 @@ def compare_symptoms_scoped(
     trace_channel_scorable = original_channels["traces"]
 
     def services(values: list[str]) -> set[str]:
-        return {_norm_service(x) for x in values if _norm_service(x) in scope}
+        out = set()
+        for value in values:
+            resolved = resolve(value)
+            if resolved in scope:
+                out.add(resolved)
+        return out
+
+    def edge_endpoints(text: str) -> tuple[str | None, str | None]:
+        src, dst = (str(x).strip() for x in text.split("->", 1))
+        return ("ROOT" if src == "ROOT" else resolve(src)), resolve(dst)
 
     def edges(values: list[str]) -> set[str]:
         kept = set()
@@ -518,10 +572,33 @@ def compare_symptoms_scoped(
             text = str(value)
             if "->" not in text:
                 continue
-            src, dst = (_norm_service(x) for x in text.split("->", 1))
-            if (src in scope or src == "ROOT") and dst in scope:
+            src, dst = edge_endpoints(text)
+            if src and dst and (src in scope or src == "ROOT") and dst in scope:
                 kept.add(f"{src}->{dst}")
         return kept
+
+    def outside_services(values: list[str], channel: str) -> list[str]:
+        out = set()
+        for value in values:
+            resolved = resolve(value)
+            if resolved is None:
+                unattributed[channel].append(str(value))
+            elif resolved not in scope:
+                out.add(resolved)
+        return sorted(out)
+
+    def outside_edges(values: list[str]) -> list[str]:
+        out = set()
+        for value in values:
+            text = str(value)
+            if "->" not in text:
+                continue
+            src, dst = edge_endpoints(text)
+            if not src or not dst:
+                unattributed["failed_edges"].append(text)
+            elif not ((src in scope or src == "ROOT") and dst in scope):
+                out.add(f"{src}->{dst}")
+        return sorted(out)
 
     orig_degraded = services(orig["degraded_services"])
     twin_degraded = services(twin["degraded_services"])
@@ -589,9 +666,9 @@ def compare_symptoms_scoped(
         score = sum(w * s for w, s in weighted) / total_w
         score_reason = "positive_scoped_channel_overlap"
     outside = {
-        "degraded_services": sorted(set(orig["degraded_services"]) - scope),
-        "top_error_services": sorted(set(orig["top_error_services"]) - scope),
-        "failed_edges": sorted(set(orig["failed_edges"]) - orig_edges),
+        "degraded_services": outside_services(orig["degraded_services"], "degraded_services"),
+        "top_error_services": outside_services(orig["top_error_services"], "top_error_services"),
+        "failed_edges": outside_edges(orig["failed_edges"]),
     }
     has_outside = any(outside.values())
     if has_outside:
@@ -600,6 +677,8 @@ def compare_symptoms_scoped(
     return {
         "positive_incident_evidence": orig_has_scoped_symptoms,
         "incident_scope_coverage_complete": not has_outside,
+        "unattributed_original_symptom_names": {k: sorted(set(v)) for k, v in unattributed.items()},
+        "attributable_services": sorted(attributable),
         "reproduction_score": round(score, 4),
         "comparison_scope": sorted(scope),
         "scope_policy": "selected_sparse_common_scope_v3_target_structural_state",

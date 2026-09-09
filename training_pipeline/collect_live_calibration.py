@@ -59,6 +59,9 @@ def main():
     ap.add_argument("--source_namespace", required=True, help="Healthy reference application namespace")
     ap.add_argument("--application_source_root", required=True)
     ap.add_argument("--state_abstraction_root", default="state_abstraction_full")
+    ap.add_argument("--workload_rate", type=int, default=10, help="Must match the training launch")
+    ap.add_argument("--workload_duration_seconds", type=int, default=30,
+                    help="Must match the training launch and cover >= 2 Prometheus scrapes + 5s")
     args = ap.parse_args()
     ids = read_scenario_ids(args.scenario_ids) or set()
     integrity = validate_dataset(args.dataset_manifest, args.processed_states, ids, split="calibration")
@@ -73,6 +76,7 @@ def main():
                 source_namespace=args.source_namespace, application_source_root=args.application_source_root,
                 state_abstraction_root=str(Path(args.state_abstraction_root).resolve()),
                 require_reward_calibration=False, reproduction_threshold=0.0,
+                workload_rate=args.workload_rate, workload_duration_seconds=args.workload_duration_seconds,
                 artifact_root=str(output / "telemetry")))
             verifier.prepare_scenario({}, record.compressed_state)
             scope = verifier._incident_spec.services_to_keep

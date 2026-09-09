@@ -95,6 +95,14 @@ def _spec_apps(spec: dict[str, Any]) -> set[str]:
     return {app for app in apps if app}
 
 
+def _legacy_problem_id(spec: dict[str, Any]) -> str:
+    """The id a spec had before parameter hashes were appended to multifault ids."""
+    problem_id = str(spec.get("problem_id"))
+    if spec.get("is_multifault") and "--" in problem_id:
+        return problem_id.rsplit("--", 1)[0]
+    return problem_id
+
+
 def _import_generator(aiopslab_root: Path, generated_output: Path):
     root = str(aiopslab_root.resolve())
     if root not in sys.path:
@@ -166,9 +174,16 @@ async def _run_shard(args: argparse.Namespace) -> dict[str, Any]:
     else:
         specs = [
             spec for spec in generator.generate_specs()
-            if (not wanted or str(spec.get("problem_id")) in wanted)
+            if (not wanted or _legacy_problem_id(spec) in wanted or str(spec.get("problem_id")) in wanted)
             and (not args.apps or bool(_spec_apps(spec) & set(args.apps)))
         ]
+    # Every regenerated capture carries the stable scenario identity. Multifault
+    # ids gain a parameter-hash suffix; queues written before that change list
+    # the legacy id, so both forms select a spec and the mapping is journaled.
+    specs = generator.unique_scenarios([
+        spec if spec.get("scenario_spec_sha256") else generator.attach_scenario_identity(spec)
+        for spec in specs
+    ])
     specs = _shard(sorted(specs, key=lambda s: str(s.get("problem_id"))),
                    args.shard_index, args.shard_count)
     if args.resume:
@@ -192,7 +207,8 @@ async def _run_shard(args: argparse.Namespace) -> dict[str, Any]:
         journal_start = len(INJECTION_JOURNAL)
         warm_start = len(WARM_JOURNAL) if args.reuse_deployment else 0
         started = time.monotonic()
-        row: dict[str, Any] = {"problem_id": problem_id}
+        row: dict[str, Any] = {"problem_id": problem_id, "legacy_problem_id": _legacy_problem_id(spec),
+                               "scenario_spec_sha256": spec.get("scenario_spec_sha256")}
         try:
             result = await generator.run_one(spec)
             row["generator_ok"] = bool(result.get("ok"))

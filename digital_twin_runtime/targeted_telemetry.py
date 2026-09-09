@@ -16,6 +16,62 @@ from .sparse_live_session import SparseLiveTwinSession
 from .targeted_workload import WorkloadResult
 
 MEASUREMENT_CONTRACT = "phase_windows_query_status_raw_spans_incident_scope_v1"
+PROMETHEUS_PROXY = "/api/v1/namespaces/observe/services/http:prometheus-server:80/proxy"
+# ``rate()``/``avg_over_time()`` evaluate only samples inside the phase window.
+# Prometheus needs at least two samples of a series for a rate, so a phase must
+# cover two scrape intervals plus scheduling jitter; otherwise every pod would
+# be reported as unobserved. The lookback is never widened beyond the phase.
+MIN_SCRAPES_PER_PHASE = 2
+PHASE_WINDOW_MARGIN_SECONDS = 5.0
+_PROMETHEUS_DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0, "w": 604800.0, "y": 31536000.0}
+
+
+def parse_prometheus_duration(text: str) -> float:
+    """Seconds for a Prometheus duration such as ``15s``, ``1m``, ``1m30s`` or ``500ms``."""
+    import re
+    value = str(text or "").strip()
+    if not re.fullmatch(r"(\d+(ms|[smhdwy]))+", value):
+        raise ValueError(f"invalid Prometheus duration: {text!r}")
+    return sum(float(n) * _PROMETHEUS_DURATION_UNITS[u] for n, u in re.findall(r"(\d+)(ms|[smhdwy])", value))
+
+
+def scrape_interval_from_config_yaml(yaml_text: str) -> float:
+    """Global ``scrape_interval`` from Prometheus' rendered configuration (default 1m)."""
+    lines = str(yaml_text or "").splitlines()
+    in_global = False
+    for line in lines:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")):
+            in_global = line.strip() == "global:"
+            continue
+        if in_global:
+            key, sep, value = line.strip().partition(":")
+            if sep and key.strip() == "scrape_interval":
+                return parse_prometheus_duration(value.strip().strip("'\""))
+    return 60.0
+
+
+def discover_prometheus_scrape_interval() -> float:
+    """Read the effective global scrape interval from the Prometheus API."""
+    payload = json.loads(_read(["get", "--raw", PROMETHEUS_PROXY + "/api/v1/status/config"]))
+    if payload.get("status") != "success" or not isinstance((payload.get("data") or {}).get("yaml"), str):
+        raise RuntimeError("Prometheus configuration is not readable; cannot verify phase sample coverage")
+    return scrape_interval_from_config_yaml(payload["data"]["yaml"])
+
+
+def minimum_phase_window_seconds(scrape_interval_seconds: float) -> float:
+    return MIN_SCRAPES_PER_PHASE * float(scrape_interval_seconds) + PHASE_WINDOW_MARGIN_SECONDS
+
+
+def require_phase_window_covers_scrapes(window_seconds: float, scrape_interval_seconds: float) -> None:
+    minimum = minimum_phase_window_seconds(scrape_interval_seconds)
+    if not math.isfinite(float(window_seconds)) or float(window_seconds) < minimum:
+        raise ValueError(
+            f"phase window of {float(window_seconds):.1f}s cannot contain {MIN_SCRAPES_PER_PHASE} Prometheus "
+            f"scrapes at a {float(scrape_interval_seconds):.0f}s scrape interval; use a workload phase of at least "
+            f"{minimum:.0f}s (--twin_workload_duration_seconds) or a shorter Prometheus scrape_interval"
+        )
 
 
 @dataclass(frozen=True)
@@ -124,9 +180,38 @@ def _jaeger_rows(namespace: str, services: list[str], *, window: ObservationWind
     return list(unique.values())
 
 
-def _prometheus_rows(namespace: str, *, window: ObservationWindow) -> list[dict[str, Any]]:
+def _prometheus_query(query: str, *, time_unix: float) -> list[dict[str, Any]]:
+    path = f"{PROMETHEUS_PROXY}/api/v1/query?query={quote(query, safe='')}&time={time_unix}"
+    payload = json.loads(_read(["get", "--raw", path]))
+    if payload.get("status") != "success" or payload.get("warnings"):
+        raise RuntimeError("incomplete Prometheus response")
+    data = payload.get("data", {})
+    if data.get("resultType") != "vector" or not isinstance(data.get("result"), list):
+        raise RuntimeError("invalid Prometheus vector response")
+    return data["result"]
+
+
+def _prometheus_sample_coverage(namespace: str, *, window: ObservationWindow) -> dict[str, int]:
+    """Samples of the CPU counter observed per pod strictly inside the phase window."""
+    duration_ms = max(1, int((window.end_unix - window.start_unix) * 1000))
+    selector = f'namespace="{namespace}",container!="",container!="POD"'
+    query = f'max by (pod) (count_over_time(container_cpu_usage_seconds_total{{{selector}}}[{duration_ms}ms]))'
+    counts: dict[str, int] = {}
+    for result in _prometheus_query(query, time_unix=window.end_unix):
+        value = result.get("value", [])
+        if len(value) != 2 or not math.isfinite(float(value[1])):
+            raise RuntimeError("non-finite or missing sample count")
+        counts[str(result.get("metric", {}).get("pod", "unknown"))] = int(float(value[1]))
+    return counts
+
+
+def _prometheus_rows(namespace: str, *, window: ObservationWindow,
+                     scrape_interval_seconds: float | None = None) -> list[dict[str, Any]]:
     # Range functions use only actual scrapes inside this phase. The evaluation
     # timestamp is pinned to phase end, not to the later collection time.
+    if scrape_interval_seconds is None:
+        scrape_interval_seconds = discover_prometheus_scrape_interval()
+    require_phase_window_covers_scrapes(window.end_unix - window.start_unix, scrape_interval_seconds)
     duration_ms = max(1, int((window.end_unix - window.start_unix) * 1000))
     selector = f'namespace="{namespace}",container!="",container!="POD"'
     queries = {
@@ -135,15 +220,11 @@ def _prometheus_rows(namespace: str, *, window: ObservationWindow) -> list[dict[
     }
     rows: list[dict[str, Any]] = []
     for metric_name, query in queries.items():
-        path = ("/api/v1/namespaces/observe/services/http:prometheus-server:80/proxy"
-                f"/api/v1/query?query={quote(query, safe='')}&time={window.end_unix}")
-        payload = json.loads(_read(["get", "--raw", path]))
-        if payload.get("status") != "success" or payload.get("warnings"):
-            raise RuntimeError(f"incomplete Prometheus response for {metric_name}")
-        data = payload.get("data", {})
-        if data.get("resultType") != "vector" or not isinstance(data.get("result"), list):
-            raise RuntimeError("invalid Prometheus vector response")
-        for result in data["result"]:
+        try:
+            results = _prometheus_query(query, time_unix=window.end_unix)
+        except RuntimeError as exc:
+            raise RuntimeError(f"{exc} for {metric_name}") from exc
+        for result in results:
             value = result.get("value", [])
             if len(value) != 2 or not math.isfinite(float(value[1])):
                 raise RuntimeError("non-finite or missing metric sample")
@@ -200,7 +281,8 @@ def capture_pod_inventory(session):
 def collect_targeted_telemetry(session: SparseLiveTwinSession, run_dir: str | Path, *,
                                window: ObservationWindow,
                                workload: WorkloadResult | None = None,
-                               initial_pod_inventory: dict[str, Any] | None = None) -> TelemetryCollectionResult:
+                               initial_pod_inventory: dict[str, Any] | None = None,
+                               scrape_interval_seconds: float | None = None) -> TelemetryCollectionResult:
     started = time.monotonic()
     root = Path(run_dir)
     if root.exists() and any(root.iterdir()):
@@ -209,12 +291,22 @@ def collect_targeted_telemetry(session: SparseLiveTwinSession, run_dir: str | Pa
     selected = application_services(session)
     result = TelemetryCollectionResult(str(root), session.namespace, selected, window=window.to_dict())
     root.mkdir(parents=True, exist_ok=True)
+    if scrape_interval_seconds is None:
+        try:
+            scrape_interval_seconds = discover_prometheus_scrape_interval()
+        except Exception as exc:
+            result.errors.append({"channel": "metrics", "query": "scrape_interval",
+                                  "error": f"{type(exc).__name__}: {exc}"})
+    result.window.update({"scrape_interval_seconds": scrape_interval_seconds,
+                          "minimum_window_seconds": (minimum_phase_window_seconds(scrape_interval_seconds)
+                                                     if scrape_interval_seconds is not None else None)})
     tasks = {f"{kind}.json": (lambda kind=kind: _read(["get", kind, "-n", session.namespace, "-o", "json"]))
              for kind in ("pods", "deployments", "statefulsets", "services", "replicasets", "endpoints", "events")}
     metrics: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(fn): name for name, fn in tasks.items()}
-        futures[pool.submit(_prometheus_rows, session.namespace, window=window)] = "metrics.csv"
+        futures[pool.submit(_prometheus_rows, session.namespace, window=window,
+                            scrape_interval_seconds=scrape_interval_seconds)] = "metrics.csv"
         futures[pool.submit(_jaeger_rows, session.namespace, selected, window=window)] = "traces.csv"
         for future in as_completed(futures):
             name = futures[future]
@@ -265,25 +357,51 @@ def collect_targeted_telemetry(session: SparseLiveTwinSession, run_dir: str | Pa
         except Exception as exc:
             result.errors.append({"channel": "logs", "error": f"{name}: {exc}"})
     result.channels["logs"] = {"query_succeeded": not any(e["channel"] == "logs" for e in result.errors), "pod_count": log_count}
+    # Resource accounting is measured strictly inside the phase. A running pod
+    # without enough scrapes in the window (it started mid-phase, or the phase
+    # is too short for the scrape cadence) invalidates the CPU/memory
+    # measurement; it is not a failed observation channel for the reward.
+    coverage: dict[str, Any] = {"query_succeeded": False, "min_samples_required": MIN_SCRAPES_PER_PHASE,
+                                "samples_by_pod": {}, "insufficient_pods": [], "missing_pods": []}
+    if not any(e["channel"] == "metrics" for e in result.errors):
+        try:
+            counts = _prometheus_sample_coverage(session.namespace, window=window)
+            coverage.update({"query_succeeded": True,
+                             "samples_by_pod": {pod: counts.get(pod, 0) for pod in sorted(running_pods)},
+                             "insufficient_pods": sorted(pod for pod in running_pods
+                                                         if counts.get(pod, 0) < MIN_SCRAPES_PER_PHASE)})
+        except Exception as exc:
+            result.errors.append({"channel": "metrics", "query": "sample_coverage",
+                                  "error": f"{type(exc).__name__}: {exc}"})
     for metric in ("container_cpu_usage_cores", "container_memory_working_set_bytes"):
         observed = {row["cmdb_id"] for row in metrics if row["kpi_name"] == metric}
-        missing = sorted(running_pods - observed)
-        if missing:
-            result.errors.append({"channel": "metrics", "error": f"{metric} missing running pods: {missing}"})
-            result.channels["metrics"] = {"query_succeeded": False}
+        coverage["missing_pods"].extend(f"{metric}:{pod}" for pod in sorted(running_pods - observed))
+    metrics_failed = any(e["channel"] == "metrics" for e in result.errors)
+    result.channels["metrics"] = {**(result.channels.get("metrics") or {}), "query_succeeded": not metrics_failed}
     cpu = sum(r["value"] for r in metrics if r["kpi_name"] == "container_cpu_usage_cores" and r["cmdb_id"] in running_pods)
     memory = sum(r["value"] for r in metrics if r["kpi_name"] == "container_memory_working_set_bytes" and r["cmdb_id"] in running_pods)
     final_inventory = _pod_inventory(pods, selected)
     metric_pods = {r["cmdb_id"] for r in metrics if any(r["cmdb_id"].startswith(s + "-") for s in selected)}
     stable_population = initial_pod_inventory is not None and initial_pod_inventory == final_inventory and metric_pods == running_pods
+    invalid_reasons = []
+    if result.errors:
+        invalid_reasons.append("collection_errors")
+    if not stable_population:
+        invalid_reasons.append("pod_population_unverified_or_changed")
+    if coverage["insufficient_pods"] or not coverage["query_succeeded"]:
+        invalid_reasons.append("insufficient_metric_samples_in_phase")
+    if coverage["missing_pods"]:
+        invalid_reasons.append("running_pods_without_metric_series")
     result.resources = {"application_running_pods": len(running_pods), "application_cpu_cores_mean": cpu,
                         "application_cpu_core_seconds": cpu * (window.end_unix - window.start_unix),
                         "application_memory_bytes_mean": memory, "measurement_window_seconds": window.end_unix - window.start_unix,
                         "includes_observer_overhead": False,
                         "estimator": "Prometheus reset-aware rate and per-container window mean",
+                        "scrape_interval_seconds": scrape_interval_seconds,
+                        "metric_sample_coverage": coverage,
                         "stable_pod_population": stable_population,
-                        "valid": not result.errors and stable_population,
-                        "invalid_reason": None if stable_population else "pod_population_unverified_or_changed"}
+                        "valid": not invalid_reasons,
+                        "invalid_reason": ";".join(invalid_reasons) if invalid_reasons else None}
     if workload:
         result.files_written.append(_write(root / "workload_result.json", json.dumps(workload.to_dict(), indent=2)))
         result.files_written.append(_write(root / "builtin_api_outputs" / "shell" / "targeted_workload.txt", workload.output))

@@ -21,11 +21,79 @@ which can consume tens of GiB for long Qwen prompts.
 import contextlib
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 import torch
 
 from .peft_adapter_control import ROLE_ADAPTERS
+
+
+def neutral_generation_config(*, max_new_tokens: int, eos_token_id: Any, pad_token_id: Any,
+                              bos_token_id: Any) -> Any:
+    """Raw categorical softmax: every logit processor/warper pinned to its identity."""
+    from transformers import GenerationConfig
+    return GenerationConfig(
+        max_new_tokens=int(max_new_tokens), do_sample=True,
+        temperature=1.0, top_p=1.0, top_k=0, typical_p=1.0,
+        epsilon_cutoff=0.0, eta_cutoff=0.0, diversity_penalty=0.0,
+        repetition_penalty=1.0, encoder_repetition_penalty=1.0, no_repeat_ngram_size=0,
+        length_penalty=1.0, num_beams=1, num_beam_groups=1, renormalize_logits=False,
+        eos_token_id=eos_token_id, pad_token_id=pad_token_id, bos_token_id=bos_token_id,
+        use_cache=True,
+    )
+
+
+def _generation_defaults_owner(model: Any) -> Any:
+    """The module whose ``generation_config`` ``generate()`` merges as defaults.
+
+    A PEFT wrapper forwards ``generate`` to the underlying transformers model,
+    which reads its own ``generation_config``; setting the attribute on the
+    wrapper would not be seen.
+    """
+    get_base = getattr(model, "get_base_model", None)
+    return get_base() if callable(get_base) else model
+
+
+@contextlib.contextmanager
+def pin_raw_softmax_generation(model: Any, *, max_new_tokens: int, eos_token_id: Any,
+                               pad_token_id: Any, bos_token_id: Any) -> Iterator[tuple[Any, dict[str, Any]]]:
+    """Explicit raw-softmax settings that survive inherited model defaults.
+
+    ``generate()`` merges ``model.generation_config`` (for instruction-tuned
+    checkpoints typically temperature/top_p/top_k/repetition_penalty) into the
+    supplied configuration. transformers < 5 overrides every attribute still at
+    its library default unless ``use_model_defaults=False`` is passed;
+    transformers >= 5 removed that keyword and merges into unset (``None``)
+    attributes only, which still re-enables processors whose neutral value is
+    ``None`` (``min_p``, ``suppress_tokens``...). Both paths are closed here: the
+    owning module's ``generation_config`` is replaced by the neutral contract
+    before generation, and the keyword is added when the installed version
+    accepts it. ``tests/test_raw_sampling_distribution.py`` checks generated
+    scores against raw logits on the installed transformers version.
+    """
+    import inspect
+    from transformers import GenerationMixin
+
+    neutral = neutral_generation_config(
+        max_new_tokens=max_new_tokens, eos_token_id=eos_token_id,
+        pad_token_id=pad_token_id, bos_token_id=bos_token_id,
+    )
+    generate_kwargs: dict[str, Any] = {}
+    if "use_model_defaults" in inspect.signature(GenerationMixin.generate).parameters:
+        generate_kwargs["use_model_defaults"] = False
+    owner = _generation_defaults_owner(model)
+    inherited = getattr(owner, "generation_config", None)
+    # The frozen downstream Qwen agents share this base model and decode with
+    # their own explicit settings; restore the inherited defaults afterwards so
+    # the sampler never changes another caller's decoding.
+    owner.generation_config = neutral_generation_config(
+        max_new_tokens=max_new_tokens, eos_token_id=eos_token_id,
+        pad_token_id=pad_token_id, bos_token_id=bos_token_id,
+    )
+    try:
+        yield neutral, generate_kwargs
+    finally:
+        owner.generation_config = inherited
 
 
 @dataclass(frozen=True)
@@ -276,20 +344,15 @@ class HFExactTokenPolicySampler:
         try:
             with self._rng_context(seed):
                 self._set_seed(seed)
-                from transformers import GenerationConfig
-                generation_config = GenerationConfig(
-                    max_new_tokens=int(self.config.max_new_tokens), do_sample=True,
-                    temperature=1.0, top_p=1.0, top_k=0, typical_p=1.0,
-                    repetition_penalty=1.0, no_repeat_ngram_size=0,
+                pinned = pin_raw_softmax_generation(
+                    self.model, max_new_tokens=int(self.config.max_new_tokens),
                     eos_token_id=eos_id, pad_token_id=pad_id,
                     bos_token_id=getattr(self.tokenizer, "bos_token_id", None),
-                    use_cache=True,
                 )
-                with torch.no_grad():
+                with pinned as (generation_config, generate_kwargs), torch.no_grad():
                     sequences = self.model.generate(
                         input_ids=input_ids, attention_mask=attention_mask,
-                        generation_config=generation_config,
-                        use_model_defaults=False,
+                        generation_config=generation_config, **generate_kwargs,
                     )
 
             if sequences.ndim != 2 or sequences.shape[0] != 1:

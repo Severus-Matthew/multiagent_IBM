@@ -131,7 +131,7 @@ class TelemetryTests(unittest.TestCase):
     def test_metric_query_pins_time_and_preserves_rate_unit(self):
         response = {'status': 'success', 'data': {'resultType': 'vector', 'result': [{'metric': {'pod': 'a-12345678-abcde'}, 'value': [130, '0.5']}]}}
         with patch('digital_twin_runtime.targeted_telemetry._read', return_value=json.dumps(response)) as query:
-            rows = _prometheus_rows('app', window=self.window)
+            rows = _prometheus_rows('app', window=self.window, scrape_interval_seconds=10)
         self.assertEqual(rows[0]['kpi_name'], 'container_cpu_usage_cores')
         self.assertIn('time=130', query.call_args.args[0][-1])
         with tempfile.TemporaryDirectory() as temp:
@@ -405,11 +405,23 @@ class FrozenRuntimeWorkflowTests(unittest.TestCase):
             sessions.append(session)
             return session
         def plan(namespace, selected):
+            # discover_sparse_manifest_plan returns controller/Service summaries,
+            # never Kubernetes objects; the verifier must resolve them itself.
             return SimpleNamespace(selected_services=selected, configmaps=[],
-                controllers=[{'kind': 'Deployment', 'metadata': {'name': name}, 'spec': {'replicas': 1}} for name in selected],
-                service_objects=[])
+                controllers=[{'kind': 'Deployment', 'name': name, 'logical_service': name, 'pod_labels': {'app': name}}
+                             for name in selected],
+                service_objects=[{'name': name, 'type': 'ClusterIP', 'selector': {'app': name},
+                                  'ports': [{'port': 80, 'targetPort': 80}]} for name in selected])
+        def fetch(kind, name, namespace):
+            if kind == 'Service':
+                return {'kind': 'Service', 'metadata': {'name': name},
+                        'spec': {'selector': {'app': name}, 'ports': [{'port': 80, 'targetPort': 80}]}}
+            return {'kind': kind, 'metadata': {'name': name},
+                    'spec': {'replicas': 1, 'template': {'metadata': {'labels': {'app': name}},
+                             'spec': {'containers': [{'name': name, 'image': name + ':1'}]}}}}
         def render(p, namespace, **kw):
-            return SparseManifestBundle('reference', namespace, objects=p.controllers,
+            objects = [fetch(row['kind'], row['name'], namespace) for row in p.controllers]
+            return SparseManifestBundle('reference', namespace, objects=objects,
                                         object_refs=[{'kind': 'Deployment', 'name': n} for n in p.selected_services])
         def capture(phase, **kw):
             phases.append(phase)
@@ -424,6 +436,8 @@ class FrozenRuntimeWorkflowTests(unittest.TestCase):
             stack.enter_context(patch.object(verifier, '_profile', return_value=profile))
             stack.enter_context(patch.object(verifier, '_planner_state', side_effect=lambda s, p: copy.deepcopy(s)))
             discover = stack.enter_context(patch('digital_twin_runtime.sparse_live_verifier.discover_sparse_manifest_plan', side_effect=plan))
+            fetched = stack.enter_context(patch('digital_twin_runtime.sparse_live_manifest._object', side_effect=fetch))
+            stack.enter_context(patch('digital_twin_runtime.sparse_live_verifier.discover_prometheus_scrape_interval', return_value=10.0))
             stack.enter_context(patch('digital_twin_runtime.sparse_live_verifier.render_sparse_manifest_bundle', side_effect=render))
             stack.enter_context(patch('digital_twin_runtime.sparse_live_verifier.SparseLiveTwinSession', side_effect=session_factory))
             stack.enter_context(patch.object(verifier, '_capture_phase', side_effect=capture))
@@ -451,6 +465,8 @@ class FrozenRuntimeWorkflowTests(unittest.TestCase):
             self.assertEqual(phases.count('clean_baseline'), 2)
             self.assertFalse(sessions[0].created)
             self.assertEqual(discover.call_count, 2)  # full reference and selected plan frozen once
+            self.assertIn(('Service', 'a', 'reference'), [c.args for c in fetched.call_args_list])
+            self.assertEqual(result['measured_resources'], {'valid': False})
             verifier.end_trajectory()
 
 

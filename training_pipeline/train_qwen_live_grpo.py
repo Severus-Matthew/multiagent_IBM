@@ -226,6 +226,13 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--application_source_root", default="AIOpsLab/aiopslab-applications/socialNetwork")
     ap.add_argument("--state_abstraction_root", default="state_abstraction_full")
     ap.add_argument("--min_twin_reproduction_score", type=float, default=0.0)
+    ap.add_argument("--twin_workload_rate", type=int, default=10,
+                    help="Requests per second of every Twin phase workload (part of the calibration contract).")
+    ap.add_argument(
+        "--twin_workload_duration_seconds", type=int, default=30,
+        help=("Seconds of every Twin phase workload. Phase-bounded Prometheus rates need at least two scrapes "
+              "inside the phase, so this must be >= 2 * scrape_interval + 5s (checked before model loading)."),
+    )
     ap.add_argument("--max_serialized_chars", type=int, default=100_000)
     ap.add_argument("--max_system_services", type=int, default=12)
     ap.add_argument("--max_metric_services", type=int, default=64)
@@ -466,6 +473,15 @@ def main() -> None:
         raise RuntimeError("no labeled scenarios matched the requested training selection")
     if args.twin_mode == "live" and not args.allow_uncalibrated_live_reward and not args.reward_calibration:
         raise ValueError("--reward_calibration is required; collect current matched live controls before training")
+    if args.twin_mode in {"live", "hybrid"}:
+        # Every Twin phase is measured strictly inside its own window; verify
+        # the configured phase length against the cluster's scrape cadence now,
+        # before loading the model and before any Twin namespace exists.
+        from digital_twin_runtime.targeted_telemetry import (
+            discover_prometheus_scrape_interval, require_phase_window_covers_scrapes,
+        )
+        args.prometheus_scrape_interval_seconds = discover_prometheus_scrape_interval()
+        require_phase_window_covers_scrapes(args.twin_workload_duration_seconds, args.prometheus_scrape_interval_seconds)
     if args.twin_mode == "live":
         live_preflight = audit_live_training_records(
             records,
@@ -584,6 +600,8 @@ def main() -> None:
                 reproduction_threshold=args.min_twin_reproduction_score,
                 calibration_path=args.reward_calibration,
                 require_reward_calibration=not args.allow_uncalibrated_live_reward,
+                workload_rate=args.twin_workload_rate,
+                workload_duration_seconds=args.twin_workload_duration_seconds,
                 artifact_root=(str(out_dir / "twin_artifacts" / f"worker-{worker_index}")
                                if args.retain_twin_artifacts else None),
             ))

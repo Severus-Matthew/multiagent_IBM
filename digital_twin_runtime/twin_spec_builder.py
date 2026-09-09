@@ -495,33 +495,109 @@ def build_oracle_twin_spec(full_state: dict[str, Any], gt_faults: list[FaultLabe
     )
 
 
-def build_incident_twin_spec(compressed_state: dict[str, Any], **budgets: Any) -> TwinSpec:
+def _trace_endpoint_services(compressed_state: dict[str, Any]) -> set[str]:
+    """Services the incident's own traces observed as span endpoints."""
+    traces = compressed_state.get("traces") or {}
+    per_edge = traces.get("per_edge", {}) if isinstance(traces, dict) else {}
+    out: set[str] = set()
+    if isinstance(per_edge, dict):
+        for edge_id, feats in per_edge.items():
+            feats = feats if isinstance(feats, dict) else {}
+            src, dst = feats.get("source"), feats.get("target")
+            if (not src or not dst) and "->" in str(edge_id):
+                src, dst = str(edge_id).split("->", 1)
+            for name in (src, dst):
+                if name and str(name) != "ROOT":
+                    out.add(str(name))
+    return out
+
+
+def build_incident_twin_spec(compressed_state: dict[str, Any], *,
+                             deployable_services: list[str] | set[str] | None = None,
+                             **budgets: Any) -> TwinSpec:
     """Freeze scope from observable incident evidence, before any RCA proposal.
 
-    Every observed affected service is retained, with request paths and runtime
-    dependencies. No predicted root, private label, or scenario ID selects scope.
-    A fully connected dependency requirement may legitimately yield no reduction.
+    Every attributable affected service is retained, with request paths and
+    runtime/startup dependencies. No predicted root, private label, or scenario
+    ID selects scope. A fully connected dependency requirement may legitimately
+    yield no reduction.
+
+    Real captures attribute symptoms to pods, containers, log names, Chaos
+    objects and volumes as well as to services. Symptom names are resolved onto
+    the deployable service inventory through the comparator's aliases; names
+    that resolve to nothing are recorded as unattributed rather than deployed.
+    Affected services on the request graph become the workload targets and are
+    planned with entry paths; affected services off the request graph
+    (datastores, infrastructure) are kept directly with their startup closure.
+    Affected services the incident's own traces observed are the only ones a
+    clean/recovered phase can be required to reach.
     """
-    from .telemetry_comparator import symptom_signature
-    services = set(compressed_state.get("services") or [])
-    affected = set(symptom_signature(compressed_state)["affected_services"]) & services
-    affected |= set((compressed_state.get("observed_deviations") or {}).keys()) & services
+    from .telemetry_comparator import canonical_service, symptom_signature
+    inventory = {str(s) for s in (compressed_state.get("services") or []) if s}
+    services = inventory & {str(s) for s in deployable_services} if deployable_services is not None else inventory
+    undeployable = sorted(inventory - services)
+    signature = symptom_signature(compressed_state)
+    raw_names = set(signature["affected_services"]) | set((compressed_state.get("observed_deviations") or {}).keys())
+    affected: set[str] = set()
+    unattributed: list[str] = []
+    for name in sorted(raw_names):
+        resolved = canonical_service(name, services)
+        if resolved is None:
+            unattributed.append(str(name))
+        else:
+            affected.add(resolved)
     if not affected:
-        raise ValueError("no observable incident symptoms or reference-state deviations")
+        raise ValueError("no observable incident symptoms or reference-state deviations on deployable services")
+    edges, _ = _graph_edge_records(compressed_state)
+    graph_nodes = {a for a, _ in edges} | {b for _, b in edges}
+    request_targets = sorted(affected & graph_nodes)
+    if not request_targets:
+        raise ValueError("no observable incident symptoms on request-path services")
     # The existing path/closure planner only uses the service field of these
     # structural seeds. They are not fault hypotheses and are never injected.
-    seeds = [FaultLabel(service=s, fault_type="unknown") for s in sorted(affected)]
+    seeds = [FaultLabel(service=s, fault_type="unknown") for s in request_targets]
     spec = build_sparse_live_twin_spec(compressed_state, seeds, **budgets)
-    if not affected.issubset(set(spec.services_to_keep)):
+    if not spec.services_to_keep or spec.resource_summary.get("invalid_topology"):
+        raise ValueError("incident request-path targets are not reachable: "
+                         + str(spec.resource_summary.get("unreachable_predicted_roots") or spec.mode))
+    keep = set(spec.services_to_keep)
+    direct = sorted(affected - keep)
+    for service in direct:
+        keep.add(service)
+        spec.reason.setdefault(service, []).append("observable_incident_service_without_request_path")
+    startup_added = _startup_closure(keep, _startup_required_edges(compressed_state), services)
+    for dep, callers in sorted(startup_added.items()):
+        keep.add(dep)
+        for caller in sorted(callers):
+            spec.reason.setdefault(dep, []).append(f"startup_required_dependency_of_{caller}")
+    if not affected.issubset(keep):
         raise ValueError("incident scope cannot cover all observable affected services")
+    spec.services_to_keep = sorted(keep)
+    spec.services_to_prune = sorted(services - keep)
     spec.mode = "incident_observable_sparse_live"
-    spec.selection_policy = "hypothesis_independent_incident_scope_v1"
+    spec.selection_policy = "hypothesis_independent_incident_scope_v2_alias_resolved"
     spec.target_faults = []
-    spec.resource_summary.update({"incident_affected_services": sorted(affected),
-                                  "scope_depends_on_rca_prediction": False,
-                                  "symptoms_expand_deployment_scope": True})
+    total = len(services)
+    reduction = (total - len(keep)) / total if total else 0.0
+    trace_observable = sorted(affected & _trace_endpoint_services(compressed_state))
+    spec.resource_summary.update({
+        "incident_affected_services": sorted(affected),
+        "incident_request_path_targets": request_targets,
+        "incident_trace_observable_targets": trace_observable,
+        "incident_direct_scope_additions": direct,
+        "incident_startup_dependencies_added": sorted(set(startup_added) - set(spec.services_to_keep)),
+        "unattributed_symptom_names": sorted(set(unattributed)),
+        "undeployable_inventory_names": undeployable,
+        "deployable_services": sorted(services),
+        "kept_services": len(keep), "pruned_services": total - len(keep),
+        "service_reduction_fraction": reduction,
+        "service_reduction_percent": round(100.0 * reduction, 3),
+        "scope_depends_on_rca_prediction": False,
+        "symptoms_expand_deployment_scope": True,
+    })
     for reasons in spec.reason.values():
         if "rca_predicted_root_cause" in reasons:
             reasons.remove("rca_predicted_root_cause")
             reasons.append("observable_incident_service")
+    spec.reason = {k: sorted(set(v)) for k, v in sorted(spec.reason.items()) if k in keep}
     return spec
