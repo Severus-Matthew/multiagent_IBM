@@ -59,10 +59,14 @@ JSONL logs are in `artifacts/host_validation_2026-09-09/`.
   reported the 150s workload as failed. Fixed in `ac21faf` (wait derived from the
   duration). Even in that run traces (7410 rows in-window), logs (18 pods) and
   system state were collected; only the metrics guard rejected the short window.
-- **Run 2, scope**: 19 of 24 services deployed (request-path targets on 15
-  services; trace-observable targets `geo`, `rate`; unattributed names
-  `profile-db`, `recommendation-db`, `reservation-db`, `user-db`, `unknown`).
-  Scrape interval read as 60s; environment fingerprint recorded.
+- **Run 2, scope**: all 19 deployable controllers deployed; the record's
+  24-name inventory also lists 5 names without a controller (`jaeger-out`,
+  `profile-db`, `recommendation-db`, `reservation-db`, `user-db`). The result
+  reports `service_reduction_percent: 0.0`: **no deployment reduction** on this
+  incident. Request-path targets on 15 services; trace-observable targets `geo`,
+  `rate`; unattributed symptom names `profile-db`, `recommendation-db`,
+  `reservation-db`, `user-db`, `unknown`. Scrape interval read as 60s;
+  environment fingerprint recorded.
 - **Run 2, clean phase** (192s): workload completed, 1507 requests, 0
   application failures, 13 trace edges, trace coverage of both trace-observable
   targets, all four channels observed, resource measurement valid (18 running
@@ -73,12 +77,15 @@ JSONL logs are in `artifacts/host_validation_2026-09-09/`.
   is false and the true hypothesis is **not** verified.
 - **Run 2, wrong-service control** (`network_delay` on `consul`, 358s including
   a fresh Twin): manifested, `reproduction_score` **0.7000** = clean.
-- **Run 3, recovery machinery** (gate bypassed on purpose, documented in the
+- **Run 3, recovery machinery only** (the RCA evidence gate was bypassed on
+  purpose and the evaluator supplied the exact repair; documented in the
   script): `kubectl delete networkchaos twin-network-delay-frontend` executed
   in the Twin, recovery ready, symptom reduction 1.0, SLA violated before
   (1 unhealthy service, 2 dependency violations) and healthy after,
   `sla_transition_restored` true, post-remediation resources valid, no repair
-  plan exported (correct: the hypothesis was not calibrated).
+  plan exported (correct: the hypothesis was not calibrated). This shows the
+  repair/recovery machinery works; it does **not** show that the automated
+  RCA -> Action path succeeds, because no RCA hypothesis was admitted.
 
 Per-channel breakdown of run 2 from the retained phase states: the historical
 capture of this incident has **no degraded service and no failed trace edge**;
@@ -89,14 +96,25 @@ names with the historical capture (overlap 0), which yields
 injected true fault adds failed edges `ROOT->frontend` and `frontend->frontend`,
 activating the trace channel with zero overlap, hence
 0.35 / (0.35 + 0.25 + 0.15) = 0.4667. The measurement lifecycle therefore works
-on this cluster, and the corrected comparator does its arithmetic as designed,
-but the **legacy corpus is not comparable with the corrected measurement
-contract**: its trace statistics come from the pre-audit aggregation the audit
-itself corrected, and its logs were captured over whole pod lifetimes rather
-than phase windows. Positive/negative separation on this incident is inverted,
-so no threshold could be qualified from it. This is direct evidence that the
-corpus rebuild and the recollection of matched controls listed in
-OPERATIONS.md are prerequisites, not formalities.
+on this cluster and the comparator does its arithmetic as designed, but the
+result exposes two separate problems:
+
+1. The **legacy corpus is not comparable with the corrected measurement
+   contract**: its trace statistics come from the pre-audit aggregation the
+   audit itself corrected, and its logs were captured over whole pod lifetimes
+   rather than phase windows. Reprocessing the old files cannot recover
+   observations or timestamps that were never recorded, so a rebuild of the
+   existing raw captures is necessary but is not a demonstrated fix; admission
+   and scoring have to be checked together on freshly recorded incidents.
+2. A **scoring concern independent of the corpus**: matching healthy
+   deployment tokens earns 0.35 of the weight with zero symptom overlap, so a
+   Twin that reproduces nothing scores 0.70 whenever the log channel is
+   incomparable. Whether structural-state agreement should count without any
+   symptom agreement must be decided with fresh controls before any threshold
+   is derived.
+
+Positive/negative separation on this incident is inverted, so no threshold could
+be qualified from it. Rejecting both hypotheses was the correct outcome.
 
 ## Not established by these checks
 
@@ -107,6 +125,13 @@ matched controls with `--workload_duration_seconds 150`, freezing a dataset with
 disjoint train/calibration/test splits, and a short frozen-configuration training
 run remain prerequisites for any reportable experiment. The live evidence above
 qualifies no hypothesis and no threshold: on the one incident exercised, the true
-hypothesis scored below the clean control. Incident scopes on this
-corpus are close to the full application; resource-saving claims require the
-matched measurement described in OPERATIONS.md.
+hypothesis scored below the clean control, and the automated RCA -> Action path
+was never exercised. Incident scopes on this corpus deploy the full deployable
+application (0% reduction on the exercised incident); resource-saving claims
+require the matched full-application measurement described in OPERATIONS.md.
+
+Recommended order of the remaining work: (1) record a small fresh incident and
+control set with the corrected generator and collectors and check admission and
+scoring together on it; (2) an automated RCA -> Action repair on an admitted
+hypothesis; (3) a short GPU training/checkpoint test on the corrected trainer.
+The learning signal, not the machinery, is the blocker.

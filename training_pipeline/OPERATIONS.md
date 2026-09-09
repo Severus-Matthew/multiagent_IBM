@@ -299,10 +299,18 @@ comparator rejects a comparison only when a *deployable* service with symptoms i
 outside scope.
 
 Because every capture in the 622/49 corpus carries background log errors on most
-datastores, incident scopes are large: 25 of 27 services (SocialNetwork) and 19 of
-24 (HotelReservation) on sampled records. That is the corrected contract's
-expected outcome ("reduction is not forced"), and it means resource-saving claims
-need the matched full-versus-Twin measurement, not the service count.
+datastores, incident scopes are large: on sampled records they contain every
+deployable controller (25 of 27 inventory names for SocialNetwork, 19 of 24 for
+HotelReservation; the remaining names have no controller), i.e. **0% deployment
+reduction**. That is the corrected contract's expected outcome ("reduction is
+not forced"), and it means resource-saving claims need the matched
+full-versus-Twin measurement, not the service count.
+
+Open scoring item: matching healthy deployment tokens earns 0.35 of the comparator
+weight without any symptom overlap, so a Twin that reproduces nothing can score
+0.70 when the log channel is incomparable (observed live on 9 September, see
+VALIDATION.md). Decide with fresh controls whether structural agreement should
+count without symptom agreement before deriving any threshold.
 
 Open item: the corrected comparator counts restarts as a symptom only while a pod
 is still unready, so incidents whose only surviving evidence is a restart counter
