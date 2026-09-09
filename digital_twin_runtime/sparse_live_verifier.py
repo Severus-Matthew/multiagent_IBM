@@ -35,6 +35,21 @@ from .twin_spec_builder import build_incident_twin_spec
 CLEAN_BASELINE_MAX_EDGE_ERROR_RATIO = 0.05
 
 
+def workload_script_candidates(source_root: Path, default_script: Path | None) -> list[Path]:
+    """Application workload scripts only.
+
+    ``wrk2/scripts/`` also ships wrk2's generic helpers (``multiplepaths.lua``
+    needs a ``paths.txt`` and exits at once, ``auth``, ``setup``, ``report``...).
+    Scoring them by token overlap once selected ``multiplepaths.lua`` for
+    ``user-service``, producing a workload with zero requests. Only the
+    application's own directory (the one holding the profile's default
+    payload) is eligible; determinism variants are excluded.
+    """
+    if default_script is not None and Path(default_script).parent.is_dir():
+        return sorted(Path(default_script).parent.glob("*.lua"))
+    return sorted(p for p in Path(source_root).glob("wrk2/scripts/*/*.lua") if "determinism" not in p.parent.name)
+
+
 def clean_baseline_defects(state: dict[str, Any], workload: Any, scope: list[str] | set[str]) -> dict[str, Any]:
     """Request errors observed in a clean baseline: non-2xx responses, error edges in scope."""
     scoped = {str(s) for s in scope}
@@ -527,7 +542,7 @@ class SparseLiveTwinVerifier:
         # attempts (across every task-phase variant in the dataset) with
         # "twin_telemetry_incomplete:traces" before a single fault was ever
         # injected.
-        candidates = sorted(self.runtime_profile.source_root.glob("wrk2/**/*.lua"))
+        candidates = workload_script_candidates(self.runtime_profile.source_root, script)
         path_tokens = {
             token.lower().replace("-service", "").replace("-", "_")
             for path in self.selected_paths for token in path

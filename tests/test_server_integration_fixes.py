@@ -14,7 +14,8 @@ import torch
 from digital_twin_runtime.incident_evidence import reference_state_from_objects, resolve_reference_objects
 from digital_twin_runtime.telemetry_comparator import canonical_service, compare_symptoms_scoped
 from digital_twin_runtime.twin_spec_builder import build_incident_twin_spec
-from digital_twin_runtime.sparse_live_verifier import clean_baseline_defects
+from digital_twin_runtime.sparse_live_verifier import (SparseLiveTwinVerifier, SparseLiveVerifierConfig, clean_baseline_defects,
+                                                       workload_script_candidates)
 from digital_twin_runtime.targeted_telemetry import (
     MIN_SCRAPES_PER_PHASE, ObservationWindow, TelemetryCollectionError, _prometheus_rows,
     collect_targeted_telemetry, discover_prometheus_scrape_interval, hold_phase_window, minimum_phase_window_seconds,
@@ -160,6 +161,27 @@ class WorkloadTimeoutTests(unittest.TestCase):
         self.assertEqual(workload_timeout_seconds(30, 90), 90)
         with self.assertRaisesRegex(ValueError, "shorter"):
             workload_timeout_seconds(150, 60)
+
+
+class WorkloadScriptChoiceTests(unittest.TestCase):
+    def test_generic_wrk2_helpers_are_never_chosen(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); app = root / "wrk2" / "scripts" / "social-network"; app.mkdir(parents=True)
+            (root / "wrk2" / "scripts" / "multiplepaths.lua").write_text("-- user paths helper: needs paths.txt with user paths")
+            (root / "wrk2" / "scripts" / "setup.lua").write_text("user setup")
+            for name, body in (("mixed-workload.lua", "compose user timeline"), ("compose-post.lua", "compose_post user_id"),
+                               ("read-user-timeline.lua", "user_timeline read")):
+                (app / name).write_text(body)
+            (root / "wrk2" / "scripts" / "social-network-determinism").mkdir(); (root / "wrk2" / "scripts" / "social-network-determinism" / "x.lua").write_text("user")
+            default = app / "mixed-workload.lua"
+            self.assertTrue(all(p.parent == app for p in workload_script_candidates(root, default)))
+            self.assertFalse(any("determinism" in str(p) or p.name in {"multiplepaths.lua", "setup.lua"} for p in workload_script_candidates(root, None)))
+            verifier = SparseLiveTwinVerifier(SparseLiveVerifierConfig("ns", str(root), str(root)))
+            verifier.runtime_profile = SimpleNamespace(source_root=root, payload_script=default, endpoint="http://front:8080",
+                                                       frontend_service="front", frontend_container=None, frontend_port=8080)
+            verifier.selected_paths = []
+            self.assertEqual(verifier._workload("user-service")[0].parent, app)
+            self.assertEqual(verifier._workload("compose-post-service")[0].name, "compose-post.lua")
 
 
 class ScrapeIntervalTests(unittest.TestCase):
