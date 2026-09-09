@@ -196,6 +196,43 @@ valid capture existed, both fixed with tests:
   start and treats any post-recovery drift as fatal (`96d9fb7`). The source
   Service was restored to 9090 by hand after the evidence was collected.
 
+**Run 4** re-recorded both social incidents with the fixed chooser and recovery
+(`compose-post.lua` for `user-service`; clean and recovered phases 1507
+requests with 0 non-2xx; target-port incident 1506 of 1507 non-2xx; scale-to-zero
+incident 145 of 145 non-2xx; recovery verified; no spec drift). All four pilot
+incidents are accepted, abstracted under the corrected contract and frozen as
+`frozen-pilot-v1` (train: hotel frontend delay, social target port;
+calibration: hotel geo delay; test: social scale-to-zero); the manifest passes
+the trainer's strict gate.
+
+**All pilot controls** (corrected verifier, 150s phases, threshold 0; `gate` is
+the raw evidence gate, score above clean):
+
+| Incident | Control | Hypothesis | Score | Clean | Gate |
+|---|---|---|---:|---:|---|
+| hotel frontend delay | positive | frontend / network_delay | **1.000** | 0.583 | pass |
+| | wrong service | consul / network_delay | 0.583 | 0.583 | reject |
+| | wrong mechanism | frontend / scale_replicas_zero | 0.376 | 0.583 | reject |
+| hotel geo delay | positive | geo / network_delay | **1.000** | 0.583 | pass |
+| | wrong service | frontend / network_delay | 0.792 | 0.583 | pass |
+| | wrong mechanism | geo / scale_replicas_zero | 0.670 | 0.583 | pass |
+| social target port | positive | user-service / target_port_misconfig | **1.000** | 0.467 | pass |
+| | wrong service | compose-post-service / target_port_misconfig | 0.567 | 0.467 | pass |
+| | wrong mechanism | user-service / scale_replicas_zero | 0.726 | 0.467 | pass |
+| social scale-to-zero | positive | user-service / scale_replicas_zero | **1.000** | 0.435 | pass |
+| | wrong service | compose-post-service / scale_replicas_zero | 0.504 | 0.435 | pass |
+| | wrong mechanism | user-service / network_delay | 0.435 | 0.435 | reject |
+
+On every fresh incident the true hypothesis scores 1.0 and every negative
+scores at most 0.792, so a score threshold separates them on this set
+(midpoint of the worst case: 0.896). The raw evidence gate alone admitted 6 of
+8 wrong hypotheses, because a wrong service or mechanism on the same request
+path often reproduces the same failed edges or structural change; the
+calibrated threshold on top of the gate is therefore load-bearing, not a
+formality. Four incidents across three mechanisms are a diagnosis, not a
+qualification (three matched incidents per key with the full control set).
+Deployed scope was 19 of 19 deployable controllers (hotel) and 24 of 27 (social).
+
 ## Legacy run resumability (verified, not only preflighted)
 
 `/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/` now carries its own copy
