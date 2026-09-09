@@ -116,6 +116,49 @@ result exposes two separate problems:
 Positive/negative separation on this incident is inverted, so no threshold could
 be qualified from it. Rejecting both hypotheses was the correct outcome.
 
+## Compatible recorder pilot (9 September, later)
+
+`dataset_generation/record_incident_capture.py` records incidents in the source
+application under `MEASUREMENT_CONTRACT` (AIOpsLab problem injection with the
+reviewed injector fixes; the Twin's payload/endpoint selection, rate, duration,
+observation windows and collector). New captures live under
+`/mnt/aiops-training/datasets/pilot-recorder-v1/` (the 622/49 dataset and the
+legacy run are untouched). Evidence: `artifacts/host_validation_2026-09-09/pilot/`.
+
+**Run 1** (`gen_network_delay_hotel_res-detection-frontend-default`): clean phase
+154s, 1507 requests, 0 non-2xx; incident phase held to 165s while the upstream
+delay injector made the frontend unreachable after 8 requests; recovered phase
+1507 requests, 0 non-2xx; all four channels observed in every phase with valid
+resource coverage; injection verified; source clean afterwards; abstraction
+`raw_spans_public_state_metric_units_v1`, sanitizer-safe. Under the corrected
+contract the fresh incident carries failed edges `ROOT->frontend` and
+`frontend->frontend`, an SLA violation and **no** background log-error names;
+offline it scores 1.0 against itself and 0.583 against its own clean phase.
+
+Two defects surfaced before any Twin control could be trusted, both fixed and
+tested (`fe5cb04`, `5760f19`): the wrk2 wait ended a phase early when the
+workload died under the fault (windows are now held to the configured length
+on both sides), and the noise-free incident scope pruned `geo`/`rate`, which
+`search` calls on every request, so the Twin's clean baseline answered 883 of
+1507 requests with non-2xx and positive/clean/wrong-service tied at 0.7917
+(observed runtime call closure now kept; unhealthy clean baselines fail closed).
+
+**Run-1 controls on the corrected verifier** (Twin of 19 controllers, consul
+catalog complete, clean baseline 0 non-2xx):
+
+| Control | Hypothesis | Score | Clean | Gate | dep | edges |
+|---|---|---:|---:|---|---:|---:|
+| positive | frontend / network_delay | **1.000** | 0.583 | pass | 1.0 | 1.0 |
+| wrong service | geo / network_delay | 0.583 | 0.583 | reject | 1.0 | 0.0 |
+| wrong mechanism | frontend / scale_replicas_zero | 0.376 | 0.583 | reject | 0.5 | 0.0 |
+
+This is the first positive/negative separation on a consistently measured
+capture. It is one incident of one mechanism; it qualifies no threshold
+(calibration needs three matched incidents per key with the full control set).
+The deployment-state floor (0.583 for any healthy-looking Twin) remains an open
+scoring question; here it did not prevent separation because the incident's
+evidence lives in the trace channel.
+
 ## Legacy run resumability (verified, not only preflighted)
 
 `/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/` now carries its own copy

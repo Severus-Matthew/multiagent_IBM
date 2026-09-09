@@ -302,6 +302,15 @@ controller in the healthy reference are `undeployable_inventory_names`. The
 comparator rejects a comparison only when a *deployable* service with symptoms is
 outside scope.
 
+The incident scope also follows observed call edges forward from every kept
+service to a fixpoint (`incident_runtime_closure_added`). Without it the first
+fresh HotelReservation capture kept 15 controllers and pruned `geo`/`rate`,
+which `search` calls on every request: the Twin's consul had no `srv-geo` or
+`srv-rate`, 883 of 1507 clean-baseline requests failed, and positive, clean and
+wrong-service Twins tied. `prepare_incident_twin` now refuses a clean baseline
+with non-2xx responses or in-scope error edges (`clean_baseline_defects`), so a
+broken reference fails closed instead of crediting its own defects.
+
 Because every capture in the 622/49 corpus carries background log errors on most
 datastores, incident scopes are large: on sampled records they contain every
 deployable controller (25 of 27 inventory names for SocialNetwork, 19 of 24 for
