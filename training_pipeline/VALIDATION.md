@@ -46,9 +46,57 @@ compatibility with this host.
 - `scripts/regen/apply_aiopslab_patches.py` reports the ported generator;
   `git diff --check` clean.
 
-## Live lifecycle evidence
+## Live lifecycle evidence (merged checkout, this cluster)
 
-See the section appended below after the run on the merged checkout.
+Incident `gen_network_delay_hotel_res-detection-frontend-default` (HotelReservation,
+`network_delay` on `frontend`), evaluator-only controls built from the private
+label exactly as `collect_live_calibration` does, `require_reward_calibration=False`,
+`reproduction_threshold=0.0`, 150s phase workloads at 10 req/s. Scripts and
+JSONL logs are in `artifacts/host_validation_2026-09-09/`.
+
+- **Run 1** failed closed in the clean phase: the phase window was 60.7s because
+  `run_targeted_wrk` waited a fixed 60s regardless of the requested duration and
+  reported the 150s workload as failed. Fixed in `ac21faf` (wait derived from the
+  duration). Even in that run traces (7410 rows in-window), logs (18 pods) and
+  system state were collected; only the metrics guard rejected the short window.
+- **Run 2, scope**: 19 of 24 services deployed (request-path targets on 15
+  services; trace-observable targets `geo`, `rate`; unattributed names
+  `profile-db`, `recommendation-db`, `reservation-db`, `user-db`, `unknown`).
+  Scrape interval read as 60s; environment fingerprint recorded.
+- **Run 2, clean phase** (192s): workload completed, 1507 requests, 0
+  application failures, 13 trace edges, trace coverage of both trace-observable
+  targets, all four channels observed, resource measurement valid (18 running
+  pods, 2 CPU samples per pod inside the window, stable population).
+- **Run 2, positive control** (162s): the delay manifested, injection checked,
+  scope coverage complete, `reproduction_score` **0.4667** versus
+  `clean_reproduction_score` **0.7000**, so `counterfactual_evidence_gate`
+  is false and the true hypothesis is **not** verified.
+- **Run 2, wrong-service control** (`network_delay` on `consul`, 358s including
+  a fresh Twin): manifested, `reproduction_score` **0.7000** = clean.
+- **Run 3, recovery machinery** (gate bypassed on purpose, documented in the
+  script): `kubectl delete networkchaos twin-network-delay-frontend` executed
+  in the Twin, recovery ready, symptom reduction 1.0, SLA violated before
+  (1 unhealthy service, 2 dependency violations) and healthy after,
+  `sla_transition_restored` true, post-remediation resources valid, no repair
+  plan exported (correct: the hypothesis was not calibrated).
+
+Per-channel breakdown of run 2 from the retained phase states: the historical
+capture of this incident has **no degraded service and no failed trace edge**;
+its only in-scope symptoms are 22 background log-error names. Every Twin phase
+matches the healthy deployment tokens (overlap 1.0) and shares no log-error
+names with the historical capture (overlap 0), which yields
+0.35 / (0.35 + 0.15) = 0.70 for the clean and the wrong-service Twins. The
+injected true fault adds failed edges `ROOT->frontend` and `frontend->frontend`,
+activating the trace channel with zero overlap, hence
+0.35 / (0.35 + 0.25 + 0.15) = 0.4667. The measurement lifecycle therefore works
+on this cluster, and the corrected comparator does its arithmetic as designed,
+but the **legacy corpus is not comparable with the corrected measurement
+contract**: its trace statistics come from the pre-audit aggregation the audit
+itself corrected, and its logs were captured over whole pod lifetimes rather
+than phase windows. Positive/negative separation on this incident is inverted,
+so no threshold could be qualified from it. This is direct evidence that the
+corpus rebuild and the recollection of matched controls listed in
+OPERATIONS.md are prerequisites, not formalities.
 
 ## Not established by these checks
 
@@ -57,6 +105,8 @@ update ran on the corrected code, no W&B assessment and no real-incident repair
 was performed. Rebuilding the corpus with the corrected abstraction, collecting
 matched controls with `--workload_duration_seconds 150`, freezing a dataset with
 disjoint train/calibration/test splits, and a short frozen-configuration training
-run remain prerequisites for any reportable experiment. Incident scopes on this
+run remain prerequisites for any reportable experiment. The live evidence above
+qualifies no hypothesis and no threshold: on the one incident exercised, the true
+hypothesis scored below the clean control. Incident scopes on this
 corpus are close to the full application; resource-saving claims require the
 matched measurement described in OPERATIONS.md.
