@@ -32,6 +32,36 @@ from .telemetry_comparator import _service_aliases, compare_symptoms_scoped, sco
 from .twin_spec_builder import build_incident_twin_spec
 
 
+CLEAN_BASELINE_MAX_EDGE_ERROR_RATIO = 0.05
+
+
+def clean_baseline_defects(state: dict[str, Any], workload: Any, scope: list[str] | set[str]) -> dict[str, Any]:
+    """Request errors observed in a clean baseline: non-2xx responses, error edges in scope."""
+    scoped = {str(s) for s in scope}
+    error_edges = {}
+    per_edge = ((state.get("traces") or {}).get("per_edge") or {}) if isinstance(state.get("traces"), dict) else {}
+    for edge_id, feats in per_edge.items():
+        feats = feats if isinstance(feats, dict) else {}
+        src, dst = feats.get("source"), feats.get("target")
+        if (not src or not dst) and "->" in str(edge_id):
+            src, dst = str(edge_id).split("->", 1)
+        if str(dst) not in scoped and str(src) not in scoped:
+            continue
+        try:
+            ratio = float(feats.get("error_ratio") or 0.0)
+        except (TypeError, ValueError):
+            ratio = 0.0
+        if ratio > CLEAN_BASELINE_MAX_EDGE_ERROR_RATIO:
+            error_edges[str(edge_id)] = round(ratio, 4)
+    defects: dict[str, Any] = {}
+    non_success = int(getattr(workload, "non_success_responses", 0) or 0)
+    if non_success > 0:
+        defects["non_success_responses"] = non_success
+    if error_edges:
+        defects["error_edges"] = error_edges
+    return defects
+
+
 class TwinTelemetryIncomplete(RuntimeError):
     """Raised when a Twin abstraction lacks a channel the comparison scores on."""
 
@@ -287,6 +317,11 @@ class SparseLiveTwinVerifier:
         if (not workload.completed or workload.failed or workload.application_failures
                 or (workload.total_requests or 0) <= 0 or (workload.required_ready_endpoints or 0) <= 0):
             raise RuntimeError("incident Twin clean workload failed")
+        unhealthy = clean_baseline_defects(clean["state"], workload, self._incident_spec.services_to_keep)
+        if unhealthy:
+            # A reference that already fails requests is not a clean control;
+            # comparing an incident against it would credit its own defects.
+            raise RuntimeError("incident Twin clean baseline is not functionally healthy: " + json.dumps(unhealthy, sort_keys=True))
         clean["baseline"] = baseline
         self._clean_capture = clean
 

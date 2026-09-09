@@ -565,6 +565,16 @@ def build_incident_twin_spec(compressed_state: dict[str, Any], *,
     for service in direct:
         keep.add(service)
         spec.reason.setdefault(service, []).append("observable_incident_service_without_request_path")
+    # A kept service that calls a pruned one fails on every request, which is
+    # a symptom the incident did not have and which also contaminates the clean
+    # control (HotelReservation: search -> geo/rate). Follow observed call
+    # edges forward from everything kept, to a fixpoint. This can legitimately
+    # reach the whole application; reduction is not forced.
+    forward, _ = _adjacency(edges)
+    runtime_added = sorted(_bounded_reachable(keep, forward, len(services), services) - keep)
+    for service in runtime_added:
+        keep.add(service)
+        spec.reason.setdefault(service, []).append("observed_runtime_dependency_closure")
     startup_added = _startup_closure(keep, _startup_required_edges(compressed_state), services)
     for dep, callers in sorted(startup_added.items()):
         keep.add(dep)
@@ -585,6 +595,7 @@ def build_incident_twin_spec(compressed_state: dict[str, Any], *,
         "incident_request_path_targets": request_targets,
         "incident_trace_observable_targets": trace_observable,
         "incident_direct_scope_additions": direct,
+        "incident_runtime_closure_added": runtime_added,
         "incident_startup_dependencies_added": sorted(set(startup_added) - set(spec.services_to_keep)),
         "unattributed_symptom_names": sorted(set(unattributed)),
         "undeployable_inventory_names": undeployable,

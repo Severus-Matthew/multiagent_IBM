@@ -143,7 +143,8 @@ class RecorderTests(unittest.TestCase):
 
     def test_run_phase_orders_inventory_workload_window_settle_collect(self):
         calls = []; clock = iter([100.0, 110.0, 250.0])  # workload died after 10s; window held to 150s
-        result = SimpleNamespace(completed=True, failed=False, application_failures=0, total_requests=10, to_dict=lambda: {"total_requests": 10})
+        result = SimpleNamespace(completed=True, failed=False, application_failures=0, non_success_responses=0, total_requests=10,
+                                 to_dict=lambda: {"total_requests": 10})
         def wrk(session, **kw):
             calls.append(("wrk", kw["duration_seconds"], kw["rate"])); return result
         def collect(session, out_dir, *, window, workload, initial_pod_inventory, scrape_interval_seconds):

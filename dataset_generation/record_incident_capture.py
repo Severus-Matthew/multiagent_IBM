@@ -164,7 +164,8 @@ def run_phase(session: SourceSession, profile: Any, workloads: list[dict[str, An
                  "payload_sha256": w["payload_sha256"], "endpoint": w["endpoint"].replace(session.namespace, "application-namespace")}
                 for w in workloads]
     healthy = all(bool(getattr(r, "completed", False)) and not getattr(r, "failed", True)
-                  and not getattr(r, "application_failures", 1) and (getattr(r, "total_requests", 0) or 0) > 0 for r in rows)
+                  and not getattr(r, "application_failures", 1) and not getattr(r, "non_success_responses", 1)
+                  and (getattr(r, "total_requests", 0) or 0) > 0 for r in rows)
     phase_record = {
         "phase": phase, "measurement_contract": MEASUREMENT_CONTRACT, "window": window.to_dict(),
         "workload_contract": contract,

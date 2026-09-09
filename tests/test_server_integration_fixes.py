@@ -14,6 +14,7 @@ import torch
 from digital_twin_runtime.incident_evidence import reference_state_from_objects, resolve_reference_objects
 from digital_twin_runtime.telemetry_comparator import canonical_service, compare_symptoms_scoped
 from digital_twin_runtime.twin_spec_builder import build_incident_twin_spec
+from digital_twin_runtime.sparse_live_verifier import clean_baseline_defects
 from digital_twin_runtime.targeted_telemetry import (
     MIN_SCRAPES_PER_PHASE, ObservationWindow, TelemetryCollectionError, _prometheus_rows,
     collect_targeted_telemetry, discover_prometheus_scrape_interval, hold_phase_window, minimum_phase_window_seconds,
@@ -110,6 +111,27 @@ class SymptomAttributionTests(unittest.TestCase):
         self.assertIn("profile-db", summary["undeployable_inventory_names"])
         self.assertNotIn("profile-db", spec.services_to_keep)
         self.assertFalse(spec.target_faults)
+
+    def test_runtime_call_closure_is_kept(self):
+        # search -> geo/rate are two hops from the symptomatic frontend; pruning them
+        # makes every search request fail in the Twin (observed live on 9 September).
+        state = self.incident(degraded=("frontend",), log_names=())
+        state["graph"]["edges"] += [["frontend", "search"], ["search", "geo"], ["search", "rate"], ["rate", "mongodb-profile"]]
+        deployable = [s for s in HOTEL if s not in ("profile-db", "jaeger-out")]
+        spec = build_incident_twin_spec(state, deployable_services=deployable)
+        self.assertTrue({"search", "geo", "rate"}.issubset(spec.services_to_keep), spec.services_to_keep)
+        # geo is itself a request-path target (failed frontend->geo edge); rate is reached only through search.
+        self.assertEqual(spec.resource_summary["incident_runtime_closure_added"], ["rate"])
+        self.assertNotIn("consul", spec.services_to_keep)
+
+    def test_clean_baseline_with_request_errors_is_a_defect(self):
+        state = {"traces": {"per_edge": {"frontend->search": {"source": "frontend", "target": "search", "error_ratio": 1.0},
+                                         "frontend->profile": {"source": "frontend", "target": "profile", "error_ratio": 0.0},
+                                         "x->y": {"source": "x", "target": "y", "error_ratio": 1.0}}}}
+        workload = SimpleNamespace(non_success_responses=883)
+        defects = clean_baseline_defects(state, workload, ["frontend", "search", "profile"])
+        self.assertEqual(defects, {"non_success_responses": 883, "error_edges": {"frontend->search": 1.0}})
+        self.assertEqual(clean_baseline_defects(state, SimpleNamespace(non_success_responses=0), ["profile"]), {})
 
     def test_incident_without_request_path_symptoms_fails_closed(self):
         state = self.incident(degraded=(), log_names=("unknown",), failed_trace=False)
