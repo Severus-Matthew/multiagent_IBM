@@ -238,6 +238,43 @@ qualification. The pilot "test" incident was examined during development
 evaluation case; final evaluation needs fresh, untouched captures.
 Deployed scope was 19 of 19 deployable controllers (hotel) and 24 of 27 (social).
 
+## Corrected-trainer smoke on the frozen pilot (one update, exploratory)
+
+`train_qwen_live_grpo` ran on `frozen-pilot-v1` (train ids: hotel frontend
+delay, social target port) with the strict dataset gate, raw-softmax sampling,
+`--twin_workload_duration_seconds 150`, the gpt-5.2 downstream agents, two
+rollout workers, group size 2, `--max_updates 1`, a new output directory
+(`/mnt/aiops-training/runs/pilot-corrected-smoke-v1`) and no W&B. It used
+`--allow_uncalibrated_live_reward`: admission was the Twin's evidence gate
+alone, so this run demonstrates the experimental workflow, not qualified RCA
+verification, and one update from a fresh adapter demonstrates no learning.
+Evidence: `artifacts/host_validation_2026-09-09/smoke/`.
+
+- **Agents.** gpt-5.2 predicted `user-service::config_error::target_port_misconfig`
+  and `frontend::latency_degradation::network_delay::delay_1000ms` on the
+  first iteration of every trajectory (8 calls, all ok); the action agent
+  proposed a Service targetPort patch and deletion of the NetworkChaos object.
+- **Twin verdicts.** All 4 trajectories were live, optimizer-eligible and
+  RCA-verified (reproduction 1.0); every repair executed, the Twin's SLA went
+  from violated to healthy with 1507 clean requests in each post-remediation
+  phase (`resolved`, `sla_condition_satisfied`, `sla_restored` all true);
+  4 of 4 full successes.
+- **Update.** One synchronized update: `rca` updated (grad norm 1.14, 4 rows,
+  647 completion tokens, 2 optimizer groups with nonzero advantages) and
+  `action` updated (grad norm 0.17, 4 rows, 1600 tokens); ratio 1.0 and
+  sampled KL 0 as expected on the first update. Policy published as
+  `pilot-corrected-smoke-v1@u000001`; `update-00000001.pt` and `latest.pt`
+  written.
+- **Checkpoint restore.** On CPU: 192 finite adapter tensors per role, all
+  LoRA B matrices non-zero, Adam moments for every parameter at step 1. A
+  zero-further-update resume from `update-00000001.pt` through the strict gate
+  (manifest and selection digests equal, `raw_softmax_v1`) loaded on both GPUs,
+  restored bundle 1 / policy `@u000001` / cursor, created no Twin namespace,
+  and exited COMPLETE (the single epoch was already finished).
+
+Not shown: qualified reward (no calibration manifest), any learning effect,
+and generalization; the initial predictions are baseline agent capability.
+
 ## Legacy run resumability (verified, not only preflighted)
 
 `/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/` now carries its own copy

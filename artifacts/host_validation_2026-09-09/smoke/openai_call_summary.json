@@ -1,0 +1,30 @@
+{
+ "worker_0": {
+  "calls": 4,
+  "ok": 4,
+  "roles": [
+   "rca",
+   "action",
+   "rca",
+   "action"
+  ],
+  "rca_outputs": [
+   "user-service::config_error::target_port_misconfig",
+   "user-service::config_error::target_port_misconfig"
+  ]
+ },
+ "worker_1": {
+  "calls": 4,
+  "ok": 4,
+  "roles": [
+   "rca",
+   "action",
+   "rca",
+   "action"
+  ],
+  "rca_outputs": [
+   "frontend::latency_degradation::network_delay::delay_1000ms",
+   "frontend::latency_degradation::network_delay::delay_1000ms"
+  ]
+ }
+}
