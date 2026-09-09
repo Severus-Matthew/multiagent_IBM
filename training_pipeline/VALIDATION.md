@@ -159,6 +159,43 @@ The deployment-state floor (0.583 for any healthy-looking Twin) remains an open
 scoring question; here it did not prevent separation because the incident's
 evidence lives in the trace channel.
 
+**Run 2** (`gen_network_delay_hotel_res-detection-geo-default`, accepted; incident
+phase 43 slow requests, 0 non-2xx; four latency-suspicious edges upstream of
+geo, SLA violated, no noise; offline 1.0 vs 0.583 against its own clean phase):
+
+| Control | Hypothesis | Score | Clean | Gate | dep | edges |
+|---|---|---:|---:|---|---:|---:|
+| positive | geo / network_delay | **1.000** | 0.583 | pass | 1.0 | 1.0 |
+| wrong service | frontend / network_delay | 0.792 | 0.583 | pass | 1.0 | 0.5 |
+| wrong mechanism | geo / scale_replicas_zero | 0.670 | 0.583 | pass | 0.914 | 1.0 |
+
+Here the raw evidence gate (score above clean) admits all three hypotheses: a
+delay on the neighbouring frontend and a scale-to-zero of geo both reproduce
+the same upstream latency edges. Positive stays separable by score
+(1.0 against a maximum negative of 0.792, midpoint 0.896), which is precisely
+what the calibrated threshold on top of the gate is for; the gate alone is not
+a root-cause test. This is the audit's finding 4 observed live.
+
+**Social-network incidents** (`k8s_target_port_misconfig` and
+`scale_pod_zero` on `user-service`) exposed two further defects before any
+valid capture existed, both fixed with tests:
+
+- The Twin's workload chooser scored every `.lua` under `wrk2/` and picked
+  wrk2's generic `multiplepaths.lua` (needs a `paths.txt`, exits at once) for
+  `user-service`, so the phases had zero requests. Only the application's own
+  script directory is eligible now (`5d6b10e`); `user-service` maps to
+  `compose-post.lua`.
+- The injector fix snapshotted the live Service *by reference* and mutated it
+  in place, so recovery re-applied the target-port fault: the source
+  `user-service` stayed at 65534 with every pod Running and the readiness-based
+  namespace check reporting clean (unchanged `resourceVersion` across the
+  run-2 phases proves recovery never wrote). The regeneration code carried the
+  same defect. Snapshots are deep copies, recovery is verified and loud, an
+  already-faulted Service refuses injection, the namespace check flags fault
+  target ports, and the recorder fingerprints controller/Service specs at run
+  start and treats any post-recovery drift as fatal (`96d9fb7`). The source
+  Service was restored to 9090 by hand after the evidence was collected.
+
 ## Legacy run resumability (verified, not only preflighted)
 
 `/mnt/aiops-training/legacy/wsxhzf27-live-grpo-stage1/` now carries its own copy
