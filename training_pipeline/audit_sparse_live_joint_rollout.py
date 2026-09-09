@@ -47,7 +47,15 @@ def main() -> None:
     )
     ap.add_argument("--state_abstraction_root", default="state_abstraction_full")
     ap.add_argument("--output", default=None)
+    ap.add_argument("--reward_calibration", default=None, help="Current matched live control manifest")
+    ap.add_argument("--allow_uncalibrated_live_reward", action="store_true",
+                    help="Exploratory only: admit the Twin's own evidence gate without matched controls")
+    ap.add_argument("--twin_workload_rate", type=int, default=10)
+    ap.add_argument("--twin_workload_duration_seconds", type=int, default=30,
+                    help="Must cover two Prometheus scrapes plus 5s (150 at a 1m cadence)")
     args = ap.parse_args()
+    if not args.reward_calibration and not args.allow_uncalibrated_live_reward:
+        raise SystemExit("pass --reward_calibration, or --allow_uncalibrated_live_reward for an exploratory run")
 
     scenario_dir = Path(args.scenario_dir).expanduser().resolve()
     full_state = read_json(scenario_dir / "state_abstraction.json", {})
@@ -67,6 +75,10 @@ def main() -> None:
                 Path(args.state_abstraction_root).expanduser().resolve()
             ),
             reproduction_threshold=0.1,
+            calibration_path=args.reward_calibration,
+            require_reward_calibration=not args.allow_uncalibrated_live_reward,
+            workload_rate=args.twin_workload_rate,
+            workload_duration_seconds=args.twin_workload_duration_seconds,
         )
     )
     result = run_end_to_end_trajectory_group(

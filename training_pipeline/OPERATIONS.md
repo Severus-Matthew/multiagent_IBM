@@ -327,6 +327,21 @@ the duration of each call and restores them afterwards;
 `tests/test_server_integration_fixes.py` checks generated scores against raw
 logits for both adapters on the installed stack.
 
+### Recording measurement-compatible incidents
+
+`MEASUREMENT_CONTRACT` applies to both sides of a comparison. The generator's
+collection rules (Jaeger `lookback`, `kubectl logs --tail`, port-forwarded
+`get_metrics(duration=5)`, approximate symptom window) are not the Twin's, and
+the historical corpus was captured that way. Before recording a pilot or a new
+corpus, record incidents with the same collector the Twin uses:
+`collect_targeted_telemetry` around a `run_targeted_wrk` phase with the same
+rate, duration and payloads, injecting the fault with the AIOpsLab problem
+definition rather than the Twin adapter, and keeping the private label in
+`state_abstraction.json` only. Calibration then needs at least three matched
+incidents per calibration key with all required controls (see
+`digital_twin_runtime/reward_calibration.py`); one incident per mechanism is a
+diagnostic, not a qualification.
+
 ### Lineage when reusing adapter weights
 
 `update-00000132.pt` from the legacy run may initialize a new experiment only with

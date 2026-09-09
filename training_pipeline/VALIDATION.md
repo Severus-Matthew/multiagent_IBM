@@ -146,8 +146,44 @@ was never exercised. Incident scopes on this corpus deploy the full deployable
 application (0% reduction on the exercised incident); resource-saving claims
 require the matched full-application measurement described in OPERATIONS.md.
 
-Recommended order of the remaining work: (1) record a small fresh incident and
-control set with the corrected generator and collectors and check admission and
-scoring together on it; (2) an automated RCA -> Action repair on an admitted
-hypothesis; (3) a short GPU training/checkpoint test on the corrected trainer.
-The learning signal, not the machinery, is the blocker.
+Recommended order of the remaining work (corrected 9 September, later):
+
+1. **Make incident recording measurement-compatible first.** The ported
+   AIOpsLab generator fixes scenario identity only. Its captures still come
+   from `get_traces(duration=5)` (Jaeger `lookback=` from a start time, no
+   explicit end, no span deduplication rule), `kubectl logs --tail=1500`
+   without `--timestamps`/`--since-time`, `get_metrics(duration=5)` through a
+   port-forward, and only `approx_symptom_window_start/end` as provenance. The
+   corrected Twin measures each phase inside an explicit `ObservationWindow`
+   (Jaeger `start`/`end`, log lines filtered by timestamp, Prometheus rates
+   evaluated at phase end with scrape coverage) and records it in
+   `collection_metadata.json`. Fresh incidents recorded by the unmodified
+   generator would reproduce the mismatch seen above. A recorder that injects
+   the AIOpsLab fault into the source application but collects with
+   `collect_targeted_telemetry` around a `run_targeted_wrk` phase (same rate,
+   duration, payloads and contract) is required before the pilot set.
+2. **Size the pilot set for calibration, not just diagnosis.** One incident per
+   mechanism diagnoses separation; qualification needs at least
+   `MIN_MATCHED_INCIDENTS = 3` incidents per calibration key (application plus
+   the sorted mechanism/variant list), each with the required controls
+   (`positive`, `no_fault`, `wrong_service`, `wrong_mechanism` for every other
+   implemented mechanism, `extra_root`, plus `wrong_variant` for scale/delay/loss
+   and `missing_root` for joint faults). With 14 implemented mechanisms that is
+   roughly 17-19 Twin lifecycles per single-fault incident; at 150s phases a
+   lifecycle is about 8-10 minutes, so budget about 8 hours per key on one
+   worker, or lower the Prometheus scrape interval to 15s first (40s phases).
+3. **Exercise the live agent path only with a live harness.**
+   `audit_end_to_end_hf_exact_rollout` constructs `BehavioralTwinVerifier` and
+   cannot show live RCA -> Action success.
+   `training_pipeline.audit_sparse_live_joint_rollout` drives the real joint
+   RCA -> Action loop on the sparse live Twin but with scripted policies and a
+   scripted solver (an interface test; it now accepts `--reward_calibration`,
+   `--allow_uncalibrated_live_reward`, `--twin_workload_duration_seconds`).
+   The actual LLM agent path is the corrected trainer itself, run with
+   `--reward_calibration` once controls separate.
+4. A short GPU training/checkpoint test on the corrected trainer into a new run
+   directory and W&B run.
+
+The learning signal, not the machinery, is the blocker. Continued W&B logging
+into `wsxhzf27` was not exercised by the restore test (W&B was disabled); the
+run id and its resume arguments are preserved.
