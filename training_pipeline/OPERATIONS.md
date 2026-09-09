@@ -384,6 +384,15 @@ scores with their per-channel overlaps; it also scores the capture's own clean
 phase against its incident phase offline. Inspect that table before spending
 the full calibration budget.
 
+Accepted captures can then be assembled into one `processed_states` root,
+audited (`audit_dataset_live_admission`) and frozen with disjoint
+train/calibration/test lists (`freeze_dataset_version`, which validates the
+manifest). The frozen manifest satisfies the trainer's strict gate; with
+`--allow_uncalibrated_live_reward` the trainer can run a short exploratory
+update on it (`--max_updates 1`, small groups) to exercise the automated
+RCA -> Action path and checkpointing before controls are collected. That run
+qualifies nothing and must use a new output directory.
+
 ### Lineage when reusing adapter weights
 
 `update-00000132.pt` from the legacy run may initialize a new experiment only with
