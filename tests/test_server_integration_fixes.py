@@ -16,7 +16,7 @@ from digital_twin_runtime.telemetry_comparator import canonical_service, compare
 from digital_twin_runtime.twin_spec_builder import build_incident_twin_spec
 from digital_twin_runtime.targeted_telemetry import (
     MIN_SCRAPES_PER_PHASE, ObservationWindow, TelemetryCollectionError, _prometheus_rows,
-    collect_targeted_telemetry, discover_prometheus_scrape_interval, minimum_phase_window_seconds,
+    collect_targeted_telemetry, discover_prometheus_scrape_interval, hold_phase_window, minimum_phase_window_seconds,
     parse_prometheus_duration, require_phase_window_covers_scrapes, scrape_interval_from_config_yaml,
 )
 from digital_twin_runtime.targeted_workload import WORKLOAD_WAIT_MARGIN_SECONDS, workload_timeout_seconds
@@ -173,6 +173,16 @@ class ScrapeIntervalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _prometheus_rows("app", window=ObservationWindow(100, 140, "faulted"), scrape_interval_seconds=60)
         read.assert_not_called()  # a window that cannot hold two scrapes is never widened or queried
+
+
+class PhaseWindowHoldTests(unittest.TestCase):
+    def test_window_is_held_to_the_configured_duration(self):
+        slept = []
+        end = hold_phase_window(100.0, 150, clock=iter([110.0, 250.0]).__next__, sleep=slept.append)
+        self.assertEqual(slept, [140.0]); self.assertEqual(end, 250.0)
+        slept.clear()
+        end = hold_phase_window(100.0, 150, clock=iter([260.0, 260.0]).__next__, sleep=slept.append)
+        self.assertEqual(slept, []); self.assertEqual(end, 260.0)
 
 
 class CoverageAccountingTests(unittest.TestCase):

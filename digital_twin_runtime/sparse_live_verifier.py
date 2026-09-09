@@ -23,7 +23,7 @@ from .sparse_live_manifest import discover_sparse_manifest_plan, render_sparse_m
 from .sparse_live_session import SparseLiveTwinSession
 from .targeted_telemetry import (collect_targeted_telemetry, ObservationWindow,
                                  TelemetryCollectionError, MEASUREMENT_CONTRACT,
-                                 discover_prometheus_scrape_interval,
+                                 discover_prometheus_scrape_interval, hold_phase_window,
                                  require_phase_window_covers_scrapes)
 from .incident_evidence import (reference_state_from_objects, resolve_reference_objects,
                                 with_reference_deviations)
@@ -216,7 +216,8 @@ class SparseLiveTwinVerifier:
         inventory = capture_pod_inventory(self.session)
         started = time.time()
         workload, workloads = self._run_predicted_root_workloads(self._incident_targets())
-        window = ObservationWindow(started, time.time(), phase)
+        # A workload that dies under the fault must not shorten the phase.
+        window = ObservationWindow(started, hold_phase_window(started, self.config.workload_duration_seconds), phase)
         time.sleep(max(0.0, self.config.telemetry_settle_seconds))
         root = self.work_root / (phase + "-" + uuid.uuid4().hex[:8])
         collection = collect_targeted_telemetry(self.session, root, window=window, workload=workload,

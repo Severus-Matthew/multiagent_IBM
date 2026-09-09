@@ -60,6 +60,20 @@ def discover_prometheus_scrape_interval() -> float:
     return scrape_interval_from_config_yaml(payload["data"]["yaml"])
 
 
+def hold_phase_window(started_unix: float, duration_seconds: float, *, clock=time.time, sleep=time.sleep) -> float:
+    """Close a phase no earlier than ``started + duration``.
+
+    A phase is a fixed measurement interval during which the workload is
+    attempted. When a fault makes the workload die early (connection refused,
+    scaled-to-zero target), the remaining interval is still observed, so the
+    window keeps covering the scrape cadence and the phases stay comparable.
+    """
+    remaining = float(started_unix) + float(duration_seconds) - float(clock())
+    if remaining > 0:
+        sleep(remaining)
+    return float(clock())
+
+
 def minimum_phase_window_seconds(scrape_interval_seconds: float) -> float:
     return MIN_SCRAPES_PER_PHASE * float(scrape_interval_seconds) + PHASE_WINDOW_MARGIN_SECONDS
 

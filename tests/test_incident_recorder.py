@@ -102,6 +102,20 @@ class RecorderTests(unittest.TestCase):
         evidence = json.loads((self.cfg.output_dir / "raw" / spec()["problem_id"] / "injection_evidence.json").read_text())
         self.assertEqual(evidence["format"], "source_injection_evidence_v1"); self.assertFalse(evidence["verified"])
 
+    def test_incident_phase_failure_still_recovers_the_source(self):
+        def failing_runner(session, profile, workloads, phase, out_dir, *, scrape_interval, cfg):
+            self.events.append(phase); out_dir.mkdir(parents=True)
+            if phase == "incident":
+                raise RuntimeError("telemetry collection failed: short window")
+            return {"phase": phase, "window": {}, "workload_healthy": True, "workload_contract": [], "collection": {}}
+        problem = FakeProblem(self.journal, self.events)
+        with self.assertRaisesRegex(RuntimeError, "short window"):
+            record_scenario(spec(), cfg=self.cfg, generator=FakeGenerator(), problem_factory=lambda: problem,
+                            session=self.session, verifier=self.verifier, journal=self.journal, scrape_interval=60,
+                            is_clean=lambda ns: (True, {}), wait_clean=lambda ns, t: (True, {"reason": "clean"}),
+                            phase_runner=failing_runner, abstractor=self.abstractor, sleep=lambda s_: None)
+        self.assertEqual(self.events, ["clean", "inject", "incident", "recover"])
+
     def test_failed_recovery_is_fatal_after_recover_attempt(self):
         with self.assertRaisesRegex(RuntimeError, "clean state"):
             self._record(clean_after=False)
@@ -128,7 +142,7 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(len(loads), 1); self.assertEqual(loads[0]["service"], "frontend"); self.assertEqual(len(loads[0]["payload_sha256"]), 64)
 
     def test_run_phase_orders_inventory_workload_window_settle_collect(self):
-        calls = []; clock = iter([100.0, 260.0])
+        calls = []; clock = iter([100.0, 110.0, 250.0])  # workload died after 10s; window held to 150s
         result = SimpleNamespace(completed=True, failed=False, application_failures=0, total_requests=10, to_dict=lambda: {"total_requests": 10})
         def wrk(session, **kw):
             calls.append(("wrk", kw["duration_seconds"], kw["rate"])); return result
@@ -139,7 +153,7 @@ class RecorderTests(unittest.TestCase):
         record = run_phase(self.session, self.verifier.runtime_profile, select_workloads(self.verifier, ["frontend"]), "clean", out,
                            scrape_interval=60, cfg=self.cfg, wrk=wrk, collect=collect, inventory=lambda s: {"frontend-1": {}},
                            sleep=lambda s_: calls.append(("sleep", s_)), clock=lambda: next(clock))
-        self.assertEqual(calls, [("wrk", 150, 10), ("sleep", 0), ("collect", "clean", 160, {"frontend-1": {}}, 60)])
+        self.assertEqual(calls, [("wrk", 150, 10), ("sleep", 140.0), ("sleep", 0), ("collect", "clean", 150, {"frontend-1": {}}, 60)])
         self.assertTrue(record["workload_healthy"]); self.assertEqual(record["measurement_contract"], MEASUREMENT_CONTRACT)
         self.assertTrue((out / "phase.json").is_file())
 

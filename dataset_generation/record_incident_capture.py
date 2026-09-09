@@ -41,7 +41,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from digital_twin_runtime.targeted_telemetry import (  # noqa: E402
     MEASUREMENT_CONTRACT, ObservationWindow, TelemetryCollectionError, capture_pod_inventory,
-    collect_targeted_telemetry, discover_prometheus_scrape_interval, require_phase_window_covers_scrapes,
+    collect_targeted_telemetry, discover_prometheus_scrape_interval, hold_phase_window,
+    require_phase_window_covers_scrapes,
 )
 from digital_twin_runtime.targeted_workload import run_targeted_wrk  # noqa: E402
 
@@ -152,7 +153,9 @@ def run_phase(session: SourceSession, profile: Any, workloads: list[dict[str, An
                         rate=cfg.workload_rate, duration_seconds=cfg.workload_duration_seconds,
                         required_service=load["service"], frontend_service=profile.frontend_service,
                         frontend_container=profile.frontend_container, frontend_port=profile.frontend_port))
-    window = ObservationWindow(started, clock(), phase)
+    # A workload that dies under the fault must not shorten the phase (same
+    # rule as the Twin's _capture_phase).
+    window = ObservationWindow(started, hold_phase_window(started, cfg.workload_duration_seconds, clock=clock, sleep=sleep), phase)
     sleep(max(0.0, cfg.telemetry_settle_seconds))
     primary = rows[0]
     collection = collect(session, out_dir, window=window, workload=primary, initial_pod_inventory=initial,
@@ -217,33 +220,38 @@ def record_scenario(spec: dict[str, Any], *, cfg: RecorderConfig, generator: Any
     journal_start = len(journal)
     injected_at = datetime.now(timezone.utc).isoformat()
     problem.inject_fault()
-    sleep(max(0.0, cfg.manifestation_settle_seconds))
-    mutations = list(journal[journal_start:])
-    evidence = injection_evidence(problem_id, mutations)
-    row["injection_verified"] = evidence["verified"]
-    row["phases"]["incident"] = phase_runner(session, verifier.runtime_profile, workloads, "incident",
-                                             scenario_dir / "incident", scrape_interval=scrape_interval, cfg=cfg)
-    collected_at = datetime.now(timezone.utc).isoformat()
-    generator.save_fault_timing(scenario_dir, injected_at, collected_at)
-    (scenario_dir / "injection_evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True, default=str) + "\n")
-    for name in PRIVATE_FILES:
-        if (scenario_dir / name).exists():
-            shutil.copy2(scenario_dir / name, scenario_dir / "incident" / name)
-    for helper in ("build_topology_and_graph", "validate_unready_pods"):
-        fn = getattr(generator, helper, None)
-        if callable(fn):
-            try:
-                fn(session.namespace, scenario_dir / "incident") if helper == "build_topology_and_graph" \
-                    else fn(session.namespace, spec, scenario_dir / "incident")
-                row[helper] = "ok"
-            except Exception as exc:  # noqa: BLE001 - optional corpus-parity artifacts
-                row[helper] = f"{type(exc).__name__}: {exc}"
+    evidence: dict[str, Any] = {"verified": False}
     try:
-        problem.recover_fault()
+        sleep(max(0.0, cfg.manifestation_settle_seconds))
+        mutations = list(journal[journal_start:])
+        evidence = injection_evidence(problem_id, mutations)
+        row["injection_verified"] = evidence["verified"]
+        (scenario_dir / "injection_evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True, default=str) + "\n")
+        row["phases"]["incident"] = phase_runner(session, verifier.runtime_profile, workloads, "incident",
+                                                 scenario_dir / "incident", scrape_interval=scrape_interval, cfg=cfg)
+        collected_at = datetime.now(timezone.utc).isoformat()
+        generator.save_fault_timing(scenario_dir, injected_at, collected_at)
+        for name in PRIVATE_FILES:
+            if (scenario_dir / name).exists():
+                shutil.copy2(scenario_dir / name, scenario_dir / "incident" / name)
+        for helper in ("build_topology_and_graph", "validate_unready_pods"):
+            fn = getattr(generator, helper, None)
+            if callable(fn):
+                try:
+                    fn(session.namespace, scenario_dir / "incident") if helper == "build_topology_and_graph" \
+                        else fn(session.namespace, spec, scenario_dir / "incident")
+                    row[helper] = "ok"
+                except Exception as exc:  # noqa: BLE001 - optional corpus-parity artifacts
+                    row[helper] = f"{type(exc).__name__}: {exc}"
     finally:
-        recovered, report = wait_clean(session.namespace, cfg.recovery_timeout_seconds)
-    row["recovered_clean"] = recovered
-    row["recovery_report"] = report
+        # Whatever happened after injection, the source application is
+        # returned to a clean state (the next scenario and every Twin clone it).
+        try:
+            problem.recover_fault()
+        finally:
+            recovered, report = wait_clean(session.namespace, cfg.recovery_timeout_seconds)
+            row["recovered_clean"] = recovered
+            row["recovery_report"] = report
     if not recovered:
         raise RuntimeError(f"source namespace did not return to a clean state after recovery: {report}")
     if cfg.capture_recovered:
