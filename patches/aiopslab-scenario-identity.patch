@@ -1,0 +1,40 @@
+diff --git a/gen_and_telmetry.py b/gen_and_telmetry.py
+index 02e4c0a..ee739d7 100644
+--- a/gen_and_telmetry.py
++++ b/gen_and_telmetry.py
+@@ -14,6 +14,7 @@ from pathlib import Path
+ from typing import Callable, Dict, List, Any
+ import inspect
+ import itertools
++from scenario_identity import attach_scenario_identity, unique_scenarios
+ import types
+ import subprocess
+ import os
+@@ -1174,7 +1175,7 @@ def generate_multifault_specs(single_specs, max_pairs=500):
+             f"__{a.get('task')}"
+         )
+
+-        yield {
++        yield attach_scenario_identity({
+             "problem_id": problem_id,
+             "fault_family": "multifault",
+             "task": a.get("task"),
+@@ -1182,7 +1183,7 @@ def generate_multifault_specs(single_specs, max_pairs=500):
+             "deployment": "k8s",
+             "is_multifault": True,
+             "subproblems": [a, b],
+-        }
++        })
+
+         produced += 1
+
+@@ -2025,7 +2026,8 @@ async def main():
+     # ── Pre-warm: pull all images into the local cache once ──────────────────
+     _prewarm_social_network()
+
+-    all_specs = list(generate_specs())
++    all_specs = unique_scenarios([attach_scenario_identity(s) if not s.get("scenario_spec_sha256") else s
++                                  for s in generate_specs()])
+
+     # Shard the scenario list when running multiple parallel workers.
+     # Striped slicing (not chunked) gives each worker a balanced mix of

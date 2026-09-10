@@ -1,0 +1,78 @@
+{
+  "scenario": "gen_network_delay_hotel_res-detection-frontend-default",
+  "positive": {
+    "reproduction_score": 0.4667,
+    "clean_reproduction_score": 0.7,
+    "counterfactual_evidence_gate": false,
+    "rca_twin_verified": false,
+    "predicted_fault_injection_checked": true,
+    "positive_incident_evidence": true,
+    "incident_scope_coverage_complete": true,
+    "score_reason": "positive_scoped_channel_overlap",
+    "decision_threshold": 0.0,
+    "services_selected": 19,
+    "service_reduction_percent": 0.0,
+    "live_reward_calibrated": false,
+    "uncalibrated_reward_override_used": true,
+    "manifested": [
+      true
+    ],
+    "outside": {},
+    "unattributed": {
+      "top_error_services": [
+        "profile-db",
+        "recommendation-db",
+        "reservation-db",
+        "unknown"
+      ]
+    },
+    "resources_valid": true,
+    "resources_reason": null,
+    "clean_resources_valid": true,
+    "actionable": [
+      {
+        "kind": "networkchaos",
+        "name": "twin-network-delay-frontend",
+        "remediation": "delete_exact_resource"
+      }
+    ]
+  },
+  "wrong_service": {
+    "service": "consul",
+    "reproduction_score": 0.7,
+    "clean_reproduction_score": 0.7,
+    "counterfactual_evidence_gate": false,
+    "rca_twin_verified": false,
+    "predicted_fault_injection_checked": true,
+    "positive_incident_evidence": true,
+    "incident_scope_coverage_complete": true,
+    "score_reason": "positive_scoped_channel_overlap",
+    "decision_threshold": 0.0,
+    "services_selected": 19,
+    "service_reduction_percent": 0.0,
+    "live_reward_calibrated": false,
+    "uncalibrated_reward_override_used": true,
+    "manifested": [
+      true
+    ],
+    "outside": {},
+    "unattributed": {
+      "top_error_services": [
+        "profile-db",
+        "recommendation-db",
+        "reservation-db",
+        "unknown"
+      ]
+    },
+    "resources_valid": true,
+    "resources_reason": null,
+    "clean_resources_valid": true,
+    "actionable": [
+      {
+        "kind": "networkchaos",
+        "name": "twin-network-delay-consul",
+        "remediation": "delete_exact_resource"
+      }
+    ]
+  }
+}

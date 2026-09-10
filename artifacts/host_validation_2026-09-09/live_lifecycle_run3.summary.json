@@ -1,0 +1,55 @@
+{
+  "scenario": "gen_network_delay_hotel_res-detection-frontend-default",
+  "note": "evidence gate bypassed for machinery evidence",
+  "positive": {
+    "reproduction_score": 0.4667,
+    "clean_reproduction_score": 0.7,
+    "counterfactual_evidence_gate": false,
+    "rca_twin_verified": false,
+    "predicted_fault_injection_checked": true
+  },
+  "action": {
+    "resolved": true,
+    "twin_resolved": true,
+    "sla_condition_satisfied": true,
+    "sla_restored": true,
+    "sla_restoration_applicable": true,
+    "sla_transition_restored": true,
+    "symptom_reduction": 1.0,
+    "global_symptom_reduction": 1.0,
+    "telemetry_incomplete": false,
+    "reason": "live_target_recovered",
+    "repair_validation": "independent_frozen_fault_state_v1",
+    "execution": {
+      "executed": true,
+      "reasons": null,
+      "commands": [
+        {
+          "command": "kubectl delete networkchaos twin-network-delay-frontend -n aiops-twin-c65f8b733f47",
+          "returncode": 0,
+          "stdout": "networkchaos.chaos-mesh.org \"twin-network-delay-frontend\" deleted from aiops-twin-c65f8b733f47 namespace\n",
+          "stderr": "",
+          "elapsed_seconds": 0.145
+        }
+      ]
+    },
+    "recovery_ready": true,
+    "resources_valid": true,
+    "before_sla": {
+      "healthy": false,
+      "reasons": [
+        "dependency_failures_present",
+        "unhealthy_services_present"
+      ],
+      "num_unhealthy_services": 1,
+      "num_dependency_violations": 2
+    },
+    "after_sla": {
+      "healthy": true,
+      "reasons": [],
+      "num_unhealthy_services": 0,
+      "num_dependency_violations": 0
+    },
+    "verified_repair_plan": false
+  }
+}

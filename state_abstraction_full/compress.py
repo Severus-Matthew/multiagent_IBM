@@ -1,11 +1,21 @@
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from collections import Counter, defaultdict
 
 
 STAT_KEYS = ["count", "first", "last", "min", "max", "mean", "delta"]
+LEAK_VALUE_MARKERS = (
+    "scenario_fault_context",
+    "generated_fault_context",
+    "oracle_ground_truth",
+    "oracle_ground_truth_fault",
+    "oracle_neighbor_of_",
+    "ranked_by_rca_context_or_weak_signals",
+    "suspect_silent_failure",
+)
 
 
 def read_json(path):
@@ -82,6 +92,8 @@ def compress_metrics(metrics):
                 groups[group] = summarized
         out[svc] = round_deep({
             "flat_summary": {
+                "cpu_usage_cores": m.get("cpu_usage_cores"),
+                "cpu_usage_rate_observed": bool(m.get("cpu_usage_rate_observed", False)),
                 "cpu_usage_delta": m.get("cpu_usage_delta", _kpi(raw, "kpi_container_cpu_usage_seconds_total", "container_cpu_usage_seconds_total").get("delta", 0.0)),
                 "cpu_load_last": m.get("cpu_load_last", _kpi(raw, "kpi_container_cpu_load_average_10s", "container_cpu_load_average_10s").get("last", 0.0)),
                 "memory_working_set_last": m.get("memory_working_set_last", _kpi(raw, "kpi_container_memory_working_set_bytes", "container_memory_working_set_bytes").get("last", 0.0)),
@@ -211,8 +223,46 @@ def compress_system(system):
             "images": compact_list(s.get("images", []), 5),
             "endpoints": s.get("endpoints", {}),
             "deployment": s.get("deployment", {}),
+            # Observable Service routing is essential for targetPort/selector
+            # diagnosis. Do not copy source namespace, IPs or metadata here.
+            "service": {
+                key: (s.get("services", {}) or {})[key]
+                for key in ("service_type", "selector", "ports",
+                            "session_affinity", "internal_traffic_policy")
+                if key in (s.get("services", {}) or {})
+            },
             "events_top": compact_list(s.get("events", []), 5),
         })
+    return out
+
+
+def _leaky_text(value) -> bool:
+    low = str(value or "").lower()
+    return any(marker in low for marker in LEAK_VALUE_MARKERS)
+
+
+def sanitize_service_health(service_health):
+    """Return agent-safe service-health entries.
+
+    Older full states may contain oracle-derived RCA weak labels such as
+    `suspect_silent_failure` or `ranked_by_rca_context_or_weak_signals`.
+    Those are removed here before compressed state generation.
+    """
+    out = {}
+    for svc, h in (service_health or {}).items():
+        if not isinstance(h, dict):
+            continue
+        status = h.get("status") or "unknown"
+        reasons = [str(r) for r in (h.get("reasons", []) or []) if not _leaky_text(r)]
+        if _leaky_text(status):
+            status = "healthy"
+        if status in {"healthy", "unknown", None, ""} and not reasons:
+            continue
+        if status == "suspect_silent_failure":
+            if not reasons:
+                continue
+            status = "observable_suspect"
+        out[svc] = {"status": status, "reasons": reasons[:8]}
     return out
 
 
@@ -261,24 +311,21 @@ def build_llm_view(compressed):
         if sig.get("error_count", 0) > 0 or sig.get("log_anomaly_score", 0) > 0.3:
             top_log_error_services.append({"service": svc, "error_count": sig.get("error_count", 0), "dominant_error_type": sig.get("dominant_error_type"), "error_families": l.get("error_families", {}), "dependency_error_counts": l.get("dependency_error_counts", {}), "evidence": l.get("evidence_lines_top", [])[:2]})
     top_log_error_services = sorted(top_log_error_services, key=lambda x: x["error_count"], reverse=True)[:15]
-    return {"scenario_id": compressed.get("scenario_id"), "top_log_error_services": top_log_error_services, "trace_summary": compressed.get("traces", {}).get("summary", {}), "service_clusters": compressed.get("clusters", {})}
+    return {"top_log_error_services": top_log_error_services, "trace_summary": compressed.get("traces", {}).get("summary", {}), "service_clusters": compressed.get("clusters", {})}
 
 
 def compress_state(state):
-    fault_ctx = state.get("fault_context", {}) or {}
     compressed = {
-        "timestamp": state.get("timestamp"),
-        "scenario_id": state.get("scenario_id"),
-        "state_type": "redacted_compressed_aiops_state_abstraction_v3",
+        "state_type": "public_compressed_aiops_state_v4",
+        "abstraction_contract": "raw_spans_public_state_metric_units_v1",
         "source_state_type": state.get("state_type"),
         "redaction": {
             "ground_truth_removed": True,
             "fault_context_removed": True,
             "rca_weak_labels_removed": True,
+            "service_health_oracle_markers_removed": True,
             "safe_for_rca_agent": True,
         },
-        "namespace": fault_ctx.get("target_namespace"),
-        "task": fault_ctx.get("task"),
         "services": state.get("services", []),
     }
     compressed["metrics"] = compress_metrics(state.get("metrics", {}))
@@ -288,13 +335,27 @@ def compress_state(state):
     compressed["workload"] = state.get("workload", {})
     compressed["graph"] = state.get("graph", {})
     compressed["sla"] = state.get("sla", {})
-    compressed["service_health"] = state.get("service_health", {})
-    compressed["observability_metadata"] = state.get("observability_metadata", {})
+    compressed["service_health"] = sanitize_service_health(state.get("service_health", {}))
+    # Preserve channel quality/counts, not file paths or processing provenance.
+    metadata = state.get("observability_metadata", {}) or {}
+    compressed["observability_metadata"] = {
+        channel: {key: value for key, value in info.items()
+                  if key in {"trace_signal_present", "num_unique_spans", "duplicate_span_rows",
+                             "metric_signal_present", "log_signal_present", "num_edges",
+                             "trace_aggregation", "num_files", "system_signal_present"}}
+        for channel, info in metadata.items() if isinstance(info, dict)
+    }
     model_rows = build_model_vector(state)
     compressed["model_table"] = model_rows
     compressed["clusters"] = simple_cluster_rows(model_rows)
     compressed["llm_view"] = build_llm_view(compressed)
-    return compressed
+    # The standalone compressed file has the same privacy boundary as live
+    # agent payloads. CLI execution from this directory needs the package root.
+    package_root = str(Path(__file__).resolve().parents[1])
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
+    from training_pipeline.agent_input_safety import sanitize_agent_state
+    return sanitize_agent_state(compressed)
 
 
 def main():
@@ -308,6 +369,7 @@ def main():
     write_json(compressed, out)
     print(f"[OK] wrote redacted compressed state to {out}")
     print(f"[INFO] services: {len(compressed.get('services', []))}")
+
 
 if __name__ == "__main__":
     main()

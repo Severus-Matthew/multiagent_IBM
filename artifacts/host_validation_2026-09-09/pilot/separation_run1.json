@@ -1,0 +1,162 @@
+[
+  {
+    "scenario_id": "gen_network_delay_hotel_res-detection-frontend-default",
+    "labels": [
+      {
+        "service": "frontend",
+        "fault_type": "latency_degradation",
+        "fault_family": "network_delay_hotel_res",
+        "variant_name": "default",
+        "fault_mechanism": "network_delay",
+        "metadata": {
+          "variant_params": {},
+          "task": "detection",
+          "app": "hotel"
+        }
+      }
+    ],
+    "controls": {
+      "positive": {
+        "hypothesis": [
+          {
+            "service": "frontend",
+            "fault_type": "latency_degradation",
+            "fault_family": "network_delay_hotel_res",
+            "variant_name": "default",
+            "fault_mechanism": "network_delay",
+            "metadata": {
+              "variant_params": {},
+              "task": "detection",
+              "app": "hotel"
+            }
+          }
+        ],
+        "seconds": 357.5,
+        "reproduction_score": 1.0,
+        "clean_reproduction_score": 0.5833,
+        "counterfactual_evidence_gate": true,
+        "rca_twin_verified": true,
+        "predicted_fault_injection_checked": true,
+        "positive_incident_evidence": true,
+        "incident_scope_coverage_complete": true,
+        "score_reason": "positive_scoped_channel_overlap",
+        "deployment_state_overlap": 1.0,
+        "degraded_service_overlap": 0.0,
+        "trace_edge_overlap": 1.0,
+        "log_error_service_overlap": 0.0,
+        "active_channel_weights": {
+          "deployment_state": 0.35,
+          "degraded": 0.0,
+          "trace_edges": 0.25,
+          "logs": 0.0
+        },
+        "manifested": [
+          true
+        ],
+        "outside": {},
+        "unattributed": {},
+        "resources_valid": true
+      },
+      "wrong_service": {
+        "hypothesis": [
+          {
+            "service": "consul",
+            "fault_type": "latency_degradation",
+            "fault_family": "network_delay_hotel_res",
+            "variant_name": "default",
+            "fault_mechanism": "network_delay",
+            "metadata": {}
+          }
+        ],
+        "seconds": 356.3,
+        "reproduction_score": 0.5833,
+        "clean_reproduction_score": 0.5833,
+        "counterfactual_evidence_gate": false,
+        "rca_twin_verified": false,
+        "predicted_fault_injection_checked": true,
+        "positive_incident_evidence": true,
+        "incident_scope_coverage_complete": true,
+        "score_reason": "positive_scoped_channel_overlap",
+        "deployment_state_overlap": 1.0,
+        "degraded_service_overlap": 0.0,
+        "trace_edge_overlap": 0.0,
+        "log_error_service_overlap": 0.0,
+        "active_channel_weights": {
+          "deployment_state": 0.35,
+          "degraded": 0.0,
+          "trace_edges": 0.25,
+          "logs": 0.0
+        },
+        "manifested": [
+          true
+        ],
+        "outside": {},
+        "unattributed": {},
+        "resources_valid": true
+      },
+      "wrong_mechanism": {
+        "hypothesis": [
+          {
+            "service": "frontend",
+            "fault_type": "infra_failure",
+            "fault_family": "",
+            "variant_name": "default",
+            "fault_mechanism": "scale_replicas_zero",
+            "metadata": {}
+          }
+        ],
+        "seconds": 350.3,
+        "reproduction_score": 0.3762,
+        "clean_reproduction_score": 0.5833,
+        "counterfactual_evidence_gate": false,
+        "rca_twin_verified": false,
+        "predicted_fault_injection_checked": true,
+        "positive_incident_evidence": true,
+        "incident_scope_coverage_complete": true,
+        "score_reason": "positive_scoped_channel_overlap",
+        "deployment_state_overlap": 0.9137,
+        "degraded_service_overlap": 0.0,
+        "trace_edge_overlap": 0.0,
+        "log_error_service_overlap": 0.0,
+        "active_channel_weights": {
+          "deployment_state": 0.35,
+          "degraded": 0.25,
+          "trace_edges": 0.25,
+          "logs": 0.0
+        },
+        "manifested": [
+          true
+        ],
+        "outside": {},
+        "unattributed": {},
+        "resources_valid": false
+      }
+    },
+    "scope": {
+      "kept": 19,
+      "deployable": 19,
+      "request_path_targets": [
+        "frontend"
+      ],
+      "trace_observable_targets": [
+        "frontend"
+      ],
+      "unattributed": [
+        "ROOT"
+      ],
+      "reduction_percent": 0.0
+    },
+    "self_consistency": {
+      "incident_vs_itself": 1.0,
+      "incident_vs_own_clean_phase": 0.5833,
+      "incident_degraded": [],
+      "incident_failed_edges": [
+        "ROOT->frontend",
+        "frontend->frontend"
+      ],
+      "incident_error_services": 0,
+      "clean_reason": "positive_scoped_channel_overlap",
+      "incident_coverage_complete": true
+    }
+  }
+]

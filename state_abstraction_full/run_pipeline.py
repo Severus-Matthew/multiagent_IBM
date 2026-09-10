@@ -3,7 +3,7 @@ from pathlib import Path
 from build_state import build_and_write
 from build_simulation_specs import build_specs
 from run_rca_simulation_check import run_check
-from sla import evaluate_states_file
+from sla import evaluate_states_file, configure_sla
 from compress import compress_state
 from utils import write_json, read_json
 
@@ -16,7 +16,10 @@ def main():
     ap.add_argument("--output_dir", default=None, help="Defaults to <run_dir>/processed_state")
     ap.add_argument("--skip_simulator", action="store_true", help="Skip behavioral simulator step")
     ap.add_argument("--skip_compress", action="store_true", help="Skip state compression step")
+    ap.add_argument("--sla_config", default=None, help="Explicit SLA thresholds JSON")
     args = ap.parse_args()
+    if args.sla_config:
+        configure_sla(args.sla_config)
 
     run_dir   = Path(args.run_dir)
     output_dir = Path(args.output_dir) if args.output_dir else run_dir / "processed_state"

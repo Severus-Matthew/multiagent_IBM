@@ -1,0 +1,53 @@
+{
+  "format": "compatible_incident_capture_v1",
+  "measurement_contract": "phase_windows_query_status_raw_spans_incident_scope_v1",
+  "created_unix": 1788947819.7563798,
+  "arguments": {
+    "scenario_ids": "/tmp/claude-1000/-home-ubuntu/e1cba2e7-5505-4e60-8013-41a3d30e3dbd/scratchpad/recorder/ids_run1.txt",
+    "output_dir": "/mnt/aiops-training/datasets/pilot-recorder-v1/run1",
+    "aiopslab_root": "/home/ubuntu/multiagent_IBM/AIOpsLab",
+    "state_abstraction_root": "/home/ubuntu/multiagent_IBM/state_abstraction_full",
+    "workload_rate": 10,
+    "workload_duration_seconds": 150,
+    "manifestation_settle_seconds": 45.0,
+    "recovery_timeout_seconds": 300.0,
+    "no_recovered_phase": false,
+    "limit": null
+  },
+  "scrape_interval_seconds": 60.0,
+  "patched_injectors": {
+    "VirtualizationFaultInjector": [
+      "inject_misconfig_k8s",
+      "recover_misconfig_k8s",
+      "inject_scale_pods_to_zero",
+      "recover_scale_pods_to_zero",
+      "inject_assign_to_non_existent_node",
+      "recover_assign_to_non_existent_node",
+      "inject_wrong_bin_usage",
+      "recover_wrong_bin_usage"
+    ],
+    "SymptomFaultInjector": [
+      "inject_container_kill",
+      "inject_pod_failure",
+      "inject_pod_kill",
+      "inject_network_loss",
+      "inject_network_delay"
+    ],
+    "ApplicationFaultInjector": [
+      "inject_revoke_auth",
+      "inject_storage_user_unregistered",
+      "inject_auth_miss_mongodb",
+      "inject_misconfig_app",
+      "recover_misconfig_app",
+      "recover_auth_miss_mongodb",
+      "recover_revoke_auth",
+      "recover_storage_user_unregistered"
+    ]
+  },
+  "requested": [
+    "gen_network_delay_hotel_res-detection-frontend-default"
+  ],
+  "missing_from_generator": [],
+  "generator_commit": "b56eda81ca42d9f791dde3f77912b36f411f6c9c",
+  "repo_commit": "fe5cb04e6c612c77b863c91b2f7352b5b731f8e0"
+}

@@ -1,0 +1,22 @@
+# Audited sparse-live Twin training scenarios.
+# Capability: user-timeline-service::infra_failure::assign_to_non_existent_node
+gen_assign_to_non_existent_node_social_net-analysis-user-timeline-service-default
+gen_assign_to_non_existent_node_social_net-detection-user-timeline-service-default
+gen_assign_to_non_existent_node_social_net-localization-user-timeline-service-default
+gen_assign_to_non_existent_node_social_net-mitigation-user-timeline-service-default
+
+# Capability: user-timeline-service::infra_failure::scale_replicas_zero
+gen_scale_pod_zero_social_net-analysis-user-timeline-service-default
+gen_scale_pod_zero_social_net-analysis-user-timeline-service-scale_0
+gen_scale_pod_zero_social_net-detection-user-timeline-service-default
+gen_scale_pod_zero_social_net-detection-user-timeline-service-scale_0
+gen_scale_pod_zero_social_net-localization-user-timeline-service-default
+gen_scale_pod_zero_social_net-localization-user-timeline-service-scale_0
+gen_scale_pod_zero_social_net-mitigation-user-timeline-service-default
+gen_scale_pod_zero_social_net-mitigation-user-timeline-service-scale_0
+
+# Capability: user-timeline-service::config_error::target_port_misconfig
+gen_k8s_target_port_misconfig-analysis-user-timeline-service-default
+gen_k8s_target_port_misconfig-detection-user-timeline-service-default
+gen_k8s_target_port_misconfig-localization-user-timeline-service-default
+gen_k8s_target_port_misconfig-mitigation-user-timeline-service-default

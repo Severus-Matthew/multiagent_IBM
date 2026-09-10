@@ -1,6 +1,7 @@
 # metrics_parser.py
 
 import csv
+import math
 import re
 from pathlib import Path
 from collections import defaultdict
@@ -74,7 +75,7 @@ def parse_one_metric_csv(path: Path):
                 "service": service_from_cmdb_id(cmdb_id),
                 "cmdb_id": cmdb_id,
                 "kpi_name": kpi_name,
-                "value": safe_float(value),
+                "value": float(value),
             })
     return rows
 
@@ -144,6 +145,7 @@ def discover_metric_csv_files(run_dir):
 
 def parse_metrics_snapshot(metric_csv_files):
     per_service_kpi_values = defaultdict(lambda: defaultdict(list))
+    per_pod = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
     files_seen = []
     parse_errors = []
     for file_path in metric_csv_files:
@@ -155,13 +157,42 @@ def parse_metrics_snapshot(metric_csv_files):
             parse_errors.append({"file": str(path), "error": str(e)})
             continue
         for row in rows:
-            per_service_kpi_values[row["service"]][row["kpi_name"]].append(row["value"])
+            value = row["value"]
+            if not math.isfinite(value):
+                raise ValueError("non-finite metric sample")
+            samples = per_pod[row["service"]][row["kpi_name"]][row["cmdb_id"]]
+            timestamp = str(row["timestamp"])
+            if timestamp in samples and samples[timestamp] != value:
+                raise ValueError("conflicting observations of one metric sample")
+            samples[timestamp] = value
+    for service, metrics in per_pod.items():
+        for kpi, pods in metrics.items():
+            # A service statistic aggregates pod values at common timestamps;
+            # never treat different replicas as consecutive time samples.
+            common = set.intersection(*(set(samples) for samples in pods.values()))
+            def time_key(stamp):
+                try:
+                    return (0, float(stamp))
+                except ValueError:
+                    return (1, stamp)
+            per_service_kpi_values[service][kpi] = [
+                sum(samples[t] for samples in pods.values()) for t in sorted(common, key=time_key)]
 
     metrics = {}
     for svc, kpi_values in per_service_kpi_values.items():
         svc_metrics = {"cpu": {}, "memory": {}, "network": {}, "threads": {}, "spec": {}, "other": {}, "raw_kpis": {}, "metric_signal_present": True}
         for kpi, values in kpi_values.items():
             summary = summarize_values(values)
+            summary["synchronized_pod_count"] = len(per_pod[svc][kpi])
+            if kpi.endswith("_total"):
+                # Counter reset accounting stays within each pod series.
+                increments = []
+                for samples in per_pod[svc][kpi].values():
+                    values_by_time = [samples[t] for t in sorted(samples, key=time_key)]
+                    if len(values_by_time) > 1 and "None" not in samples:
+                        increments.append(sum(b - a if b >= a else b for a, b in zip(values_by_time, values_by_time[1:])))
+                summary["delta"] = sum(increments) if len(increments) == len(per_pod[svc][kpi]) else None
+                summary["delta_observed"] = summary["delta"] is not None
             group = metric_group(kpi)
             svc_metrics[group][kpi] = summary
             svc_metrics["raw_kpis"][kpi] = summary
@@ -177,6 +208,9 @@ def parse_metrics_snapshot(metric_csv_files):
             return {}
 
         raw = svc_metrics["raw_kpis"]
+        rate = raw.get("container_cpu_usage_cores") or {}
+        svc_metrics["cpu_usage_cores"] = rate.get("mean")
+        svc_metrics["cpu_usage_rate_observed"] = bool(rate.get("count", 0))
         svc_metrics["cpu_usage_delta"] = _kpi(raw, "kpi_container_cpu_usage_seconds_total", "container_cpu_usage_seconds_total").get("delta", 0.0)
         svc_metrics["cpu_load_last"] = _kpi(raw, "kpi_container_cpu_load_average_10s", "container_cpu_load_average_10s").get("last", 0.0)
         svc_metrics["memory_working_set_last"] = _kpi(raw, "kpi_container_memory_working_set_bytes", "container_memory_working_set_bytes").get("last", 0.0)

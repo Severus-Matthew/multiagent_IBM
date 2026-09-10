@@ -1,0 +1,14 @@
+{
+  "purpose": "Captures to re-record with target-honouring injectors.",
+  "labeled_total": 916,
+  "needs_regeneration": 775,
+  "already_usable": 141,
+  "reasons": {
+    "target_blind_injector": 514,
+    "no_hard_evidence_at_target": 261
+  },
+  "criteria": {
+    "target_blind_injector": "scenario uses a mechanism whose upstream AIOpsLab injector ignores the requested service",
+    "no_hard_evidence_at_target": "recorded telemetry shows no pod-level or trace failure at the labeled service"
+  }
+}

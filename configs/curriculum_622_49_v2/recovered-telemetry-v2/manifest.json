@@ -1,0 +1,25 @@
+{
+  "counts": {
+    "raw_telemetry_available": 411,
+    "raw_telemetry_missing": 0,
+    "rejected_test": 37,
+    "rejected_train": 374,
+    "rejected_unique": 411
+  },
+  "created_unix": 1788410763.6264055,
+  "format": "raw_telemetry_recovery_queue_v1",
+  "inputs": {
+    "admitted_test": "/home/ubuntu/multiagent_IBM/configs/dataset_split_624_50/live_admission_v2/test_verified_live_reward.txt",
+    "admitted_train": "/home/ubuntu/multiagent_IBM/configs/dataset_split_624_50/live_admission_v2/train_verified_live_reward.txt",
+    "telemetry_dir": "/home/ubuntu/multiagent_IBM/AIOpsLab/dynamic_generated_scenario_results_all_new/telemetry_outputs",
+    "test": "/home/ubuntu/multiagent_IBM/configs/dataset_split_624_50/test_49.txt",
+    "train": "/home/ubuntu/multiagent_IBM/configs/dataset_split_624_50/train_622.txt"
+  },
+  "selection_sha256": {
+    "missing_raw_telemetry.txt": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "rejected_test.txt": "46a3a6dc52ba2615acb56375719a4eb9db49aa680e81e71d4950966e20235785",
+    "rejected_train.txt": "25555f903c9ed55edba439b0b55fa9415eaed7091059483f2a50c034086a52fe",
+    "reprocess_ids.txt": "f51082020f27e0b2b894a1e00d3911b83fd023b53e3d00c2137d2bcc140123f9"
+  },
+  "version": "recovered-telemetry-v2"
+}

@@ -1,0 +1,444 @@
+{
+  "format": "compatible_incident_capture_v1",
+  "measurement_contract": "phase_windows_query_status_raw_spans_incident_scope_v1",
+  "problem_id": "gen_network_delay_hotel_res-detection-frontend-default",
+  "namespace_role": "source_application",
+  "scrape_interval_seconds": 60.0,
+  "workload_rate": 10,
+  "workload_duration_seconds": 150,
+  "manifestation_settle_seconds": 45.0,
+  "injected_at": "2026-09-09T09:59:43.059306+00:00",
+  "collected_at": "2026-09-09T10:03:20.036400+00:00",
+  "phases": {
+    "clean": {
+      "phase": "clean",
+      "measurement_contract": "phase_windows_query_status_raw_spans_incident_scope_v1",
+      "window": {
+        "start_unix": 1788947820.76689,
+        "end_unix": 1788947974.7374306,
+        "phase": "clean",
+        "duration_seconds": 153.97054052352905
+      },
+      "workload_contract": [
+        {
+          "service": "frontend",
+          "rate": 10,
+          "duration_seconds": 150,
+          "payload_sha256": "af6230aaaf220fceaef6208d416c5a9d75f15f66d70e3cde00b6e441957bf352",
+          "endpoint": "http://frontend:5000"
+        }
+      ],
+      "workload_contract_sha256": "6077c467074cf99d38f65bce7c8f6097210774af14e271dc81522363d7366aff",
+      "workload_healthy": true,
+      "collection": {
+        "run_dir": "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean",
+        "namespace": "test-hotel-reservation",
+        "selected_services": [
+          "consul",
+          "frontend",
+          "geo",
+          "memcached-profile",
+          "memcached-rate",
+          "memcached-reserve",
+          "mongodb-geo",
+          "mongodb-profile",
+          "mongodb-rate",
+          "mongodb-recommendation",
+          "mongodb-reservation",
+          "mongodb-user",
+          "profile",
+          "rate",
+          "recommendation",
+          "reservation",
+          "search",
+          "user"
+        ],
+        "files_written": [
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/statefulsets.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/services.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/endpoints.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/events.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/replicasets.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/deployments.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pods.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/builtin_api_outputs/metrics/metrics.csv",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/builtin_api_outputs/traces/traces.csv",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/consul-5dbf68bdcc-9vwlp.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/frontend-7bc564ffb5-fjttw.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/geo-5b748f6cfd-g2cfz.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/memcached-profile-79c9d4d987-tx5wj.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/memcached-rate-5cc9b67bdf-sfx29.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/memcached-reserve-58d9c4bff5-gq5zc.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/mongodb-geo-86684bc5d5-m5rkk.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/mongodb-profile-5688dc4598-xp9rp.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/mongodb-rate-5f449d57d8-vbvmv.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/mongodb-recommendation-cbb5967d8-p968l.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/mongodb-reservation-968587568-cz8rw.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/mongodb-user-7d67879dbd-c6877.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/profile-68758d8b56-9wgjc.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/rate-58864d548d-xqqjr.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/recommendation-7fcfcbdf4-gxjs5.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/reservation-6f8cb56969-ddx4z.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/search-7fdf844bcb-55z62.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/direct_k8s_outputs/pod_logs/user-7d6c6967c-sfgrj.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/workload_result.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/clean/builtin_api_outputs/shell/targeted_workload.txt"
+        ],
+        "errors": [],
+        "elapsed_seconds": 3.312,
+        "collection_mode": "phase_windows_query_status_raw_spans_incident_scope_v1",
+        "window": {
+          "start_unix": 1788947820.76689,
+          "end_unix": 1788947974.7374306,
+          "phase": "clean",
+          "duration_seconds": 153.97054052352905,
+          "scrape_interval_seconds": 60.0,
+          "minimum_window_seconds": 125.0
+        },
+        "channels": {
+          "metrics": {
+            "query_succeeded": true,
+            "row_count": 40
+          },
+          "traces": {
+            "query_succeeded": true,
+            "row_count": 16942
+          },
+          "system": {
+            "query_succeeded": true
+          },
+          "logs": {
+            "query_succeeded": true,
+            "pod_count": 18
+          }
+        },
+        "resources": {
+          "application_running_pods": 18,
+          "application_cpu_cores_mean": 0.04891413253401597,
+          "application_cpu_core_seconds": 7.531335425501976,
+          "application_memory_bytes_mean": 530993152.0,
+          "measurement_window_seconds": 153.97054052352905,
+          "includes_observer_overhead": false,
+          "estimator": "Prometheus reset-aware rate and per-container window mean",
+          "scrape_interval_seconds": 60.0,
+          "metric_sample_coverage": {
+            "query_succeeded": true,
+            "min_samples_required": 2,
+            "samples_by_pod": {
+              "consul-5dbf68bdcc-9vwlp": 2,
+              "frontend-7bc564ffb5-fjttw": 2,
+              "geo-5b748f6cfd-g2cfz": 2,
+              "memcached-profile-79c9d4d987-tx5wj": 2,
+              "memcached-rate-5cc9b67bdf-sfx29": 2,
+              "memcached-reserve-58d9c4bff5-gq5zc": 2,
+              "mongodb-geo-86684bc5d5-m5rkk": 2,
+              "mongodb-profile-5688dc4598-xp9rp": 2,
+              "mongodb-rate-5f449d57d8-vbvmv": 2,
+              "mongodb-recommendation-cbb5967d8-p968l": 2,
+              "mongodb-reservation-968587568-cz8rw": 2,
+              "mongodb-user-7d67879dbd-c6877": 2,
+              "profile-68758d8b56-9wgjc": 2,
+              "rate-58864d548d-xqqjr": 2,
+              "recommendation-7fcfcbdf4-gxjs5": 2,
+              "reservation-6f8cb56969-ddx4z": 2,
+              "search-7fdf844bcb-55z62": 2,
+              "user-7d6c6967c-sfgrj": 2
+            },
+            "insufficient_pods": [],
+            "missing_pods": []
+          },
+          "stable_pod_population": true,
+          "valid": true,
+          "invalid_reason": null
+        }
+      }
+    },
+    "incident": {
+      "phase": "incident",
+      "measurement_contract": "phase_windows_query_status_raw_spans_incident_scope_v1",
+      "window": {
+        "start_unix": 1788948028.2587087,
+        "end_unix": 1788948193.5528955,
+        "phase": "incident",
+        "duration_seconds": 165.29418683052063
+      },
+      "workload_contract": [
+        {
+          "service": "frontend",
+          "rate": 10,
+          "duration_seconds": 150,
+          "payload_sha256": "af6230aaaf220fceaef6208d416c5a9d75f15f66d70e3cde00b6e441957bf352",
+          "endpoint": "http://frontend:5000"
+        }
+      ],
+      "workload_contract_sha256": "6077c467074cf99d38f65bce7c8f6097210774af14e271dc81522363d7366aff",
+      "workload_healthy": false,
+      "collection": {
+        "run_dir": "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident",
+        "namespace": "test-hotel-reservation",
+        "selected_services": [
+          "consul",
+          "frontend",
+          "geo",
+          "memcached-profile",
+          "memcached-rate",
+          "memcached-reserve",
+          "mongodb-geo",
+          "mongodb-profile",
+          "mongodb-rate",
+          "mongodb-recommendation",
+          "mongodb-reservation",
+          "mongodb-user",
+          "profile",
+          "rate",
+          "recommendation",
+          "reservation",
+          "search",
+          "user"
+        ],
+        "files_written": [
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/statefulsets.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/services.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/endpoints.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/deployments.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/events.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pods.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/replicasets.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/builtin_api_outputs/metrics/metrics.csv",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/builtin_api_outputs/traces/traces.csv",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/consul-5dbf68bdcc-9vwlp.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/frontend-7bc564ffb5-fjttw.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/geo-5b748f6cfd-g2cfz.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/memcached-profile-79c9d4d987-tx5wj.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/memcached-rate-5cc9b67bdf-sfx29.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/memcached-reserve-58d9c4bff5-gq5zc.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/mongodb-geo-86684bc5d5-m5rkk.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/mongodb-profile-5688dc4598-xp9rp.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/mongodb-rate-5f449d57d8-vbvmv.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/mongodb-recommendation-cbb5967d8-p968l.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/mongodb-reservation-968587568-cz8rw.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/mongodb-user-7d67879dbd-c6877.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/profile-68758d8b56-9wgjc.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/rate-58864d548d-xqqjr.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/recommendation-7fcfcbdf4-gxjs5.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/reservation-6f8cb56969-ddx4z.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/search-7fdf844bcb-55z62.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/direct_k8s_outputs/pod_logs/user-7d6c6967c-sfgrj.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/workload_result.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/incident/builtin_api_outputs/shell/targeted_workload.txt"
+        ],
+        "errors": [],
+        "elapsed_seconds": 1.482,
+        "collection_mode": "phase_windows_query_status_raw_spans_incident_scope_v1",
+        "window": {
+          "start_unix": 1788948028.2587087,
+          "end_unix": 1788948193.5528955,
+          "phase": "incident",
+          "duration_seconds": 165.29418683052063,
+          "scrape_interval_seconds": 60.0,
+          "minimum_window_seconds": 125.0
+        },
+        "channels": {
+          "metrics": {
+            "query_succeeded": true,
+            "row_count": 40
+          },
+          "traces": {
+            "query_succeeded": true,
+            "row_count": 111
+          },
+          "system": {
+            "query_succeeded": true
+          },
+          "logs": {
+            "query_succeeded": true,
+            "pod_count": 18
+          }
+        },
+        "resources": {
+          "application_running_pods": 18,
+          "application_cpu_cores_mean": 0.02165305705603941,
+          "application_cpu_core_seconds": 3.579124458472901,
+          "application_memory_bytes_mean": 519921664.0,
+          "measurement_window_seconds": 165.29418683052063,
+          "includes_observer_overhead": false,
+          "estimator": "Prometheus reset-aware rate and per-container window mean",
+          "scrape_interval_seconds": 60.0,
+          "metric_sample_coverage": {
+            "query_succeeded": true,
+            "min_samples_required": 2,
+            "samples_by_pod": {
+              "consul-5dbf68bdcc-9vwlp": 3,
+              "frontend-7bc564ffb5-fjttw": 3,
+              "geo-5b748f6cfd-g2cfz": 3,
+              "memcached-profile-79c9d4d987-tx5wj": 3,
+              "memcached-rate-5cc9b67bdf-sfx29": 3,
+              "memcached-reserve-58d9c4bff5-gq5zc": 3,
+              "mongodb-geo-86684bc5d5-m5rkk": 3,
+              "mongodb-profile-5688dc4598-xp9rp": 3,
+              "mongodb-rate-5f449d57d8-vbvmv": 3,
+              "mongodb-recommendation-cbb5967d8-p968l": 3,
+              "mongodb-reservation-968587568-cz8rw": 3,
+              "mongodb-user-7d67879dbd-c6877": 3,
+              "profile-68758d8b56-9wgjc": 3,
+              "rate-58864d548d-xqqjr": 3,
+              "recommendation-7fcfcbdf4-gxjs5": 3,
+              "reservation-6f8cb56969-ddx4z": 3,
+              "search-7fdf844bcb-55z62": 3,
+              "user-7d6c6967c-sfgrj": 3
+            },
+            "insufficient_pods": [],
+            "missing_pods": []
+          },
+          "stable_pod_population": true,
+          "valid": true,
+          "invalid_reason": null
+        }
+      }
+    },
+    "recovered": {
+      "phase": "recovered",
+      "measurement_contract": "phase_windows_query_status_raw_spans_incident_scope_v1",
+      "window": {
+        "start_unix": 1788948200.626754,
+        "end_unix": 1788948354.29576,
+        "phase": "recovered",
+        "duration_seconds": 153.6690058708191
+      },
+      "workload_contract": [
+        {
+          "service": "frontend",
+          "rate": 10,
+          "duration_seconds": 150,
+          "payload_sha256": "af6230aaaf220fceaef6208d416c5a9d75f15f66d70e3cde00b6e441957bf352",
+          "endpoint": "http://frontend:5000"
+        }
+      ],
+      "workload_contract_sha256": "6077c467074cf99d38f65bce7c8f6097210774af14e271dc81522363d7366aff",
+      "workload_healthy": true,
+      "collection": {
+        "run_dir": "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered",
+        "namespace": "test-hotel-reservation",
+        "selected_services": [
+          "consul",
+          "frontend",
+          "geo",
+          "memcached-profile",
+          "memcached-rate",
+          "memcached-reserve",
+          "mongodb-geo",
+          "mongodb-profile",
+          "mongodb-rate",
+          "mongodb-recommendation",
+          "mongodb-reservation",
+          "mongodb-user",
+          "profile",
+          "rate",
+          "recommendation",
+          "reservation",
+          "search",
+          "user"
+        ],
+        "files_written": [
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/statefulsets.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/endpoints.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/services.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/replicasets.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/events.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/deployments.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pods.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/builtin_api_outputs/metrics/metrics.csv",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/builtin_api_outputs/traces/traces.csv",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/consul-5dbf68bdcc-9vwlp.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/frontend-7bc564ffb5-fjttw.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/geo-5b748f6cfd-g2cfz.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/memcached-profile-79c9d4d987-tx5wj.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/memcached-rate-5cc9b67bdf-sfx29.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/memcached-reserve-58d9c4bff5-gq5zc.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/mongodb-geo-86684bc5d5-m5rkk.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/mongodb-profile-5688dc4598-xp9rp.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/mongodb-rate-5f449d57d8-vbvmv.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/mongodb-recommendation-cbb5967d8-p968l.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/mongodb-reservation-968587568-cz8rw.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/mongodb-user-7d67879dbd-c6877.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/profile-68758d8b56-9wgjc.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/rate-58864d548d-xqqjr.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/recommendation-7fcfcbdf4-gxjs5.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/reservation-6f8cb56969-ddx4z.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/search-7fdf844bcb-55z62.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/direct_k8s_outputs/pod_logs/user-7d6c6967c-sfgrj.log",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/workload_result.json",
+          "/mnt/aiops-training/datasets/pilot-recorder-v1/run1/raw/gen_network_delay_hotel_res-detection-frontend-default/recovered/builtin_api_outputs/shell/targeted_workload.txt"
+        ],
+        "errors": [],
+        "elapsed_seconds": 3.621,
+        "collection_mode": "phase_windows_query_status_raw_spans_incident_scope_v1",
+        "window": {
+          "start_unix": 1788948200.626754,
+          "end_unix": 1788948354.29576,
+          "phase": "recovered",
+          "duration_seconds": 153.6690058708191,
+          "scrape_interval_seconds": 60.0,
+          "minimum_window_seconds": 125.0
+        },
+        "channels": {
+          "metrics": {
+            "query_succeeded": true,
+            "row_count": 40
+          },
+          "traces": {
+            "query_succeeded": true,
+            "row_count": 17178
+          },
+          "system": {
+            "query_succeeded": true
+          },
+          "logs": {
+            "query_succeeded": true,
+            "pod_count": 18
+          }
+        },
+        "resources": {
+          "application_running_pods": 18,
+          "application_cpu_cores_mean": 0.05083675853629091,
+          "application_cpu_core_seconds": 7.812034145966701,
+          "application_memory_bytes_mean": 530654549.3333333,
+          "measurement_window_seconds": 153.6690058708191,
+          "includes_observer_overhead": false,
+          "estimator": "Prometheus reset-aware rate and per-container window mean",
+          "scrape_interval_seconds": 60.0,
+          "metric_sample_coverage": {
+            "query_succeeded": true,
+            "min_samples_required": 2,
+            "samples_by_pod": {
+              "consul-5dbf68bdcc-9vwlp": 3,
+              "frontend-7bc564ffb5-fjttw": 3,
+              "geo-5b748f6cfd-g2cfz": 3,
+              "memcached-profile-79c9d4d987-tx5wj": 3,
+              "memcached-rate-5cc9b67bdf-sfx29": 3,
+              "memcached-reserve-58d9c4bff5-gq5zc": 3,
+              "mongodb-geo-86684bc5d5-m5rkk": 3,
+              "mongodb-profile-5688dc4598-xp9rp": 3,
+              "mongodb-rate-5f449d57d8-vbvmv": 3,
+              "mongodb-recommendation-cbb5967d8-p968l": 3,
+              "mongodb-reservation-968587568-cz8rw": 3,
+              "mongodb-user-7d67879dbd-c6877": 3,
+              "profile-68758d8b56-9wgjc": 3,
+              "rate-58864d548d-xqqjr": 3,
+              "recommendation-7fcfcbdf4-gxjs5": 3,
+              "reservation-6f8cb56969-ddx4z": 3,
+              "search-7fdf844bcb-55z62": 3,
+              "user-7d6c6967c-sfgrj": 3
+            },
+            "insufficient_pods": [],
+            "missing_pods": []
+          },
+          "stable_pod_population": true,
+          "valid": true,
+          "invalid_reason": null
+        }
+      }
+    }
+  },
+  "injection_verified": true
+}

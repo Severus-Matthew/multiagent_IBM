@@ -1,0 +1,48 @@
+{
+  "note": "Descriptive contract only. The canonical executable configuration is train_qwen_live_grpo CLI; this JSON is not a loader.",
+  "canonical_branch": "training-pipeline-v0",
+  "entrypoint": "training_pipeline.train_qwen_live_grpo",
+  "training_architecture": {
+    "execution": "joint_end_to_end_trajectory",
+    "shared_base_frozen": true,
+    "rca_adapter": "lora_rca",
+    "action_adapter": "lora_action",
+    "separate_optimizers": true,
+    "atomic_publication": true,
+    "trajectory_group_size": 4,
+    "trajectory_group_size_minimum": 2
+  },
+  "real_grpo_contract": {
+    "sampling_contract": "raw_softmax_v1",
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "exact_prompt_and_completion_tokens": true,
+    "eligibility_filter_before_normalization": true,
+    "token_ratio": "exp(new_logprob-old_logprob)",
+    "kl_estimator": "exp(ref_logprob-new_logprob)-(ref_logprob-new_logprob)-1",
+    "decision_weight": "1 / decisions_in_trajectory_role"
+  },
+  "max_rca_iterations": 7,
+  "max_action_iterations": 7,
+  "rca_output": "one physical line; service::fault_type::mechanism[::variant] roots separated by |",
+  "digital_twin": {
+    "default_mode": "live",
+    "scope": "all attributable observably affected services (alias-resolved) plus request paths and startup dependencies; unattributed symptom names reported",
+    "scope_frozen_before_rca": true,
+    "preserve_reference_replicas": true,
+    "calibration": "matched application/mechanism/variant/joint controls; no built-in qualified threshold",
+    "action_retry": "fresh frozen reference plus same fault hypothesis",
+    "recovery": "all observed symptoms cleared and SLA satisfied; restoration transition recorded separately",
+    "real_application": "digital_twin_runtime.repair_transfer; explicit context, namespace, and --execute",
+    "phase_window": "each phase measured inside its own window; workload phase >= 2 * Prometheus scrape_interval + 5s (150s at a 1m cadence); lookback never widened"
+  },
+  "dataset": {
+    "explicit_train_ids_required": true,
+    "frozen_manifest_required": true,
+    "disjoint_train_calibration_test": true,
+    "same_mechanism_service_variants_grouped": true,
+    "abstraction_contract": "raw_spans_public_state_metric_units_v1"
+  },
+  "legacy_paths": "agents/, training/, and old standalone debug scripts are not the canonical live training implementation"
+}

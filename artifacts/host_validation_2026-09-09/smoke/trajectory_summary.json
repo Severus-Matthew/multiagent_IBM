@@ -1,0 +1,62 @@
+[
+ {
+  "trajectory_id": "e2e:gen_k8s_target_port_misconfig-detection-user-service-default:traj0",
+  "reward_route": "live",
+  "optimizer_credit_eligible": true,
+  "rca_twin_verified": true,
+  "rca_public_progress": 1.0,
+  "final_prediction": "user-service::config_error::target_port_misconfig::default",
+  "action_stage_invoked": true,
+  "resolved": true,
+  "sla_condition_satisfied": true,
+  "sla_restored": true,
+  "trajectory_success": true,
+  "rca_policy_return": 1.0,
+  "action_policy_return": 0.9955
+ },
+ {
+  "trajectory_id": "e2e:gen_k8s_target_port_misconfig-detection-user-service-default:traj1",
+  "reward_route": "live",
+  "optimizer_credit_eligible": true,
+  "rca_twin_verified": true,
+  "rca_public_progress": 1.0,
+  "final_prediction": "user-service::config_error::target_port_misconfig::default",
+  "action_stage_invoked": true,
+  "resolved": true,
+  "sla_condition_satisfied": true,
+  "sla_restored": true,
+  "trajectory_success": true,
+  "rca_policy_return": 0.990083,
+  "action_policy_return": 0.9595
+ },
+ {
+  "trajectory_id": "e2e:gen_network_delay_hotel_res-detection-frontend-default:traj0",
+  "reward_route": "live",
+  "optimizer_credit_eligible": true,
+  "rca_twin_verified": true,
+  "rca_public_progress": 1.0,
+  "final_prediction": "frontend::latency_degradation::network_delay::delay_1000ms",
+  "action_stage_invoked": true,
+  "resolved": true,
+  "sla_condition_satisfied": true,
+  "sla_restored": true,
+  "trajectory_success": true,
+  "rca_policy_return": 1.0,
+  "action_policy_return": 0.9985
+ },
+ {
+  "trajectory_id": "e2e:gen_network_delay_hotel_res-detection-frontend-default:traj1",
+  "reward_route": "live",
+  "optimizer_credit_eligible": true,
+  "rca_twin_verified": true,
+  "rca_public_progress": 1.0,
+  "final_prediction": "frontend::latency_degradation::network_delay::delay_1000ms",
+  "action_stage_invoked": true,
+  "resolved": true,
+  "sla_condition_satisfied": true,
+  "sla_restored": true,
+  "trajectory_success": true,
+  "rca_policy_return": 0.993838,
+  "action_policy_return": 0.997
+ }
+]

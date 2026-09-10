@@ -1,0 +1,3311 @@
+{
+ "format": "regeneration_queue_v3",
+ "policy": "records whose capture cannot support live reward under any admission policy: injector never mutated the labeled service (all components), or no scored channel holds target evidence",
+ "splits": {
+  "train": {
+   "count": 117,
+   "by_family": {
+    "gen_auth_miss_mongodb": 16,
+    "gen_misconfig_app_hotel_res": 24,
+    "gen_multifault__revoke_auth_mongodb__mongodb": 35,
+    "gen_network_loss_hotel_res": 1,
+    "gen_revoke_auth_mongodb": 12,
+    "gen_user_unregistered_mongodb": 12,
+    "gen_wrong_bin_usage": 17
+   },
+   "records": [
+    {
+     "scenario_id": "gen_auth_miss_mongodb-analysis-post-storage-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-analysis-social-graph-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-analysis-user-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label",
+      "historical_capture_has_only_weak_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-analysis-user-timeline-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label",
+      "historical_capture_has_only_weak_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-detection-post-storage-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label",
+      "historical_capture_has_only_weak_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-detection-social-graph-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-detection-user-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label",
+      "historical_capture_has_only_weak_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-detection-user-timeline-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label",
+      "historical_capture_has_only_weak_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-localization-post-storage-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-localization-social-graph-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-localization-user-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-localization-user-timeline-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-mitigation-post-storage-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label",
+      "historical_capture_has_only_weak_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "post-storage-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-mitigation-social-graph-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "social-graph-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-mitigation-user-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_auth_miss_mongodb-mitigation-user-timeline-mongodb-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "url-shorten-mongodb"
+       ],
+       "labeled_service": "user-timeline-mongodb",
+       "mechanism": "mongodb_auth_missing",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__profile__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__profile__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__recommendation__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__search__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__search__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__user__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__misconfig_app_hotel_res__user__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__redeploy_without_pv__fixed__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__user_unregistered_mongodb__mongodb-recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__user_unregistered_mongodb__mongodb-recommendation__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__wrong_bin_usage__recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__wrong_bin_usage__recommendation__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__wrong_bin_usage__search__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__wrong_bin_usage__search__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__wrong_bin_usage__user__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-profile__PLUS__wrong_bin_usage__user__localization",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__misconfig_app_hotel_res__profile__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__misconfig_app_hotel_res__recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__misconfig_app_hotel_res__search__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__misconfig_app_hotel_res__user__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__redeploy_without_pv__fixed__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__user_unregistered_mongodb__mongodb-recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__wrong_bin_usage__recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__wrong_bin_usage__search__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-recommendation__PLUS__wrong_bin_usage__user__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__misconfig_app_hotel_res__profile__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "profile",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__misconfig_app_hotel_res__recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__misconfig_app_hotel_res__search__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "search",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__misconfig_app_hotel_res__user__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "user",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__redeploy_without_pv__fixed__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__user_unregistered_mongodb__mongodb-recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__wrong_bin_usage__recommendation__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__wrong_bin_usage__search__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_multifault__revoke_auth_mongodb__mongodb-reservation__PLUS__wrong_bin_usage__user__detection",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      },
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      },
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_network_loss_hotel_res-localization-search-loss_50pct",
+     "reasons": [
+      "historical_capture_has_no_comparable_symptom_evidence"
+     ],
+     "labels": [
+      {
+       "service": "search",
+       "mechanism": "network_loss"
+      }
+     ],
+     "source_failures": []
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-analysis-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-analysis-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-analysis-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-detection-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-detection-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-detection-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-localization-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-localization-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-localization-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-mitigation-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-mitigation-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_revoke_auth_mongodb-mitigation-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_auth_revoked",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-analysis-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-analysis-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-analysis-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-detection-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-detection-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-detection-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-localization-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-localization-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-localization-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-mitigation-mongodb-profile-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-profile",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-mitigation-mongodb-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-recommendation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_user_unregistered_mongodb-mitigation-mongodb-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "mongodb-geo",
+        "mongodb-rate"
+       ],
+       "labeled_service": "mongodb-reservation",
+       "mechanism": "mongodb_user_unregistered",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-analysis-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "frontend",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-analysis-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-analysis-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "reservation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-analysis-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-detection-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "frontend",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-detection-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "rate",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-detection-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-detection-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "reservation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "frontend",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "rate",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "recommendation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "reservation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-mitigation-frontend-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "frontend",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "frontend",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-mitigation-rate-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "rate",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "rate",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-mitigation-reservation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "reservation",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "reservation",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-mitigation-user-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "user",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "user",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    }
+   ]
+  },
+  "test": {
+   "count": 12,
+   "by_family": {
+    "gen_misconfig_app_hotel_res": 4,
+    "gen_wrong_bin_usage": 8
+   },
+   "records": [
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-analysis-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-detection-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-localization-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_misconfig_app_hotel_res-mitigation-recommendation-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": null,
+       "mechanism": "application_config_misconfig"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "geo"
+       ],
+       "labeled_service": "recommendation",
+       "mechanism": "application_config_misconfig",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-analysis-geo-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "geo",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "geo",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-analysis-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-detection-geo-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "geo",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "geo",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-detection-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-geo-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "geo",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "geo",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-localization-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-mitigation-geo-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "geo",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "geo",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    },
+    {
+     "scenario_id": "gen_wrong_bin_usage-mitigation-search-default",
+     "reasons": [
+      "source_injection_not_faithful_to_label"
+     ],
+     "labels": [
+      {
+       "service": "search",
+       "mechanism": "wrong_binary"
+      }
+     ],
+     "source_failures": [
+      {
+       "effective_targets": [
+        "profile"
+       ],
+       "labeled_service": "search",
+       "mechanism": "wrong_binary",
+       "reason": "legacy_aiopslab_injector_did_not_mutate_labeled_target"
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

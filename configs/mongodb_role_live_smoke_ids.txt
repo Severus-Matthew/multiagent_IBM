@@ -1,0 +1,3 @@
+gen_revoke_auth_mongodb-localization-mongodb-reservation-default
+gen_user_unregistered_mongodb-detection-mongodb-reservation-default
+gen_wrong_bin_usage-analysis-frontend-default

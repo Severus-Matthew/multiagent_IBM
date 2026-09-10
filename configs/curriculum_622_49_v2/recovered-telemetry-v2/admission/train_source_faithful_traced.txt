@@ -1,0 +1,5 @@
+gen_misconfig_app_hotel_res-analysis-geo-default
+gen_misconfig_app_hotel_res-detection-geo-default
+gen_misconfig_app_hotel_res-localization-geo-default
+gen_misconfig_app_hotel_res-mitigation-geo-default
+gen_multifault__revoke_auth_mongodb__mongodb-geo__PLUS__misconfig_app_hotel_res__geo__detection

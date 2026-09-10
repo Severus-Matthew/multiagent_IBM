@@ -1,0 +1,23 @@
+{
+  "atomic_two_adapter_updates": true,
+  "bundle_updates": 1,
+  "checkpoint": "/mnt/aiops-training/runs/pilot-corrected-smoke-v1/latest.pt",
+  "downstream_provider": "openai",
+  "epochs_completed": 1,
+  "exact_token_rollouts": true,
+  "frozen_downstream_agents": true,
+  "parallel_rollout_workers": 2,
+  "parallelism_mode": "synchronous_same-policy_multi-gpu_rollout_single-learner",
+  "policy_version": "pilot-corrected-smoke-v1@u000001",
+  "reward_mode": "factorized_joint_pipeline_v2_no_double_count",
+  "rollout_devices": [
+    "cuda:0",
+    "cuda:1"
+  ],
+  "scenario_cursor": 0,
+  "scenarios_completed": 2,
+  "scenarios_per_update": 2,
+  "status": "COMPLETE",
+  "twin_mode": "live",
+  "uses_real_training_update": true
+}

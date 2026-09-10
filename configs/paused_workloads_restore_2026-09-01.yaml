@@ -1,0 +1,49 @@
+format: aiops_training_replica_restore_v1
+captured_at_utc: "2026-09-01"
+context: kind-kind
+resources:
+  - {namespace: astronomy-shop, kind: deployment, name: accounting, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: ad, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: cart, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: checkout, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: currency, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: email, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: flagd, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: fraud-detection, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: frontend, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: frontend-proxy, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: grafana, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: image-provider, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: jaeger, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: kafka, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: llm, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: load-generator, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: payment, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: postgresql, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: product-catalog, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: product-reviews, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: prometheus, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: quote, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: recommendation, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: shipping, replicas: 1}
+  - {namespace: astronomy-shop, kind: deployment, name: valkey-cart, replicas: 1}
+  - {namespace: astronomy-shop, kind: statefulset, name: opensearch, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: consul, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: frontend, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: geo, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: jaeger, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: memcached-profile, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: memcached-rate, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: memcached-reserve, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: mongodb-geo, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: mongodb-profile, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: mongodb-rate, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: mongodb-recommendation, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: mongodb-reservation, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: mongodb-user, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: profile, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: rate, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: recommendation, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: reservation, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: search, replicas: 1}
+  - {namespace: test-hotel-reservation, kind: deployment, name: user, replicas: 1}

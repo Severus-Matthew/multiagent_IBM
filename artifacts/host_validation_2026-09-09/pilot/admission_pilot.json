@@ -1,0 +1,307 @@
+{
+  "contract": "source-faithful capture + comparable symptom evidence + verified-live mechanism adapter",
+  "evidence_policy": "structural or trace evidence at the labeled target required",
+  "label_corrections": null,
+  "split_valid": true,
+  "test": {
+    "buckets": {
+      "adapter_pending": [],
+      "eligible": [
+        "gen_scale_pod_zero_social_net-detection-user-service-default"
+      ],
+      "fully_live_reward_admissible": [
+        "gen_scale_pod_zero_social_net-detection-user-service-default"
+      ],
+      "label_corrected": [],
+      "needs_regeneration": [],
+      "weak_evidence_only": []
+    },
+    "counts": {
+      "collected_trace_edges": 0,
+      "evidence_strong": 1,
+      "fully_live_reward_admissible": 1,
+      "source_faithful": 1,
+      "source_faithful_and_comparable": 1,
+      "verified_live_adapter": 1
+    },
+    "fully_live_reward_admissible_ids": [
+      "gen_scale_pod_zero_social_net-detection-user-service-default"
+    ],
+    "loadable_records": 1,
+    "missing_ids": [],
+    "name": "test",
+    "path": "/mnt/aiops-training/datasets/pilot-recorder-v1/test_ids.txt",
+    "rejection_reasons": {},
+    "requested_ids": 1,
+    "rows": [
+      {
+        "all_adapters_verified_live": true,
+        "capabilities": [
+          {
+            "audit": "PASS_GENERIC_MANIFEST_DERIVED_SCALE_ADAPTER",
+            "evidence_channels": [
+              "structural",
+              "traces",
+              "logs"
+            ],
+            "live_audit_status": "verified_live",
+            "live_reward_eligible": true,
+            "mechanism": "scale_replicas_zero",
+            "remediation": "restore_original_replica_count",
+            "required_kinds": [
+              "Deployment"
+            ],
+            "service": "user-service",
+            "supported": true,
+            "supported_variants": [
+              "default",
+              "scale_0",
+              "scale_2",
+              "scale_3"
+            ],
+            "variant": "default"
+          }
+        ],
+        "comparable_evidence": {
+          "observed_channels": {
+            "logs": true,
+            "system": true,
+            "traces": false
+          },
+          "per_label": [
+            {
+              "basis": "structural_target_state",
+              "degraded_flag": true,
+              "log_error_flag": false,
+              "mechanism": "scale_replicas_zero",
+              "mechanism_evidence_channels": [
+                "structural",
+                "traces",
+                "logs"
+              ],
+              "service": "user-service",
+              "strength": "strong",
+              "structural": {
+                "anomalous": true,
+                "recorded": true,
+                "tokens": {
+                  "health_status": "no_ready_endpoints",
+                  "ready_endpoint_count": 0,
+                  "replicas_available": 0,
+                  "replicas_current": 0,
+                  "replicas_desired": 0,
+                  "replicas_ready": 0,
+                  "replicas_unavailable": 0
+                }
+              }
+            }
+          ],
+          "policy": "structural_or_trace_evidence_at_labeled_target_v1",
+          "strength": "strong"
+        },
+        "eligible": true,
+        "has_collected_trace_edges": false,
+        "label_correction": null,
+        "reasons": [],
+        "scenario_id": "gen_scale_pod_zero_social_net-detection-user-service-default",
+        "source_injection": {
+          "failures": [],
+          "mode": "generator_recorded_mutation_and_manifestation_evidence",
+          "valid": true
+        }
+      }
+    ],
+    "source_faithful_and_traced_ids": [
+      "gen_scale_pod_zero_social_net-detection-user-service-default"
+    ],
+    "unique_requested_ids": 1
+  },
+  "train": {
+    "buckets": {
+      "adapter_pending": [],
+      "eligible": [
+        "gen_k8s_target_port_misconfig-detection-user-service-default",
+        "gen_network_delay_hotel_res-detection-frontend-default"
+      ],
+      "fully_live_reward_admissible": [
+        "gen_k8s_target_port_misconfig-detection-user-service-default",
+        "gen_network_delay_hotel_res-detection-frontend-default"
+      ],
+      "label_corrected": [],
+      "needs_regeneration": [],
+      "weak_evidence_only": []
+    },
+    "counts": {
+      "collected_trace_edges": 2,
+      "evidence_strong": 2,
+      "fully_live_reward_admissible": 2,
+      "source_faithful": 2,
+      "source_faithful_and_comparable": 2,
+      "verified_live_adapter": 2
+    },
+    "fully_live_reward_admissible_ids": [
+      "gen_k8s_target_port_misconfig-detection-user-service-default",
+      "gen_network_delay_hotel_res-detection-frontend-default"
+    ],
+    "loadable_records": 2,
+    "missing_ids": [],
+    "name": "train",
+    "path": "/mnt/aiops-training/datasets/pilot-recorder-v1/train_ids.txt",
+    "rejection_reasons": {},
+    "requested_ids": 2,
+    "rows": [
+      {
+        "all_adapters_verified_live": true,
+        "capabilities": [
+          {
+            "audit": "PASS_GENERIC_MANIFEST_DERIVED_SERVICE_PORT_ADAPTER",
+            "evidence_channels": [
+              "traces",
+              "logs"
+            ],
+            "live_audit_status": "verified_live",
+            "live_reward_eligible": true,
+            "mechanism": "target_port_misconfig",
+            "remediation": "restore_service_snapshot",
+            "required_kinds": [
+              "Deployment",
+              "Service"
+            ],
+            "service": "user-service",
+            "supported": true,
+            "supported_variants": [
+              "default"
+            ],
+            "variant": "default"
+          }
+        ],
+        "comparable_evidence": {
+          "observed_channels": {
+            "logs": true,
+            "system": true,
+            "traces": true
+          },
+          "per_label": [
+            {
+              "basis": "collected_trace_edges",
+              "degraded_flag": false,
+              "log_error_flag": false,
+              "mechanism": "target_port_misconfig",
+              "mechanism_evidence_channels": [
+                "traces",
+                "logs"
+              ],
+              "service": "user-service",
+              "strength": "strong",
+              "structural": {
+                "anomalous": false,
+                "recorded": true,
+                "tokens": {
+                  "health_status": "healthy",
+                  "ready_endpoint_count": 1,
+                  "replicas_available": 1,
+                  "replicas_current": 1,
+                  "replicas_desired": 1,
+                  "replicas_ready": 1,
+                  "replicas_unavailable": 0
+                }
+              }
+            }
+          ],
+          "policy": "structural_or_trace_evidence_at_labeled_target_v1",
+          "strength": "strong"
+        },
+        "eligible": true,
+        "has_collected_trace_edges": true,
+        "label_correction": null,
+        "reasons": [],
+        "scenario_id": "gen_k8s_target_port_misconfig-detection-user-service-default",
+        "source_injection": {
+          "failures": [],
+          "mode": "generator_recorded_mutation_and_manifestation_evidence",
+          "valid": true
+        }
+      },
+      {
+        "all_adapters_verified_live": true,
+        "capabilities": [
+          {
+            "audit": "VERIFIED_2_OF_2_FULL_LIFECYCLE_2026_09_03",
+            "evidence_channels": [
+              "traces",
+              "logs"
+            ],
+            "live_audit_status": "verified_live",
+            "live_reward_eligible": true,
+            "mechanism": "network_delay",
+            "remediation": "delete_chaos_experiment",
+            "required_kinds": [
+              "Deployment"
+            ],
+            "service": "frontend",
+            "supported": true,
+            "supported_variants": [
+              "default",
+              "delay_100ms",
+              "delay_300ms",
+              "delay_1000ms"
+            ],
+            "variant": "default"
+          }
+        ],
+        "comparable_evidence": {
+          "observed_channels": {
+            "logs": true,
+            "system": true,
+            "traces": true
+          },
+          "per_label": [
+            {
+              "basis": "collected_trace_edges",
+              "degraded_flag": false,
+              "log_error_flag": false,
+              "mechanism": "network_delay",
+              "mechanism_evidence_channels": [
+                "traces",
+                "logs"
+              ],
+              "service": "frontend",
+              "strength": "strong",
+              "structural": {
+                "anomalous": false,
+                "recorded": true,
+                "tokens": {
+                  "health_status": "healthy",
+                  "ready_endpoint_count": 1,
+                  "replicas_available": 1,
+                  "replicas_current": 1,
+                  "replicas_desired": 1,
+                  "replicas_ready": 1,
+                  "replicas_unavailable": 0
+                }
+              }
+            }
+          ],
+          "policy": "structural_or_trace_evidence_at_labeled_target_v1",
+          "strength": "strong"
+        },
+        "eligible": true,
+        "has_collected_trace_edges": true,
+        "label_correction": null,
+        "reasons": [],
+        "scenario_id": "gen_network_delay_hotel_res-detection-frontend-default",
+        "source_injection": {
+          "failures": [],
+          "mode": "generator_recorded_mutation_and_manifestation_evidence",
+          "valid": true
+        }
+      }
+    ],
+    "source_faithful_and_traced_ids": [
+      "gen_k8s_target_port_misconfig-detection-user-service-default",
+      "gen_network_delay_hotel_res-detection-frontend-default"
+    ],
+    "unique_requested_ids": 2
+  },
+  "train_test_overlap": []
+}
